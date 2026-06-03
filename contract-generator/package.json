@@ -1,0 +1,19 @@
+{
+  "name": "@ai-advent/contract-generator",
+  "version": "1.0.0",
+  "description": "CLI-генератор больших списков синтетических договоров аренды",
+  "type": "module",
+  "scripts": {
+    "generate": "node src/generate-cli.ts",
+    "typecheck": "tsc",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/__test__/**' --test-coverage-exclude='src/generate-cli.ts' --test-coverage-exclude='../core/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
+    "lint-prettier": "prettier \"src/**/*.ts\" --check",
+    "write-prettier": "prettier \"src/**/*.ts\" --write"
+  },
+  "engines": { "node": ">=22.6.0" },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0"
+  }
+}
