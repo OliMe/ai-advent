@@ -9,6 +9,8 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     temperature: 0.7,
     systemPrompt: 'Ты — ассистент.',
     requestTimeoutMs: 60_000,
+    maxRetries: 0,
+    retryBaseMs: 1,
     ...overrides,
   };
 }

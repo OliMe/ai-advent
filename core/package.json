@@ -1,0 +1,21 @@
+{
+  "name": "@ai-advent/core",
+  "version": "1.0.0",
+  "description": "Общее ядро: клиент OpenAI-совместимого API, конфигурация и типы",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/__test__/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
+    "lint-prettier": "prettier \"src/**/*.ts\" --check",
+    "write-prettier": "prettier \"src/**/*.ts\" --write"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0"
+  }
+}

@@ -40,6 +40,51 @@ describe('ChatCompletionClient.complete', () => {
     assert.deepEqual(body.messages, [{ role: 'user', content: 'hi' }]);
   });
 
+  it('добавляет ограничения в тело запроса, когда они заданы', async t => {
+    let capturedInit: RequestInit | undefined;
+    const client = clientWithFetch(t, async (_url, init) => {
+      capturedInit = init;
+      return completionResponse('ок');
+    });
+
+    await client.complete([{ role: 'user', content: 'hi' }], {
+      maxTokens: 128,
+      stop: ['###', 'END'],
+      responseFormat: { type: 'json_object' },
+    });
+
+    const body = JSON.parse(String(capturedInit?.body));
+    assert.equal(body.max_tokens, 128);
+    assert.deepEqual(body.stop, ['###', 'END']);
+    assert.deepEqual(body.response_format, { type: 'json_object' });
+  });
+
+  it('нормализует одиночную стоп-строку в массив', async t => {
+    let capturedInit: RequestInit | undefined;
+    const client = clientWithFetch(t, async (_url, init) => {
+      capturedInit = init;
+      return completionResponse('ок');
+    });
+
+    await client.complete([{ role: 'user', content: 'hi' }], { stop: '###' });
+
+    const body = JSON.parse(String(capturedInit?.body));
+    assert.deepEqual(body.stop, ['###']);
+  });
+
+  it('отключает рассуждения при disableThinking', async t => {
+    let capturedInit: RequestInit | undefined;
+    const client = clientWithFetch(t, async (_url, init) => {
+      capturedInit = init;
+      return completionResponse('ок');
+    });
+
+    await client.complete([{ role: 'user', content: 'hi' }], { disableThinking: true });
+
+    const body = JSON.parse(String(capturedInit?.body));
+    assert.deepEqual(body.thinking, { type: 'disabled' });
+  });
+
   it('бросает ошибку со статусом и сообщением из тела при !ok', async t => {
     const client = clientWithFetch(
       t,
@@ -90,6 +135,16 @@ describe('ChatCompletionClient.complete', () => {
     }
   });
 
+  it('подсказывает увеличить лимит, если ответ обрезан по длине', async t => {
+    const body = { choices: [{ message: { content: '' }, finish_reason: 'length' }] };
+    const client = clientWithFetch(
+      t,
+      async () => new Response(JSON.stringify(body), { status: 200 }),
+    );
+
+    await assert.rejects(client.complete([], { maxTokens: 5 }), /обрезан по лимиту max_tokens/);
+  });
+
   it('оборачивает сетевую ошибку (Error)', async t => {
     const client = clientWithFetch(t, async () => {
       throw new Error('сеть недоступна');
@@ -137,5 +192,88 @@ describe('ChatCompletionClient.complete', () => {
       assert.equal(error.name, 'AbortError');
       return true;
     });
+  });
+});
+
+/** Клиент с включёнными повторами и мгновенным бэкоффом (retryBaseMs: 1). */
+function retryingClient(t: TestContext, stub: FetchStub, maxRetries = 2): ChatCompletionClient {
+  t.mock.method(globalThis, 'fetch', stub as unknown as typeof fetch);
+  return new ChatCompletionClient(makeConfig({ maxRetries, retryBaseMs: 1 }));
+}
+
+/** Заглушка: на первом вызове отдаёт `first`, далее — успешный ответ. */
+function failThenSucceed(first: () => Response): { stub: FetchStub; calls: () => number } {
+  let calls = 0;
+  const stub: FetchStub = async () => {
+    calls++;
+    return calls === 1 ? first() : completionResponse('готово');
+  };
+  return { stub, calls: () => calls };
+}
+
+describe('ChatCompletionClient.complete — повторы', () => {
+  it('повторяет при 429 и затем возвращает результат', async t => {
+    const { stub, calls } = failThenSucceed(
+      () => new Response('{}', { status: 429, statusText: 'Too Many Requests' }),
+    );
+    const client = retryingClient(t, stub);
+
+    assert.equal(await client.complete([], {}), 'готово');
+    assert.equal(calls(), 2);
+  });
+
+  it('повторяет при 5xx', async t => {
+    const { stub, calls } = failThenSucceed(
+      () => new Response('{}', { status: 503, statusText: 'Service Unavailable' }),
+    );
+    const client = retryingClient(t, stub);
+
+    assert.equal(await client.complete([], {}), 'готово');
+    assert.equal(calls(), 2);
+  });
+
+  it('повторяет при сетевом сбое', async t => {
+    let calls = 0;
+    const client = retryingClient(t, async () => {
+      calls++;
+      if (calls === 1) throw new Error('сеть');
+      return completionResponse('готово');
+    });
+
+    assert.equal(await client.complete([], {}), 'готово');
+    assert.equal(calls, 2);
+  });
+
+  it('учитывает заголовок Retry-After', async t => {
+    const { stub } = failThenSucceed(
+      () => new Response('{}', { status: 429, headers: { 'retry-after': '0' } }),
+    );
+    const client = retryingClient(t, stub);
+
+    assert.equal(await client.complete([], {}), 'готово');
+  });
+
+  it('игнорирует нечисловой Retry-After и использует бэкофф', async t => {
+    const { stub } = failThenSucceed(
+      () => new Response('{}', { status: 429, headers: { 'retry-after': 'скоро' } }),
+    );
+    const client = retryingClient(t, stub);
+
+    assert.equal(await client.complete([], {}), 'готово');
+  });
+
+  it('бросает ошибку, исчерпав повторы', async t => {
+    let calls = 0;
+    const client = retryingClient(
+      t,
+      async () => {
+        calls++;
+        return new Response('{}', { status: 429, statusText: 'Too Many Requests' });
+      },
+      1,
+    );
+
+    await assert.rejects(client.complete([], {}), /429/);
+    assert.equal(calls, 2); // 1 попытка + 1 повтор
   });
 });

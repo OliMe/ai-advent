@@ -12,6 +12,8 @@ const ENV_KEYS = [
   'LLM_TEMPERATURE',
   'LLM_SYSTEM_PROMPT',
   'LLM_REQUEST_TIMEOUT_MS',
+  'LLM_MAX_RETRIES',
+  'LLM_RETRY_BASE_MS',
 ];
 
 describe('loadConfig', () => {
@@ -71,6 +73,8 @@ describe('loadConfig', () => {
     assert.equal(config.model, 'm');
     assert.equal(config.temperature, 0.7);
     assert.equal(config.requestTimeoutMs, 60_000);
+    assert.equal(config.maxRetries, 3);
+    assert.equal(config.retryBaseMs, 500);
     assert.match(config.systemPrompt, /ассистент/i);
   });
 
@@ -121,6 +125,39 @@ describe('loadConfig', () => {
     process.env.LLM_REQUEST_TIMEOUT_MS = '0';
 
     assert.equal(loadConfig().requestTimeoutMs, 60_000);
+  });
+
+  it('читает число повторов и базовую задержку', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+    process.env.LLM_MAX_RETRIES = '5';
+    process.env.LLM_RETRY_BASE_MS = '250';
+
+    const config = loadConfig();
+    assert.equal(config.maxRetries, 5);
+    assert.equal(config.retryBaseMs, 250);
+  });
+
+  it('допускает ноль повторов', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+    process.env.LLM_MAX_RETRIES = '0';
+
+    assert.equal(loadConfig().maxRetries, 0);
+  });
+
+  it('откатывается к дефолтам при невалидных значениях ретраев', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+    process.env.LLM_MAX_RETRIES = '-1';
+    process.env.LLM_RETRY_BASE_MS = 'abc';
+
+    const config = loadConfig();
+    assert.equal(config.maxRetries, 3);
+    assert.equal(config.retryBaseMs, 500);
   });
 
   it('подгружает переменные из файла .env в текущем каталоге', () => {
