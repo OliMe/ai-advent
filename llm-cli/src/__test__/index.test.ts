@@ -3,7 +3,7 @@ import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import * as readline from 'node:readline/promises';
 import { PassThrough, Writable } from 'node:stream';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -13,9 +13,11 @@ import {
   describeError,
   main,
   reportFatalError,
+  parseArgs,
+  augmentSystemPrompt,
 } from '../index.ts';
-import { ChatCompletionClient } from '../chat-completion-client.ts';
-import { makeConfig, completionResponse } from './helpers.ts';
+import { ChatCompletionClient } from '../../../core/src/index.ts';
+import { makeConfig, completionResponse } from '../../../core/src/__test__/helpers.ts';
 
 /** Поток-приёмник: накапливает записанный текст. */
 function makeCollector(): { stream: Writable; text: () => string } {
@@ -58,7 +60,15 @@ function driveInteractive(
       callback();
     },
   });
-  const finished = runInteractive(client, makeConfig(), input, output, readline.createInterface);
+  const finished = runInteractive(
+    client,
+    makeConfig(),
+    {},
+    false,
+    input,
+    output,
+    readline.createInterface,
+  );
   return { finished, text: () => buffer };
 }
 
@@ -89,17 +99,27 @@ describe('describeError', () => {
 });
 
 describe('askModel', () => {
-  it('передаёт клиенту AbortSignal и возвращает ответ', async t => {
-    let capturedSignal: AbortSignal | undefined;
+  it('передаёт клиенту AbortSignal, ограничения и disableThinking, возвращает ответ', async t => {
+    let capturedOptions: Parameters<ChatCompletionClient['complete']>[1];
     const client = clientWith(t, async (_messages, options) => {
-      capturedSignal = options?.signal;
+      capturedOptions = options;
       return 'ответ';
     });
 
-    const result = await askModel(client, [{ role: 'user', content: 'x' }], 5000);
+    const result = await askModel(
+      client,
+      [{ role: 'user', content: 'x' }],
+      5000,
+      { maxTokens: 50, stop: ['END'], responseFormat: { type: 'json_object' } },
+      true,
+    );
 
     assert.equal(result, 'ответ');
-    assert.ok(capturedSignal instanceof AbortSignal);
+    assert.ok(capturedOptions?.signal instanceof AbortSignal);
+    assert.equal(capturedOptions?.maxTokens, 50);
+    assert.deepEqual(capturedOptions?.stop, ['END']);
+    assert.deepEqual(capturedOptions?.responseFormat, { type: 'json_object' });
+    assert.equal(capturedOptions?.disableThinking, true);
   });
 });
 
@@ -112,7 +132,7 @@ describe('runOnce', () => {
     });
     const output = makeCollector();
 
-    await runOnce(client, makeConfig(), 'привет', output.stream);
+    await runOnce(client, makeConfig(), 'привет', {}, false, output.stream);
 
     assert.equal(output.text(), 'единственный ответ\n');
     assert.deepEqual(calls[0], [
@@ -152,7 +172,7 @@ describe('runInteractive', () => {
     const output = makeCollector();
     let captured: readline.Interface | undefined;
 
-    const finished = runInteractive(client, makeConfig(), input, output.stream, () => {
+    const finished = runInteractive(client, makeConfig(), {}, false, input, output.stream, () => {
       captured = readline.createInterface({ input, output: output.stream });
       return captured;
     });
@@ -162,6 +182,110 @@ describe('runInteractive', () => {
     await finished;
 
     assert.match(output.text(), /До встречи!/);
+  });
+});
+
+describe('augmentSystemPrompt', () => {
+  it('дописывает схему в промпт при json_schema', () => {
+    const schema = { type: 'object', properties: { city: { type: 'string' } } };
+    const result = augmentSystemPrompt('Базовый промпт.', {
+      responseFormat: { type: 'json_schema', json_schema: { name: 'response', schema } },
+    });
+
+    assert.match(result, /^Базовый промпт\./);
+    assert.match(result, /строго в виде JSON/);
+    assert.match(result, /"city"/);
+  });
+
+  it('не меняет промпт при json_object', () => {
+    const result = augmentSystemPrompt('Базовый промпт.', {
+      responseFormat: { type: 'json_object' },
+    });
+    assert.equal(result, 'Базовый промпт.');
+  });
+
+  it('не меняет промпт без ограничения формата', () => {
+    assert.equal(augmentSystemPrompt('Базовый промпт.', {}), 'Базовый промпт.');
+  });
+});
+
+describe('parseArgs', () => {
+  it('без флагов собирает промпт из слов, ограничений нет', () => {
+    const result = parseArgs(['привет', 'мир']);
+    assert.equal(result.prompt, 'привет мир');
+    assert.deepEqual(result.limits, {});
+    assert.equal(result.disableThinking, false);
+  });
+
+  it('--no-thinking включает отключение рассуждений', () => {
+    const result = parseArgs(['--no-thinking', 'привет']);
+    assert.equal(result.prompt, 'привет');
+    assert.equal(result.disableThinking, true);
+  });
+
+  it('--json включает формат json_object', () => {
+    const result = parseArgs(['--json', 'дай', 'json']);
+    assert.equal(result.prompt, 'дай json');
+    assert.deepEqual(result.limits.responseFormat, { type: 'json_object' });
+  });
+
+  it('--max-tokens принимает значение через = и через пробел', () => {
+    assert.equal(parseArgs(['--max-tokens=200']).limits.maxTokens, 200);
+    assert.equal(parseArgs(['--max-tokens', '300']).limits.maxTokens, 300);
+  });
+
+  it('единственный --stop даёт строку, несколько — массив', () => {
+    assert.equal(parseArgs(['--stop', '###']).limits.stop, '###');
+    assert.deepEqual(parseArgs(['--stop', 'A', '--stop=B']).limits.stop, ['A', 'B']);
+  });
+
+  it('бросает ошибку при невалидном --max-tokens', () => {
+    assert.throws(() => parseArgs(['--max-tokens=0']), /положительное целое/);
+    assert.throws(() => parseArgs(['--max-tokens=abc']), /положительное целое/);
+  });
+
+  it('бросает ошибку, если у флага нет значения', () => {
+    assert.throws(() => parseArgs(['--max-tokens']), /Не указано значение/);
+  });
+
+  it('бросает ошибку на неизвестном флаге', () => {
+    assert.throws(() => parseArgs(['--unknown=1']), /Неизвестный флаг/);
+  });
+
+  it('--json-schema читает файл и строит строгий response_format', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'llm-schema-'));
+    try {
+      const file = join(dir, 'schema.json');
+      const schema = { type: 'object', properties: { city: { type: 'string' } } };
+      writeFileSync(file, JSON.stringify(schema));
+
+      const { limits } = parseArgs([`--json-schema=${file}`]);
+
+      assert.deepEqual(limits.responseFormat, {
+        type: 'json_schema',
+        json_schema: { name: 'response', strict: true, schema },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('--json-schema бросает ошибку, если файл не найден', () => {
+    assert.throws(
+      () => parseArgs(['--json-schema=/нет/такого/файла.json']),
+      /прочитать файл схемы/,
+    );
+  });
+
+  it('--json-schema бросает ошибку при невалидном JSON в файле', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'llm-schema-'));
+    try {
+      const file = join(dir, 'bad.json');
+      writeFileSync(file, '{ не json');
+      assert.throws(() => parseArgs([`--json-schema=${file}`]), /Невалидный JSON/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
