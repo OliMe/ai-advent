@@ -72,11 +72,11 @@ describe('solveAll', () => {
   it('собирает все 4 решения и оценку, используя составленный промпт', async t => {
     // Параллельные запросы приходят в произвольном порядке — отвечаем по содержимому.
     const CRAFTED = 'СОСТАВЛЕННЫЙ-ПРОМПТ';
-    let calls = 0;
-    const client = makeClient(t, async messages => {
-      calls++;
+    const seen: { system: string; disableThinking: boolean | undefined }[] = [];
+    const client = makeClient(t, async (messages, options) => {
       const system = messages[0]?.role === 'system' ? messages[0].content : '';
       const user = messages.find(m => m.role === 'user')?.content ?? '';
+      seen.push({ system, disableThinking: options?.disableThinking });
       if (system.includes('судья')) return 'ВЕРДИКТ';
       if (system === CRAFTED) return 'двухшаговое';
       if (system.includes('пошагово')) return 'пошаговое';
@@ -87,14 +87,15 @@ describe('solveAll', () => {
 
     const result = await solveAll(client, 'задача', ['математик'], 60000);
 
-    assert.equal(calls, 6);
+    assert.equal(seen.length, 6);
     assert.deepEqual(
       result.solutions.map(s => s.text),
       ['простое', 'пошаговое', 'двухшаговое', 'панель'],
     );
-    // «двухшаговое» вернулось только потому, что запрос пришёл с системным
-    // промптом CRAFTED — значит составленный промпт реально использован.
     assert.equal(result.verdict, 'ВЕРДИКТ');
+    // Рассуждения отключены только у оценочного запроса, у решающих — нет.
+    assert.equal(seen.find(s => s.system.includes('судья'))?.disableThinking, true);
+    assert.equal(seen.find(s => s.system.includes('пошагово'))?.disableThinking, false);
   });
 });
 

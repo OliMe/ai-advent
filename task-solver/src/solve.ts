@@ -94,9 +94,10 @@ async function ask(
   client: ChatCompletionClient,
   messages: ChatMessage[],
   requestTimeoutMs: number,
+  disableThinking = false,
 ): Promise<string> {
   const signal = AbortSignal.timeout(requestTimeoutMs);
-  return client.complete(messages, { signal });
+  return client.complete(messages, { signal, disableThinking });
 }
 
 /** Решает задачу всеми четырьмя способами и просит GLM оценить результаты. */
@@ -130,8 +131,15 @@ export async function solveAll(
     { label: 'Панель экспертов', text: expertPanel },
   ];
 
-  // Оценка — после того, как готовы все решения.
-  const verdict = await ask(client, buildEvaluationMessages(task, solutions), requestTimeoutMs);
+  // Оценка — после того, как готовы все решения. Рассуждения отключаем: это
+  // самый тяжёлый запрос (сравнение четырёх решений), и без reasoning он
+  // надёжно укладывается в таймаут, оставаясь содержательным.
+  const verdict = await ask(
+    client,
+    buildEvaluationMessages(task, solutions),
+    requestTimeoutMs,
+    true,
+  );
   return { solutions, verdict };
 }
 
