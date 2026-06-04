@@ -1,6 +1,5 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ChatMessage } from '../../../core/src/index.ts';
 import {
   parseExperts,
   buildSimpleMessages,
@@ -70,25 +69,32 @@ describe('построение сообщений', () => {
 });
 
 describe('solveAll', () => {
-  it('делает 6 запросов, использует составленный промпт и собирает оценку', async t => {
+  it('собирает все 4 решения и оценку, используя составленный промпт', async t => {
+    // Параллельные запросы приходят в произвольном порядке — отвечаем по содержимому.
+    const CRAFTED = 'СОСТАВЛЕННЫЙ-ПРОМПТ';
     let calls = 0;
-    const captured: ChatMessage[][] = [];
     const client = makeClient(t, async messages => {
       calls++;
-      captured.push(messages);
-      return `r${calls}`;
+      const system = messages[0]?.role === 'system' ? messages[0].content : '';
+      const user = messages.find(m => m.role === 'user')?.content ?? '';
+      if (system.includes('судья')) return 'ВЕРДИКТ';
+      if (system === CRAFTED) return 'двухшаговое';
+      if (system.includes('пошагово')) return 'пошаговое';
+      if (system.includes('эксперт')) return 'панель';
+      if (user.includes('Составь')) return CRAFTED;
+      return 'простое';
     });
 
     const result = await solveAll(client, 'задача', ['математик'], 60000);
 
     assert.equal(calls, 6);
-    // r3 — составленный промпт; он должен прийти системным сообщением в запросе 4.
-    assert.equal(captured[3][0].content, 'r3');
     assert.deepEqual(
       result.solutions.map(s => s.text),
-      ['r1', 'r2', 'r4', 'r5'],
+      ['простое', 'пошаговое', 'двухшаговое', 'панель'],
     );
-    assert.equal(result.verdict, 'r6');
+    // «двухшаговое» вернулось только потому, что запрос пришёл с системным
+    // промптом CRAFTED — значит составленный промпт реально использован.
+    assert.equal(result.verdict, 'ВЕРДИКТ');
   });
 });
 

@@ -106,17 +106,22 @@ export async function solveAll(
   experts: string[],
   requestTimeoutMs: number,
 ): Promise<SolveResult> {
-  const simple = await ask(client, buildSimpleMessages(task), requestTimeoutMs);
-  const stepByStep = await ask(client, buildStepByStepMessages(task), requestTimeoutMs);
+  // Независимые запросы выполняем параллельно. У GLM-5.1 лимит конкурентности
+  // достаточный (10); при более строгих лимитах лишние 429 поглощаются ретраями
+  // в ядре. Сюда же — шаг 1 двухшагового способа (составление промпта).
+  const [simple, stepByStep, expertPanel, craftedPrompt] = await Promise.all([
+    ask(client, buildSimpleMessages(task), requestTimeoutMs),
+    ask(client, buildStepByStepMessages(task), requestTimeoutMs),
+    ask(client, buildExpertPanelMessages(task, experts), requestTimeoutMs),
+    ask(client, buildPromptCraftMessages(task), requestTimeoutMs),
+  ]);
 
-  const craftedPrompt = await ask(client, buildPromptCraftMessages(task), requestTimeoutMs);
+  // Шаг 2 двухшагового способа зависит от составленного промпта — только после него.
   const twoStep = await ask(
     client,
     buildSolveWithPromptMessages(craftedPrompt, task),
     requestTimeoutMs,
   );
-
-  const expertPanel = await ask(client, buildExpertPanelMessages(task, experts), requestTimeoutMs);
 
   const solutions: Solution[] = [
     { label: 'Простой запрос', text: simple },
@@ -125,6 +130,7 @@ export async function solveAll(
     { label: 'Панель экспертов', text: expertPanel },
   ];
 
+  // Оценка — после того, как готовы все решения.
   const verdict = await ask(client, buildEvaluationMessages(task, solutions), requestTimeoutMs);
   return { solutions, verdict };
 }
