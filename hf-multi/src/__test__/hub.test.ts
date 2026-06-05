@@ -21,16 +21,24 @@ describe('modelUrl', () => {
 });
 
 describe('parseCandidates', () => {
-  it('оставляет только модели с параметрами и доступным провайдером', () => {
+  it('оставляет только chat-модели с параметрами и живым провайдером', () => {
+    const conv = { provider: 'together', task: 'conversational', status: 'live' };
     const raw = [
+      { id: 'ok/model', safetensors: { total: 7_000_000_000 }, inferenceProviderMapping: [conv] },
+      { id: 'no/params', inferenceProviderMapping: [conv] }, // нет числа параметров
       {
-        id: 'ok/model',
-        safetensors: { total: 7_000_000_000 },
-        inferenceProviderMapping: [{ provider: 'together' }],
+        id: 'base/model', // base: провайдер есть, но task=text-generation
+        safetensors: { total: 1000 },
+        inferenceProviderMapping: [{ task: 'text-generation', status: 'live' }],
       },
-      { id: 'no/params', inferenceProviderMapping: [{ provider: 'together' }] },
+      {
+        id: 'staging/model', // conversational, но status != live
+        safetensors: { total: 1000 },
+        inferenceProviderMapping: [{ task: 'conversational', status: 'staging' }],
+      },
       { id: 'no/providers', safetensors: { total: 1000 }, inferenceProviderMapping: [] },
-      { safetensors: { total: 1000 }, inferenceProviderMapping: [{ provider: 'x' }] }, // нет id
+      { id: 'weird/model', safetensors: { total: 1000 }, inferenceProviderMapping: 'не-массив' },
+      { safetensors: { total: 1000 }, inferenceProviderMapping: [conv] }, // нет id
     ];
     const result = parseCandidates(raw);
     assert.deepEqual(
@@ -71,7 +79,7 @@ describe('fetchCandidates', () => {
             {
               id: 'a/b',
               safetensors: { total: 5000 },
-              inferenceProviderMapping: [{ provider: 'p' }],
+              inferenceProviderMapping: [{ task: 'conversational', status: 'live' }],
             },
           ]),
           { status: 200 },
@@ -108,7 +116,7 @@ describe('selectDefaultModels', () => {
     const raw = [10, 8, 6, 4, 2].map((p, i) => ({
       id: `m${i}`,
       safetensors: { total: p * 1_000_000 },
-      inferenceProviderMapping: [{ provider: 'p' }],
+      inferenceProviderMapping: [{ task: 'conversational', status: 'live' }],
     }));
     t.mock.method(
       globalThis,

@@ -12,10 +12,21 @@ export function modelUrl(id: string): string {
   return `https://huggingface.co/${id}`;
 }
 
+/** Есть ли у модели живой провайдер для chat-эндпоинта (task=conversational). */
+function isChatServable(mapping: unknown): boolean {
+  return (
+    Array.isArray(mapping) &&
+    mapping.some(entry => {
+      const provider = entry as { task?: unknown; status?: unknown };
+      return provider.task === 'conversational' && provider.status === 'live';
+    })
+  );
+}
+
 /**
  * Разбирает ответ HF Hub API в список моделей. Оставляет только те, у которых
- * известно число параметров (safetensors.total) и есть хотя бы один провайдер
- * инференса (модель реально вызываема через router).
+ * известно число параметров (safetensors.total) и есть живой провайдер для
+ * chat-эндпоинта (task=conversational) — иначе base-модели падают на 400.
  */
 export function parseCandidates(raw: unknown[]): HfModel[] {
   const models: HfModel[] = [];
@@ -28,9 +39,7 @@ export function parseCandidates(raw: unknown[]): HfModel[] {
     const id = typeof model.id === 'string' ? model.id : null;
     const total = model.safetensors?.total;
     const params = typeof total === 'number' ? total : null;
-    const servable =
-      Array.isArray(model.inferenceProviderMapping) && model.inferenceProviderMapping.length > 0;
-    if (id !== null && params !== null && servable) {
+    if (id !== null && params !== null && isChatServable(model.inferenceProviderMapping)) {
       models.push({ id, url: modelUrl(id), params });
     }
   }
