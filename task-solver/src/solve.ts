@@ -4,6 +4,8 @@ import type { ChatCompletionClient, ChatMessage } from '../../core/src/index.ts'
 export interface Solution {
   label: string;
   text: string;
+  /** Сгенерированный промпт (для двухшагового способа) — для показа пользователю. */
+  prompt?: string;
 }
 
 /** Итог: все решения и оценка GLM, какое из них точнее. */
@@ -127,7 +129,7 @@ export async function solveAll(
   const solutions: Solution[] = [
     { label: 'Простой запрос', text: simple },
     { label: 'Пошаговое решение', text: stepByStep },
-    { label: 'Двухшаговый (промпт → решение)', text: twoStep },
+    { label: 'Двухшаговый (промпт → решение)', text: twoStep, prompt: craftedPrompt },
     { label: 'Панель экспертов', text: expertPanel },
   ];
 
@@ -145,8 +147,12 @@ export async function solveAll(
 
 /** Форматирует итог для вывода в консоль. */
 export function formatResult(result: SolveResult): string {
-  const blocks = result.solutions.map(
-    (solution, index) => `[${index + 1}] ${solution.label}\n${solution.text}`,
-  );
+  const blocks = result.solutions.map((solution, index) => {
+    const header = `[${index + 1}] ${solution.label}`;
+    const promptPart = solution.prompt
+      ? `--- Сгенерированный промпт ---\n${solution.prompt}\n--- Решение ---\n`
+      : '';
+    return `${header}\n${promptPart}${solution.text}`;
+  });
   return `${blocks.join('\n\n')}\n\n=== Оценка GLM ===\n${result.verdict}\n`;
 }

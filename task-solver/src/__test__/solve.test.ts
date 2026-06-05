@@ -93,6 +93,8 @@ describe('solveAll', () => {
       ['простое', 'пошаговое', 'двухшаговое', 'панель'],
     );
     assert.equal(result.verdict, 'ВЕРДИКТ');
+    // Составленный промпт сохранён в решении №3 для показа пользователю.
+    assert.equal(result.solutions[2].prompt, CRAFTED);
     // Рассуждения отключены только у оценочного запроса, у решающих — нет.
     assert.equal(seen.find(s => s.system.includes('судья'))?.disableThinking, true);
     assert.equal(seen.find(s => s.system.includes('пошагово'))?.disableThinking, false);
@@ -100,16 +102,19 @@ describe('solveAll', () => {
 });
 
 describe('formatResult', () => {
-  it('печатает пронумерованные решения и блок оценки', () => {
+  it('печатает решения, промпт двухшагового способа и блок оценки', () => {
     const text = formatResult({
       solutions: [
         { label: 'Простой запрос', text: 'A' },
-        { label: 'Пошаговое решение', text: 'B' },
+        { label: 'Двухшаговый (промпт → решение)', text: 'B', prompt: 'МОЙ ПРОМПТ' },
       ],
-      verdict: 'победил A',
+      verdict: 'победил B',
     });
     assert.match(text, /\[1\] Простой запрос\nA/);
-    assert.match(text, /\[2\] Пошаговое решение\nB/);
-    assert.match(text, /=== Оценка GLM ===\nпобедил A/);
+    // У решения с промптом он выводится отдельным блоком перед самим решением.
+    assert.match(text, /--- Сгенерированный промпт ---\nМОЙ ПРОМПТ\n--- Решение ---\nB/);
+    // У решения без промпта лишнего блока нет.
+    assert.doesNotMatch(text, /\[1\] Простой запрос\n---/);
+    assert.match(text, /=== Оценка GLM ===\nпобедил B/);
   });
 });
