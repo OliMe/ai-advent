@@ -13,6 +13,8 @@ export interface CompleteOptions extends GenerationLimits {
   signal?: AbortSignal;
   /** Отключить «рассуждения» модели (экономит токены; нужно для стоп-маркеров на GLM). */
   disableThinking?: boolean;
+  /** Температура для этого запроса; если не задана — берётся из конфигурации. */
+  temperature?: number;
 }
 
 /** Стоит ли повторять запрос при таком HTTP-статусе (rate limit и ошибки сервера). */
@@ -55,7 +57,7 @@ export class ChatCompletionClient {
     const body: ChatCompletionRequest = {
       model: this.config.model,
       messages,
-      temperature: this.config.temperature,
+      temperature: options.temperature ?? this.config.temperature,
       stream: false,
     };
     // Ограничения добавляем только когда заданы — иначе провайдер берёт свои дефолты.

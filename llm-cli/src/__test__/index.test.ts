@@ -15,6 +15,7 @@ import {
   reportFatalError,
   parseArgs,
   augmentSystemPrompt,
+  validTemperature,
 } from '../index.ts';
 import { ChatCompletionClient } from '../../../core/src/index.ts';
 import { makeConfig, completionResponse } from '../../../core/src/__test__/helpers.ts';
@@ -44,6 +45,7 @@ function delay(ms: number): Promise<void> {
 function driveInteractive(
   client: ChatCompletionClient,
   lines: string[],
+  temperature = 0.7,
 ): { finished: Promise<void>; text: () => string } {
   const input = new PassThrough();
   let buffer = '';
@@ -65,6 +67,7 @@ function driveInteractive(
     makeConfig(),
     {},
     false,
+    temperature,
     input,
     output,
     readline.createInterface,
@@ -112,6 +115,7 @@ describe('askModel', () => {
       5000,
       { maxTokens: 50, stop: ['END'], responseFormat: { type: 'json_object' } },
       true,
+      0.3,
     );
 
     assert.equal(result, 'ответ');
@@ -120,6 +124,7 @@ describe('askModel', () => {
     assert.deepEqual(capturedOptions?.stop, ['END']);
     assert.deepEqual(capturedOptions?.responseFormat, { type: 'json_object' });
     assert.equal(capturedOptions?.disableThinking, true);
+    assert.equal(capturedOptions?.temperature, 0.3);
   });
 });
 
@@ -132,7 +137,7 @@ describe('runOnce', () => {
     });
     const output = makeCollector();
 
-    await runOnce(client, makeConfig(), 'привет', {}, false, output.stream);
+    await runOnce(client, makeConfig(), 'привет', {}, false, 0.7, output.stream);
 
     assert.equal(output.text(), 'единственный ответ\n');
     assert.deepEqual(calls[0], [
@@ -172,16 +177,60 @@ describe('runInteractive', () => {
     const output = makeCollector();
     let captured: readline.Interface | undefined;
 
-    const finished = runInteractive(client, makeConfig(), {}, false, input, output.stream, () => {
-      captured = readline.createInterface({ input, output: output.stream });
-      return captured;
-    });
+    const finished = runInteractive(
+      client,
+      makeConfig(),
+      {},
+      false,
+      0.7,
+      input,
+      output.stream,
+      () => {
+        captured = readline.createInterface({ input, output: output.stream });
+        return captured;
+      },
+    );
 
     await delay(20);
     captured?.emit('SIGINT');
     await finished;
 
     assert.match(output.text(), /До встречи!/);
+  });
+
+  it('меняет температуру командой /temp и применяет её к следующему запросу', async t => {
+    let capturedTemperature: number | undefined;
+    const client = clientWith(t, async (_messages, options) => {
+      capturedTemperature = options?.temperature;
+      return 'ОТВЕТ';
+    });
+
+    const { finished, text } = driveInteractive(client, ['/temp 0.2', 'привет', '/exit']);
+    await finished;
+
+    assert.match(text(), /Температура установлена: 0.2/);
+    assert.equal(capturedTemperature, 0.2);
+  });
+
+  it('сообщает о некорректной температуре в /temp', async t => {
+    const client = clientWith(t, async () => 'ОТВЕТ');
+
+    const { finished, text } = driveInteractive(client, ['/temp abc', '/exit']);
+    await finished;
+
+    assert.match(text(), /Некорректная температура/);
+  });
+});
+
+describe('validTemperature', () => {
+  it('принимает число в диапазоне 0–2', () => {
+    assert.equal(validTemperature('0.4'), 0.4);
+  });
+
+  it('отвергает значения вне диапазона и нечисла', () => {
+    assert.equal(validTemperature('-1'), null);
+    assert.equal(validTemperature('3'), null);
+    assert.equal(validTemperature('abc'), null);
   });
 });
 
@@ -215,6 +264,16 @@ describe('parseArgs', () => {
     assert.equal(result.prompt, 'привет мир');
     assert.deepEqual(result.limits, {});
     assert.equal(result.disableThinking, false);
+    assert.equal(result.temperature, undefined);
+  });
+
+  it('--temperature принимает число (= и пробел)', () => {
+    assert.equal(parseArgs(['--temperature=0.2']).temperature, 0.2);
+    assert.equal(parseArgs(['--temperature', '1.5']).temperature, 1.5);
+  });
+
+  it('бросает ошибку при невалидной --temperature', () => {
+    assert.throws(() => parseArgs(['--temperature=3']), /число от 0 до 2/);
   });
 
   it('--no-thinking включает отключение рассуждений', () => {

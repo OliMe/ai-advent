@@ -85,6 +85,19 @@ describe('ChatCompletionClient.complete', () => {
     assert.deepEqual(body.thinking, { type: 'disabled' });
   });
 
+  it('переопределяет температуру из опций', async t => {
+    let capturedInit: RequestInit | undefined;
+    const client = clientWithFetch(t, async (_url, init) => {
+      capturedInit = init;
+      return completionResponse('ок');
+    });
+
+    await client.complete([{ role: 'user', content: 'hi' }], { temperature: 0.2 });
+
+    const body = JSON.parse(String(capturedInit?.body));
+    assert.equal(body.temperature, 0.2);
+  });
+
   it('бросает ошибку со статусом и сообщением из тела при !ok', async t => {
     const client = clientWithFetch(
       t,
