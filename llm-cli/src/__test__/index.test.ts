@@ -223,13 +223,13 @@ describe('runInteractive', () => {
 });
 
 describe('validTemperature', () => {
-  it('принимает число в диапазоне 0–2', () => {
+  it('принимает конечное неотрицательное число', () => {
     assert.equal(validTemperature('0.4'), 0.4);
+    assert.equal(validTemperature('1.5'), 1.5);
   });
 
-  it('отвергает значения вне диапазона и нечисла', () => {
+  it('отвергает отрицательные значения и нечисла', () => {
     assert.equal(validTemperature('-1'), null);
-    assert.equal(validTemperature('3'), null);
     assert.equal(validTemperature('abc'), null);
   });
 });
@@ -273,7 +273,8 @@ describe('parseArgs', () => {
   });
 
   it('бросает ошибку при невалидной --temperature', () => {
-    assert.throws(() => parseArgs(['--temperature=3']), /число от 0 до 2/);
+    assert.throws(() => parseArgs(['--temperature=-1']), /неотрицательное число/);
+    assert.throws(() => parseArgs(['--temperature=abc']), /неотрицательное число/);
   });
 
   it('--no-thinking включает отключение рассуждений', () => {

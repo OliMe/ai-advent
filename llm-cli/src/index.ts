@@ -12,15 +12,14 @@ import type {
 /** Метка ответа модели в интерактивном режиме. */
 const ASSISTANT_LABEL = 'Ассистент';
 
-const MIN_TEMPERATURE = 0;
-const MAX_TEMPERATURE = 2;
-
-/** Проверяет температуру (число от 0 до 2); возвращает число или null при ошибке. */
+/**
+ * Проверяет температуру: конечное неотрицательное число; возвращает число или
+ * null при ошибке. Верхнюю границу не навязываем — она зависит от провайдера
+ * (z.ai/GLM ≈ 0–1, OpenAI ≈ 0–2), и провайдер сам отклонит слишком большое.
+ */
 export function validTemperature(value: string): number | null {
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= MIN_TEMPERATURE && parsed <= MAX_TEMPERATURE
-    ? parsed
-    : null;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 /** Запускает один запрос с таймаутом и ограничениями и возвращает ответ модели. */
@@ -108,7 +107,7 @@ export async function runInteractive(
 
   output.write(
     `Чат с моделью «${config.model}» (температура ${temperature}). ` +
-      'Сообщение — текст; смена температуры — /temp <0–2>; выход — /exit или Ctrl+C.\n',
+      'Сообщение — текст; смена температуры — /temp <число>; выход — /exit или Ctrl+C.\n',
   );
 
   try {
@@ -128,7 +127,7 @@ export async function runInteractive(
       if (userInput.startsWith('/temp ')) {
         const parsed = validTemperature(userInput.slice('/temp '.length).trim());
         if (parsed === null) {
-          output.write('Некорректная температура — нужно число от 0 до 2.\n\n');
+          output.write('Некорректная температура — нужно неотрицательное число.\n\n');
         } else {
           temperature = parsed;
           output.write(`Температура установлена: ${temperature}\n\n`);
@@ -252,7 +251,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     } else if (name === '--temperature') {
       const parsed = validTemperature(value);
       if (parsed === null) {
-        throw new Error(`--temperature требует число от 0 до 2, получено: ${value}`);
+        throw new Error(`--temperature требует неотрицательное число, получено: ${value}`);
       }
       temperature = parsed;
     } else {
