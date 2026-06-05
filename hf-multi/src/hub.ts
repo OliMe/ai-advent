@@ -1,0 +1,69 @@
+/** Модель HuggingFace, отобранная для запроса. */
+export interface HfModel {
+  id: string;
+  url: string;
+  params: number;
+}
+
+const HUB_API = 'https://huggingface.co/api/models';
+
+/** Ссылка на страницу модели на HuggingFace. */
+export function modelUrl(id: string): string {
+  return `https://huggingface.co/${id}`;
+}
+
+/**
+ * Разбирает ответ HF Hub API в список моделей. Оставляет только те, у которых
+ * известно число параметров (safetensors.total) и есть хотя бы один провайдер
+ * инференса (модель реально вызываема через router).
+ */
+export function parseCandidates(raw: unknown[]): HfModel[] {
+  const models: HfModel[] = [];
+  for (const item of raw) {
+    const model = item as {
+      id?: unknown;
+      safetensors?: { total?: unknown };
+      inferenceProviderMapping?: unknown;
+    };
+    const id = typeof model.id === 'string' ? model.id : null;
+    const total = model.safetensors?.total;
+    const params = typeof total === 'number' ? total : null;
+    const servable =
+      Array.isArray(model.inferenceProviderMapping) && model.inferenceProviderMapping.length > 0;
+    if (id !== null && params !== null && servable) {
+      models.push({ id, url: modelUrl(id), params });
+    }
+  }
+  return models;
+}
+
+/**
+ * Выбирает из списка по числу параметров: крупнейшую, среднюю и мельчайшую.
+ * Если моделей три и меньше — возвращает все (по убыванию параметров).
+ */
+export function pickByParams(models: HfModel[]): HfModel[] {
+  const sorted = [...models].sort((a, b) => b.params - a.params);
+  if (sorted.length <= 3) {
+    return sorted;
+  }
+  const middle = sorted[Math.floor((sorted.length - 1) / 2)];
+  return [sorted[0], middle, sorted[sorted.length - 1]];
+}
+
+/** Запрашивает у HF Hub кандидатов (chat-модели по популярности) и разбирает их. */
+export async function fetchCandidates(limit: number): Promise<HfModel[]> {
+  const url =
+    `${HUB_API}?pipeline_tag=text-generation&sort=downloads&limit=${limit}` +
+    '&expand[]=safetensors&expand[]=inferenceProviderMapping';
+  const response = await fetch(url, { headers: { 'User-Agent': 'ai-advent-hf-multi' } });
+  if (!response.ok) {
+    throw new Error(`HF Hub API вернул ошибку ${response.status} ${response.statusText}`);
+  }
+  const data = await response.json();
+  return parseCandidates(Array.isArray(data) ? data : []);
+}
+
+/** Подбирает тройку моделей по умолчанию: крупнейшая, средняя, мельчайшая. */
+export async function selectDefaultModels(limit: number): Promise<HfModel[]> {
+  return pickByParams(await fetchCandidates(limit));
+}

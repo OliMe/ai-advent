@@ -1,0 +1,19 @@
+{
+  "name": "@ai-advent/hf-multi",
+  "version": "1.0.0",
+  "description": "CLI: параллельный вызов нескольких моделей HuggingFace и сравнение их ответов",
+  "type": "module",
+  "scripts": {
+    "start": "node src/multi-cli.ts",
+    "typecheck": "tsc",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/__test__/**' --test-coverage-exclude='src/multi-cli.ts' --test-coverage-exclude='../core/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
+    "lint-prettier": "prettier \"src/**/*.ts\" --check",
+    "write-prettier": "prettier \"src/**/*.ts\" --write"
+  },
+  "engines": { "node": ">=22.6.0" },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0"
+  }
+}
