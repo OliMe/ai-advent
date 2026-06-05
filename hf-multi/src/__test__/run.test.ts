@@ -7,8 +7,8 @@ import type { TargetModel } from '../generate.ts';
 import { makeFactory, makeConfig } from './helpers.ts';
 
 const MODELS: TargetModel[] = [
-  { id: 'big/m', url: 'https://huggingface.co/big/m', params: 7_000_000_000 },
-  { id: 'small/m', url: 'https://huggingface.co/small/m', params: 1_000_000 },
+  { apiId: 'big/m', id: 'big/m', url: 'https://huggingface.co/big/m', params: 7_000_000_000 },
+  { apiId: 'small/m', id: 'small/m', url: 'https://huggingface.co/small/m', params: 1_000_000 },
 ];
 
 /** Прогоняет сценарий, отвечая на приглашения «Сменить модели?» и «Промпт:». */

@@ -1,8 +1,11 @@
 import type { ChatCompletionClient } from '../../core/src/index.ts';
-import { modelUrl } from './hub.ts';
+import { modelUrl, type HfModel } from './hub.ts';
 
 /** Модель, к которой делаем запрос (число параметров известно не всегда). */
 export interface TargetModel {
+  /** id для router'а (может быть `<id>:<provider>`). */
+  apiId: string;
+  /** Отображаемый id (без провайдера). */
   id: string;
   url: string;
   params?: number;
@@ -18,9 +21,26 @@ export interface ModelResult {
 /** Фабрика клиента для конкретной модели (тот же провайдер, разный `model`). */
 export type ClientFactory = (modelId: string) => ChatCompletionClient;
 
-/** Строит цели из списка id (для моделей, заданных пользователем вручную). */
+/**
+ * Строит цели из списка, заданного пользователем. Допускается суффикс провайдера
+ * (`owner/model:provider`): он уходит в router как есть, а в отображении и ссылке
+ * показывается чистый id.
+ */
 export function toTargets(ids: string[]): TargetModel[] {
-  return ids.map(id => ({ id, url: modelUrl(id) }));
+  return ids.map(apiId => {
+    const id = apiId.split(':')[0];
+    return { apiId, id, url: modelUrl(id) };
+  });
+}
+
+/** Преобразует отобранные модели HF в цели, закрепляя провайдера в id для router'а. */
+export function fromHfModels(models: HfModel[]): TargetModel[] {
+  return models.map(model => ({
+    apiId: `${model.id}:${model.provider}`,
+    id: model.id,
+    url: model.url,
+    params: model.params,
+  }));
 }
 
 /**
@@ -37,7 +57,7 @@ export async function generateAll(
     models.map(async model => {
       try {
         const signal = AbortSignal.timeout(requestTimeoutMs);
-        const text = await makeClient(model.id).complete([{ role: 'user', content: prompt }], {
+        const text = await makeClient(model.apiId).complete([{ role: 'user', content: prompt }], {
           signal,
         });
         return { model, text };

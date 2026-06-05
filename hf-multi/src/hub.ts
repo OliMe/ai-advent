@@ -3,6 +3,8 @@ export interface HfModel {
   id: string;
   url: string;
   params: number;
+  /** Провайдер инференса — закрепляем его в id (`<id>:<provider>`) для router'а. */
+  provider: string;
 }
 
 const HUB_API = 'https://huggingface.co/api/models';
@@ -12,21 +14,32 @@ export function modelUrl(id: string): string {
   return `https://huggingface.co/${id}`;
 }
 
-/** Есть ли у модели живой провайдер для chat-эндпоинта (task=conversational). */
-function isChatServable(mapping: unknown): boolean {
-  return (
-    Array.isArray(mapping) &&
-    mapping.some(entry => {
-      const provider = entry as { task?: unknown; status?: unknown };
-      return provider.task === 'conversational' && provider.status === 'live';
-    })
-  );
+/**
+ * Имя живого провайдера для chat-эндпоинта (task=conversational), либо null.
+ * Router при «голом» id не всегда находит провайдера, поэтому его нужно
+ * закреплять явно — для этого и достаём имя.
+ */
+function chatProvider(mapping: unknown): string | null {
+  if (!Array.isArray(mapping)) {
+    return null;
+  }
+  for (const entry of mapping) {
+    const provider = entry as { provider?: unknown; task?: unknown; status?: unknown };
+    if (
+      provider.task === 'conversational' &&
+      provider.status === 'live' &&
+      typeof provider.provider === 'string'
+    ) {
+      return provider.provider;
+    }
+  }
+  return null;
 }
 
 /**
  * Разбирает ответ HF Hub API в список моделей. Оставляет только те, у которых
  * известно число параметров (safetensors.total) и есть живой провайдер для
- * chat-эндпоинта (task=conversational) — иначе base-модели падают на 400.
+ * chat-эндпоинта — иначе base-модели падают на 400.
  */
 export function parseCandidates(raw: unknown[]): HfModel[] {
   const models: HfModel[] = [];
@@ -39,8 +52,9 @@ export function parseCandidates(raw: unknown[]): HfModel[] {
     const id = typeof model.id === 'string' ? model.id : null;
     const total = model.safetensors?.total;
     const params = typeof total === 'number' ? total : null;
-    if (id !== null && params !== null && isChatServable(model.inferenceProviderMapping)) {
-      models.push({ id, url: modelUrl(id), params });
+    const provider = chatProvider(model.inferenceProviderMapping);
+    if (id !== null && params !== null && provider !== null) {
+      models.push({ id, url: modelUrl(id), params, provider });
     }
   }
   return models;

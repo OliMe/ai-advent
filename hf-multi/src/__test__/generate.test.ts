@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   toTargets,
+  fromHfModels,
   formatParams,
   formatResults,
   generateAll,
@@ -12,7 +13,26 @@ import { makeFactory } from './helpers.ts';
 
 describe('toTargets', () => {
   it('строит цели с ссылками из id', () => {
-    assert.deepEqual(toTargets(['a/b']), [{ id: 'a/b', url: 'https://huggingface.co/a/b' }]);
+    assert.deepEqual(toTargets(['a/b']), [
+      { apiId: 'a/b', id: 'a/b', url: 'https://huggingface.co/a/b' },
+    ]);
+  });
+
+  it('суффикс провайдера уходит в apiId, а id и ссылка — без него', () => {
+    assert.deepEqual(toTargets(['a/b:featherless-ai']), [
+      { apiId: 'a/b:featherless-ai', id: 'a/b', url: 'https://huggingface.co/a/b' },
+    ]);
+  });
+});
+
+describe('fromHfModels', () => {
+  it('закрепляет провайдера в apiId', () => {
+    const result = fromHfModels([
+      { id: 'a/b', url: 'https://huggingface.co/a/b', params: 1000, provider: 'featherless-ai' },
+    ]);
+    assert.deepEqual(result, [
+      { apiId: 'a/b:featherless-ai', id: 'a/b', url: 'https://huggingface.co/a/b', params: 1000 },
+    ]);
   });
 });
 
@@ -31,9 +51,9 @@ describe('generateAll', () => {
       return `ответ ${id}`;
     });
     const models: TargetModel[] = [
-      { id: 'good', url: 'u1' },
-      { id: 'bad', url: 'u2' },
-      { id: 'str', url: 'u3' },
+      { apiId: 'good', id: 'good', url: 'u1' },
+      { apiId: 'bad', id: 'bad', url: 'u2' },
+      { apiId: 'str', id: 'str', url: 'u3' },
     ];
 
     const results = await generateAll(factory, models, 'привет', 60000);
@@ -49,10 +69,18 @@ describe('formatResults', () => {
   it('печатает id, размер, ссылку и ответ либо ошибку', () => {
     const results: ModelResult[] = [
       {
-        model: { id: 'big/m', url: 'https://huggingface.co/big/m', params: 7_000_000_000 },
+        model: {
+          apiId: 'big/m:prov',
+          id: 'big/m',
+          url: 'https://huggingface.co/big/m',
+          params: 7_000_000_000,
+        },
         text: 'привет',
       },
-      { model: { id: 'manual/m', url: 'https://huggingface.co/manual/m' }, error: 'таймаут' },
+      {
+        model: { apiId: 'manual/m', id: 'manual/m', url: 'https://huggingface.co/manual/m' },
+        error: 'таймаут',
+      },
     ];
     const text = formatResults(results);
     assert.match(text, /### big\/m — 7\.0 B\nhttps:\/\/huggingface\.co\/big\/m\n\nпривет/);

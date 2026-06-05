@@ -9,7 +9,12 @@ import {
   type HfModel,
 } from '../hub.ts';
 
-const model = (id: string, params: number): HfModel => ({ id, url: modelUrl(id), params });
+const model = (id: string, params: number): HfModel => ({
+  id,
+  url: modelUrl(id),
+  params,
+  provider: 'featherless-ai',
+});
 
 describe('modelUrl', () => {
   it('строит ссылку на страницу модели', () => {
@@ -22,21 +27,26 @@ describe('modelUrl', () => {
 
 describe('parseCandidates', () => {
   it('оставляет только chat-модели с параметрами и живым провайдером', () => {
-    const conv = { provider: 'together', task: 'conversational', status: 'live' };
+    const conv = { provider: 'featherless-ai', task: 'conversational', status: 'live' };
     const raw = [
       { id: 'ok/model', safetensors: { total: 7_000_000_000 }, inferenceProviderMapping: [conv] },
       { id: 'no/params', inferenceProviderMapping: [conv] }, // нет числа параметров
       {
-        id: 'base/model', // base: провайдер есть, но task=text-generation
+        id: 'base/model', // base: task=text-generation
         safetensors: { total: 1000 },
-        inferenceProviderMapping: [{ task: 'text-generation', status: 'live' }],
+        inferenceProviderMapping: [{ provider: 'p', task: 'text-generation', status: 'live' }],
       },
       {
         id: 'staging/model', // conversational, но status != live
         safetensors: { total: 1000 },
-        inferenceProviderMapping: [{ task: 'conversational', status: 'staging' }],
+        inferenceProviderMapping: [{ provider: 'p', task: 'conversational', status: 'staging' }],
       },
-      { id: 'no/providers', safetensors: { total: 1000 }, inferenceProviderMapping: [] },
+      {
+        id: 'noprovider/model', // conversational+live, но имя провайдера не строка
+        safetensors: { total: 1000 },
+        inferenceProviderMapping: [{ task: 'conversational', status: 'live' }],
+      },
+      { id: 'empty/model', safetensors: { total: 1000 }, inferenceProviderMapping: [] },
       { id: 'weird/model', safetensors: { total: 1000 }, inferenceProviderMapping: 'не-массив' },
       { safetensors: { total: 1000 }, inferenceProviderMapping: [conv] }, // нет id
     ];
@@ -47,6 +57,7 @@ describe('parseCandidates', () => {
     );
     assert.equal(result[0].params, 7_000_000_000);
     assert.equal(result[0].url, 'https://huggingface.co/ok/model');
+    assert.equal(result[0].provider, 'featherless-ai');
   });
 });
 
@@ -79,7 +90,7 @@ describe('fetchCandidates', () => {
             {
               id: 'a/b',
               safetensors: { total: 5000 },
-              inferenceProviderMapping: [{ task: 'conversational', status: 'live' }],
+              inferenceProviderMapping: [{ provider: 'p', task: 'conversational', status: 'live' }],
             },
           ]),
           { status: 200 },
@@ -116,7 +127,7 @@ describe('selectDefaultModels', () => {
     const raw = [10, 8, 6, 4, 2].map((p, i) => ({
       id: `m${i}`,
       safetensors: { total: p * 1_000_000 },
-      inferenceProviderMapping: [{ task: 'conversational', status: 'live' }],
+      inferenceProviderMapping: [{ provider: 'p', task: 'conversational', status: 'live' }],
     }));
     t.mock.method(
       globalThis,
