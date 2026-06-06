@@ -90,7 +90,7 @@ describe('formatResults', () => {
     const text = formatResults(results);
     // успех: размер, метрики с токенами, текст
     assert.match(text, /### big\/m — 7\.0 B/);
-    assert.match(text, /время: 1\.2 c · токены: 10 \(ответ\) \/ 13 \(всего\)\n\nпривет/);
+    assert.match(text, /время: 1\.2 c · токены: вход 3, выход 10, всего 13\n\nпривет/);
     // ошибка: метрики без токенов (н/д) и текст ошибки
     assert.match(
       text,

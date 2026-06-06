@@ -83,11 +83,12 @@ export function formatParams(total: number): string {
   return total >= 1e9 ? `${(total / 1e9).toFixed(1)} B` : `${Math.round(total / 1e6)} M`;
 }
 
-/** Строка метрик: время ответа и токены (если провайдер их прислал). */
+/** Строка метрик: время ответа и токены вход/выход/всего (если провайдер их прислал). */
 export function formatStats(result: ModelResult): string {
   const seconds = `${(result.elapsedMs / 1000).toFixed(1)} c`;
   const tokens = result.usage
-    ? `${result.usage.completion_tokens} (ответ) / ${result.usage.total_tokens} (всего)`
+    ? `вход ${result.usage.prompt_tokens}, выход ${result.usage.completion_tokens}, ` +
+      `всего ${result.usage.total_tokens}`
     : 'н/д';
   return `время: ${seconds} · токены: ${tokens}`;
 }
