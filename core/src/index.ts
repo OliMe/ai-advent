@@ -1,5 +1,5 @@
 export { ChatCompletionClient } from './chat-completion-client.ts';
-export type { CompleteOptions } from './chat-completion-client.ts';
+export type { CompleteOptions, CompletionResult } from './chat-completion-client.ts';
 export { loadConfig } from './config.ts';
 export type { AppConfig } from './config.ts';
 export type {

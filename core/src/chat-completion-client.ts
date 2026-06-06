@@ -5,7 +5,14 @@ import type {
   ChatCompletionResponse,
   ChatMessage,
   GenerationLimits,
+  Usage,
 } from './types.ts';
+
+/** Ответ модели вместе со статистикой токенов (usage может отсутствовать). */
+export interface CompletionResult {
+  content: string;
+  usage?: Usage;
+}
 
 /** Опции одного запроса к модели: прерывание плюс ограничения генерации. */
 export interface CompleteOptions extends GenerationLimits {
@@ -54,6 +61,17 @@ export class ChatCompletionClient {
    * Бросает ошибку при сетевом сбое или ответе с кодом ошибки.
    */
   async complete(messages: ChatMessage[], options: CompleteOptions = {}): Promise<string> {
+    return (await this.completeWithUsage(messages, options)).content;
+  }
+
+  /**
+   * Как complete, но возвращает ещё и статистику токенов (usage), если провайдер
+   * её прислал. Здесь же вся логика запроса и повторов.
+   */
+  async completeWithUsage(
+    messages: ChatMessage[],
+    options: CompleteOptions = {},
+  ): Promise<CompletionResult> {
     const body: ChatCompletionRequest = {
       model: this.config.model,
       messages,
@@ -134,7 +152,7 @@ export class ChatCompletionClient {
         throw new Error('API вернул пустой ответ без текста.');
       }
 
-      return content;
+      return { content, usage: data.usage };
     }
     throw networkError;
   }

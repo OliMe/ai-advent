@@ -1,4 +1,4 @@
-import type { ChatCompletionClient } from '../../core/src/index.ts';
+import type { ChatCompletionClient, Usage } from '../../core/src/index.ts';
 import { modelUrl, type HfModel } from './hub.ts';
 
 /** Модель, к которой делаем запрос (число параметров известно не всегда). */
@@ -11,11 +11,15 @@ export interface TargetModel {
   params?: number;
 }
 
-/** Результат запроса к одной модели: текст ответа либо ошибка. */
+/** Результат запроса к одной модели: текст ответа либо ошибка, плюс метрики. */
 export interface ModelResult {
   model: TargetModel;
   text?: string;
   error?: string;
+  /** Время ответа, мс (замеряется и при успехе, и при ошибке). */
+  elapsedMs: number;
+  /** Статистика токенов, если провайдер её прислал. */
+  usage?: Usage;
 }
 
 /** Фабрика клиента для конкретной модели (тот же провайдер, разный `model`). */
@@ -55,14 +59,20 @@ export async function generateAll(
 ): Promise<ModelResult[]> {
   return Promise.all(
     models.map(async model => {
+      const startedAt = Date.now();
       try {
         const signal = AbortSignal.timeout(requestTimeoutMs);
-        const text = await makeClient(model.apiId).complete([{ role: 'user', content: prompt }], {
-          signal,
-        });
-        return { model, text };
+        const { content, usage } = await makeClient(model.apiId).completeWithUsage(
+          [{ role: 'user', content: prompt }],
+          { signal },
+        );
+        return { model, text: content, usage, elapsedMs: Date.now() - startedAt };
       } catch (error) {
-        return { model, error: error instanceof Error ? error.message : String(error) };
+        return {
+          model,
+          error: error instanceof Error ? error.message : String(error),
+          elapsedMs: Date.now() - startedAt,
+        };
       }
     }),
   );
@@ -73,13 +83,22 @@ export function formatParams(total: number): string {
   return total >= 1e9 ? `${(total / 1e9).toFixed(1)} B` : `${Math.round(total / 1e6)} M`;
 }
 
-/** Форматирует результаты: на каждую модель — id, размер, ссылка и ответ. */
+/** Строка метрик: время ответа и токены (если провайдер их прислал). */
+export function formatStats(result: ModelResult): string {
+  const seconds = `${(result.elapsedMs / 1000).toFixed(1)} c`;
+  const tokens = result.usage
+    ? `${result.usage.completion_tokens} (ответ) / ${result.usage.total_tokens} (всего)`
+    : 'н/д';
+  return `время: ${seconds} · токены: ${tokens}`;
+}
+
+/** Форматирует результаты: на каждую модель — id, размер, ссылка, метрики и ответ. */
 export function formatResults(results: ModelResult[]): string {
   const separator = `\n\n${'─'.repeat(60)}\n\n`;
   const blocks = results.map(result => {
     const size = result.model.params !== undefined ? ` — ${formatParams(result.model.params)}` : '';
     const body = result.text !== undefined ? result.text : `[ошибка] ${result.error}`;
-    return `### ${result.model.id}${size}\n${result.model.url}\n\n${body}`;
+    return `### ${result.model.id}${size}\n${result.model.url}\n${formatStats(result)}\n\n${body}`;
   });
   return `${blocks.join(separator)}\n`;
 }

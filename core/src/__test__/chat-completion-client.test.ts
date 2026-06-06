@@ -85,6 +85,25 @@ describe('ChatCompletionClient.complete', () => {
     assert.deepEqual(body.thinking, { type: 'disabled' });
   });
 
+  it('completeWithUsage возвращает текст и статистику токенов', async t => {
+    const client = clientWithFetch(
+      t,
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ index: 0, message: { role: 'assistant', content: 'ок' } }],
+            usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+          }),
+          { status: 200 },
+        ),
+    );
+
+    const result = await client.completeWithUsage([{ role: 'user', content: 'hi' }], {});
+
+    assert.equal(result.content, 'ок');
+    assert.deepEqual(result.usage, { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 });
+  });
+
   it('переопределяет температуру из опций', async t => {
     let capturedInit: RequestInit | undefined;
     const client = clientWithFetch(t, async (_url, init) => {

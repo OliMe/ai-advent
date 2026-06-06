@@ -59,14 +59,16 @@ describe('generateAll', () => {
     const results = await generateAll(factory, models, 'привет', 60000);
 
     assert.equal(results[0].text, 'ответ good');
-    assert.equal(results[0].error, undefined);
+    assert.deepEqual(results[0].usage, { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 });
+    assert.equal(typeof results[0].elapsedMs, 'number');
     assert.equal(results[1].error, 'недоступна'); // Error → message
+    assert.equal(typeof results[1].elapsedMs, 'number'); // время меряется и при ошибке
     assert.equal(results[2].error, 'строковый сбой'); // не-Error → String()
   });
 });
 
 describe('formatResults', () => {
-  it('печатает id, размер, ссылку и ответ либо ошибку', () => {
+  it('печатает id, размер, ссылку, метрики и ответ либо ошибку', () => {
     const results: ModelResult[] = [
       {
         model: {
@@ -76,14 +78,23 @@ describe('formatResults', () => {
           params: 7_000_000_000,
         },
         text: 'привет',
+        elapsedMs: 1200,
+        usage: { prompt_tokens: 3, completion_tokens: 10, total_tokens: 13 },
       },
       {
         model: { apiId: 'manual/m', id: 'manual/m', url: 'https://huggingface.co/manual/m' },
         error: 'таймаут',
+        elapsedMs: 500,
       },
     ];
     const text = formatResults(results);
-    assert.match(text, /### big\/m — 7\.0 B\nhttps:\/\/huggingface\.co\/big\/m\n\nпривет/);
-    assert.match(text, /### manual\/m\nhttps:\/\/huggingface\.co\/manual\/m\n\n\[ошибка\] таймаут/);
+    // успех: размер, метрики с токенами, текст
+    assert.match(text, /### big\/m — 7\.0 B/);
+    assert.match(text, /время: 1\.2 c · токены: 10 \(ответ\) \/ 13 \(всего\)\n\nпривет/);
+    // ошибка: метрики без токенов (н/д) и текст ошибки
+    assert.match(
+      text,
+      /### manual\/m\nhttps:\/\/huggingface\.co\/manual\/m\nвремя: 0\.5 c · токены: н\/д\n\n\[ошибка\] таймаут/,
+    );
   });
 });

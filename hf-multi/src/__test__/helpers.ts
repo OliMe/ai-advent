@@ -18,14 +18,17 @@ export function makeCollector(): { stream: Writable; text: () => string } {
   return { stream, text: () => buffer };
 }
 
-/** Фабрика клиентов, у которых complete вызывает impl(modelId). */
+/** Фабрика клиентов, у которых completeWithUsage отдаёт impl(modelId) + фиктивный usage. */
 export function makeFactory(
   t: TestContext,
   impl: (modelId: string) => Promise<string>,
 ): ClientFactory {
   return (modelId: string) => {
     const client = new ChatCompletionClient(makeConfig());
-    t.mock.method(client, 'complete', async () => impl(modelId));
+    t.mock.method(client, 'completeWithUsage', async () => ({
+      content: await impl(modelId),
+      usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+    }));
     return client;
   };
 }
