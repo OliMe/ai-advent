@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   modelUrl,
+  isInstructModel,
   parseCandidates,
   pickByParams,
   fetchCandidates,
@@ -25,38 +26,63 @@ describe('modelUrl', () => {
   });
 });
 
+describe('isInstructModel', () => {
+  it('распознаёт инструктивные/чат-модели по маркерам в имени', () => {
+    assert.equal(isInstructModel('Qwen/Qwen2.5-7B-Instruct'), true); // instruct
+    assert.equal(isInstructModel('deepseek-ai/DeepSeek-V3-chat'), true); // chat
+    assert.equal(isInstructModel('google/gemma-2-9b-it'), true); // суффикс -it
+  });
+
+  it('отвергает базовые модели без маркеров', () => {
+    assert.equal(isInstructModel('Qwen/Qwen2.5-0.5B'), false);
+  });
+});
+
 describe('parseCandidates', () => {
-  it('оставляет только chat-модели с параметрами и живым провайдером', () => {
+  it('оставляет только инструктивные chat-модели с параметрами и живым провайдером', () => {
     const conv = { provider: 'featherless-ai', task: 'conversational', status: 'live' };
     const raw = [
-      { id: 'ok/model', safetensors: { total: 7_000_000_000 }, inferenceProviderMapping: [conv] },
-      { id: 'no/params', inferenceProviderMapping: [conv] }, // нет числа параметров
       {
-        id: 'base/model', // base: task=text-generation
+        id: 'ok/model-Instruct',
+        safetensors: { total: 7_000_000_000 },
+        inferenceProviderMapping: [conv],
+      },
+      { id: 'no/params-Instruct', inferenceProviderMapping: [conv] }, // нет числа параметров
+      {
+        id: 'base/model', // base: chat-провайдер есть, но имя без маркеров инструкции
+        safetensors: { total: 1000 },
+        inferenceProviderMapping: [conv],
+      },
+      {
+        id: 'textgen/model-Instruct', // task=text-generation, а не conversational
         safetensors: { total: 1000 },
         inferenceProviderMapping: [{ provider: 'p', task: 'text-generation', status: 'live' }],
       },
       {
-        id: 'staging/model', // conversational, но status != live
+        id: 'staging/model-Instruct', // conversational, но status != live
         safetensors: { total: 1000 },
         inferenceProviderMapping: [{ provider: 'p', task: 'conversational', status: 'staging' }],
       },
       {
-        id: 'noprovider/model', // conversational+live, но имя провайдера не строка
+        id: 'noprovider/model-Instruct', // conversational+live, но имя провайдера не строка
         safetensors: { total: 1000 },
         inferenceProviderMapping: [{ task: 'conversational', status: 'live' }],
       },
-      { id: 'empty/model', safetensors: { total: 1000 }, inferenceProviderMapping: [] },
-      { id: 'weird/model', safetensors: { total: 1000 }, inferenceProviderMapping: 'не-массив' },
+      { id: 'empty/model-Instruct', safetensors: { total: 1000 }, inferenceProviderMapping: [] },
+      {
+        id: 'weird/model-Instruct',
+        safetensors: { total: 1000 },
+        inferenceProviderMapping: 'не-массив',
+      },
       { safetensors: { total: 1000 }, inferenceProviderMapping: [conv] }, // нет id
     ];
     const result = parseCandidates(raw);
     assert.deepEqual(
       result.map(m => m.id),
-      ['ok/model'],
+      ['ok/model-Instruct'],
     );
     assert.equal(result[0].params, 7_000_000_000);
-    assert.equal(result[0].url, 'https://huggingface.co/ok/model');
+    assert.equal(result[0].url, 'https://huggingface.co/ok/model-Instruct');
     assert.equal(result[0].provider, 'featherless-ai');
   });
 });
@@ -88,7 +114,7 @@ describe('fetchCandidates', () => {
         new Response(
           JSON.stringify([
             {
-              id: 'a/b',
+              id: 'a/b-Instruct',
               safetensors: { total: 5000 },
               inferenceProviderMapping: [{ provider: 'p', task: 'conversational', status: 'live' }],
             },
@@ -99,7 +125,7 @@ describe('fetchCandidates', () => {
     const result = await fetchCandidates(10);
     assert.deepEqual(
       result.map(m => m.id),
-      ['a/b'],
+      ['a/b-Instruct'],
     );
   });
 
@@ -125,7 +151,7 @@ describe('fetchCandidates', () => {
 describe('selectDefaultModels', () => {
   it('подбирает тройку по числу параметров', async t => {
     const raw = [10, 8, 6, 4, 2].map((p, i) => ({
-      id: `m${i}`,
+      id: `m${i}-Instruct`,
       safetensors: { total: p * 1_000_000 },
       inferenceProviderMapping: [{ provider: 'p', task: 'conversational', status: 'live' }],
     }));
@@ -137,7 +163,7 @@ describe('selectDefaultModels', () => {
     const result = await selectDefaultModels(50);
     assert.deepEqual(
       result.map(m => m.id),
-      ['m0', 'm2', 'm4'],
+      ['m0-Instruct', 'm2-Instruct', 'm4-Instruct'],
     );
   });
 });

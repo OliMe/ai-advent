@@ -37,9 +37,25 @@ function chatProvider(mapping: unknown): string | null {
 }
 
 /**
+ * Похоже ли имя модели на инструктивную/чат-версию. Базовые (foundation) модели
+ * не дообучены следовать инструкциям: на чат-промптах они «продолжают текст» и
+ * зацикливаются, поэтому в дефолтный набор их не берём.
+ */
+export function isInstructModel(id: string): boolean {
+  const name = id.toLowerCase();
+  // Распространённые маркеры дообучения на инструкции/чат.
+  if (/instruct|chat|sft|dpo/.test(name)) {
+    return true;
+  }
+  // Суффикс `-it` как отдельное звено имени (например, gemma-2-9b-it).
+  return /(?:^|[-_/])it(?:[-_.]|$)/.test(name);
+}
+
+/**
  * Разбирает ответ HF Hub API в список моделей. Оставляет только те, у которых
- * известно число параметров (safetensors.total) и есть живой провайдер для
- * chat-эндпоинта — иначе base-модели падают на 400.
+ * известно число параметров (safetensors.total), есть живой провайдер для
+ * chat-эндпоинта (иначе base-модели падают на 400) и имя похоже на
+ * инструктивную/чат-версию (иначе base-модель зацикливается на чат-промпте).
  */
 export function parseCandidates(raw: unknown[]): HfModel[] {
   const models: HfModel[] = [];
@@ -53,7 +69,7 @@ export function parseCandidates(raw: unknown[]): HfModel[] {
     const total = model.safetensors?.total;
     const params = typeof total === 'number' ? total : null;
     const provider = chatProvider(model.inferenceProviderMapping);
-    if (id !== null && params !== null && provider !== null) {
+    if (id !== null && params !== null && provider !== null && isInstructModel(id)) {
       models.push({ id, url: modelUrl(id), params, provider });
     }
   }
