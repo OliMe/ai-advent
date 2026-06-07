@@ -82,7 +82,30 @@ describe('generateAll', () => {
     assert.equal(results[0].text, 'ответ m/x'); // сработал голый id
   });
 
-  it('не пробует другие маршруты при таймауте', async t => {
+  it('повторяет тот же маршрут после таймаута и возвращает ответ', async t => {
+    let calls = 0;
+    const factory = makeFactory(t, async route => {
+      calls++;
+      if (calls === 1) {
+        const error = new Error('timeout');
+        error.name = 'TimeoutError';
+        throw error;
+      }
+      return `ответ ${route}`;
+    });
+
+    const results = await generateAll(
+      factory,
+      [{ apiId: 'm/x:prov', id: 'm/x', url: 'u' }],
+      'p',
+      60000,
+    );
+
+    assert.equal(results[0].text, 'ответ m/x:prov'); // повтор того же маршрута, не голый id
+    assert.equal(calls, 2);
+  });
+
+  it('при таймауте повторяет тот же маршрут и не трогает голый id', async t => {
     const routes: string[] = [];
     const factory = makeFactory(t, async route => {
       routes.push(route);
@@ -98,7 +121,7 @@ describe('generateAll', () => {
       60000,
     );
 
-    assert.deepEqual(routes, ['m/x:prov']); // голый id не пробовали
+    assert.deepEqual(routes, ['m/x:prov', 'm/x:prov']); // повтор пина, голый id не пробовали
     assert.match(results[0].error ?? '', /timeout/);
   });
 });

@@ -47,15 +47,29 @@ export function fromHfModels(models: HfModel[]): TargetModel[] {
   }));
 }
 
-/** Прерывание по таймауту/отмене — повторять другой маршрут смысла нет. */
+/** Прерывание по таймауту/отмене. */
 function isAbort(error: unknown): boolean {
   return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
 }
 
+/** Сколько раз повторить запрос после таймаута: холодный старт мог прогреть модель. */
+const TIMEOUT_RETRY_LIMIT = 1;
+
+/** Результат-ошибка с замером времени. */
+function errorResult(model: TargetModel, error: unknown, startedAt: number): ModelResult {
+  return {
+    model,
+    error: error instanceof Error ? error.message : String(error),
+    elapsedMs: Date.now() - startedAt,
+  };
+}
+
 /**
- * Запрашивает одну модель, пробуя маршруты по очереди: сначала закреплённый
- * провайдер (`<id>:<provider>`), затем голый id (router выберет сам). Разные
- * аккаунты принимают разные маршруты, поэтому используем первый рабочий.
+ * Запрашивает одну модель. Маршруты пробуются по очереди: сначала закреплённый
+ * провайдер (`<id>:<provider>`), затем голый id (router выберет сам) — разные
+ * аккаунты принимают разные маршруты. Таймаут же повторяется тем же маршрутом
+ * (мелкие модели часто отваливаются на холодном старте, а после него отвечают),
+ * другой маршрут при таймауте не пробуем — модель просто медленная.
  */
 async function generateOne(
   makeClient: ClientFactory,
@@ -67,24 +81,27 @@ async function generateOne(
   const routes = model.apiId === model.id ? [model.apiId] : [model.apiId, model.id];
   let lastError: unknown;
   for (const route of routes) {
-    try {
-      const { content, usage } = await makeClient(route).completeWithUsage(
-        [{ role: 'user', content: prompt }],
-        { signal: AbortSignal.timeout(requestTimeoutMs) },
-      );
-      return { model, text: content, usage, elapsedMs: Date.now() - startedAt };
-    } catch (error) {
-      lastError = error;
-      if (isAbort(error)) {
-        break;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { content, usage } = await makeClient(route).completeWithUsage(
+          [{ role: 'user', content: prompt }],
+          { signal: AbortSignal.timeout(requestTimeoutMs) },
+        );
+        return { model, text: content, usage, elapsedMs: Date.now() - startedAt };
+      } catch (error) {
+        lastError = error;
+        // Не таймаут — другой маршрут (провайдер) ещё может ответить.
+        if (!isAbort(error)) {
+          break;
+        }
+        // Таймаут — повторяем тот же маршрут, пока не исчерпан лимит повторов.
+        if (attempt >= TIMEOUT_RETRY_LIMIT) {
+          return errorResult(model, error, startedAt);
+        }
       }
     }
   }
-  return {
-    model,
-    error: lastError instanceof Error ? lastError.message : String(lastError),
-    elapsedMs: Date.now() - startedAt,
-  };
+  return errorResult(model, lastError, startedAt);
 }
 
 /**
