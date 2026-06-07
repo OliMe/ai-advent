@@ -47,6 +47,46 @@ export function fromHfModels(models: HfModel[]): TargetModel[] {
   }));
 }
 
+/** Прерывание по таймауту/отмене — повторять другой маршрут смысла нет. */
+function isAbort(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+}
+
+/**
+ * Запрашивает одну модель, пробуя маршруты по очереди: сначала закреплённый
+ * провайдер (`<id>:<provider>`), затем голый id (router выберет сам). Разные
+ * аккаунты принимают разные маршруты, поэтому используем первый рабочий.
+ */
+async function generateOne(
+  makeClient: ClientFactory,
+  model: TargetModel,
+  prompt: string,
+  requestTimeoutMs: number,
+): Promise<ModelResult> {
+  const startedAt = Date.now();
+  const routes = model.apiId === model.id ? [model.apiId] : [model.apiId, model.id];
+  let lastError: unknown;
+  for (const route of routes) {
+    try {
+      const { content, usage } = await makeClient(route).completeWithUsage(
+        [{ role: 'user', content: prompt }],
+        { signal: AbortSignal.timeout(requestTimeoutMs) },
+      );
+      return { model, text: content, usage, elapsedMs: Date.now() - startedAt };
+    } catch (error) {
+      lastError = error;
+      if (isAbort(error)) {
+        break;
+      }
+    }
+  }
+  return {
+    model,
+    error: lastError instanceof Error ? lastError.message : String(lastError),
+    elapsedMs: Date.now() - startedAt,
+  };
+}
+
 /**
  * Запрашивает все модели параллельно. Ошибка одной модели не роняет остальные —
  * результат каждой содержит либо текст, либо сообщение об ошибке.
@@ -57,25 +97,7 @@ export async function generateAll(
   prompt: string,
   requestTimeoutMs: number,
 ): Promise<ModelResult[]> {
-  return Promise.all(
-    models.map(async model => {
-      const startedAt = Date.now();
-      try {
-        const signal = AbortSignal.timeout(requestTimeoutMs);
-        const { content, usage } = await makeClient(model.apiId).completeWithUsage(
-          [{ role: 'user', content: prompt }],
-          { signal },
-        );
-        return { model, text: content, usage, elapsedMs: Date.now() - startedAt };
-      } catch (error) {
-        return {
-          model,
-          error: error instanceof Error ? error.message : String(error),
-          elapsedMs: Date.now() - startedAt,
-        };
-      }
-    }),
-  );
+  return Promise.all(models.map(model => generateOne(makeClient, model, prompt, requestTimeoutMs)));
 }
 
 /** Человекочитаемое число параметров: «7.6 B» или «751 M». */

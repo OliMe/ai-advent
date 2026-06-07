@@ -65,6 +65,42 @@ describe('generateAll', () => {
     assert.equal(typeof results[1].elapsedMs, 'number'); // время меряется и при ошибке
     assert.equal(results[2].error, 'строковый сбой'); // не-Error → String()
   });
+
+  it('при отказе пин-провайдера пробует голый id', async t => {
+    const factory = makeFactory(t, async route => {
+      if (route === 'm/x:prov') throw new Error('provider not valid');
+      return `ответ ${route}`;
+    });
+
+    const results = await generateAll(
+      factory,
+      [{ apiId: 'm/x:prov', id: 'm/x', url: 'u' }],
+      'p',
+      60000,
+    );
+
+    assert.equal(results[0].text, 'ответ m/x'); // сработал голый id
+  });
+
+  it('не пробует другие маршруты при таймауте', async t => {
+    const routes: string[] = [];
+    const factory = makeFactory(t, async route => {
+      routes.push(route);
+      const error = new Error('timeout');
+      error.name = 'TimeoutError';
+      throw error;
+    });
+
+    const results = await generateAll(
+      factory,
+      [{ apiId: 'm/x:prov', id: 'm/x', url: 'u' }],
+      'p',
+      60000,
+    );
+
+    assert.deepEqual(routes, ['m/x:prov']); // голый id не пробовали
+    assert.match(results[0].error ?? '', /timeout/);
+  });
 });
 
 describe('formatResults', () => {
