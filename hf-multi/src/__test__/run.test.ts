@@ -2,9 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as readline from 'node:readline/promises';
 import { PassThrough } from 'node:stream';
-import { parseModels, runMulti } from '../run.ts';
+import { parseModels, runMulti, runOnce } from '../run.ts';
 import type { TargetModel } from '../generate.ts';
-import { makeFactory, makeConfig } from './helpers.ts';
+import { makeFactory, makeConfig, makeCollector } from './helpers.ts';
 
 const MODELS: TargetModel[] = [
   { apiId: 'big/m', id: 'big/m', url: 'https://huggingface.co/big/m', params: 7_000_000_000 },
@@ -73,5 +73,19 @@ describe('runMulti', () => {
     await finished;
 
     assert.match(text(), /Промпт не указан/);
+  });
+});
+
+describe('runOnce', () => {
+  it('печатает модели и их ответы без интерактива', async t => {
+    const factory = makeFactory(t, async id => `ОТВЕТ ${id}`);
+    const { stream, text } = makeCollector();
+
+    await runOnce(makeConfig(), MODELS, factory, stream, 'Привет');
+
+    assert.match(text(), /Модели:/);
+    assert.match(text(), /### big\/m/);
+    assert.match(text(), /ОТВЕТ big\/m/);
+    assert.match(text(), /ОТВЕТ small\/m/);
   });
 });

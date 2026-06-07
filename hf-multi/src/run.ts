@@ -17,6 +17,39 @@ export function parseModels(raw: string): string[] {
     .filter(id => id.length > 0);
 }
 
+/** Строка со списком выбранных моделей и ссылками на них. */
+function listModels(models: TargetModel[]): string {
+  return `Модели:\n${models.map(model => `  - ${model.id} (${model.url})`).join('\n')}\n\n`;
+}
+
+/** Запрашивает модели параллельно и печатает их ответы (общая часть сценариев). */
+async function reportAnswers(
+  config: AppConfig,
+  models: TargetModel[],
+  makeClient: ClientFactory,
+  output: Writable,
+  prompt: string,
+): Promise<void> {
+  output.write(`\nЗапрашиваю модели параллельно (${models.length})...\n\n`);
+  const results = await generateAll(makeClient, models, prompt, config.requestTimeoutMs);
+  output.write(formatResults(results));
+}
+
+/**
+ * Неинтерактивный сценарий: промпт задан заранее (флагом `--prompt`), ничего не
+ * спрашиваем — сразу показываем модели, запрашиваем их и печатаем ответы.
+ */
+export async function runOnce(
+  config: AppConfig,
+  models: TargetModel[],
+  makeClient: ClientFactory,
+  output: Writable,
+  prompt: string,
+): Promise<void> {
+  output.write(listModels(models));
+  await reportAnswers(config, models, makeClient, output, prompt);
+}
+
 /**
  * Интерактивный сценарий: показывает выбранные модели (их можно сменить),
  * спрашивает промпт, запрашивает все модели параллельно и печатает ответы
@@ -33,9 +66,7 @@ export async function runMulti(
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
   try {
-    output.write(
-      `Модели:\n${models.map(model => `  - ${model.id} (${model.url})`).join('\n')}\n\n`,
-    );
+    output.write(listModels(models));
 
     const override = parseModels(
       await readlineInterface.question('Сменить модели? (через запятую; Enter — оставить): '),
@@ -48,9 +79,7 @@ export async function runMulti(
       return;
     }
 
-    output.write(`\nЗапрашиваю модели параллельно (${targets.length})...\n\n`);
-    const results = await generateAll(makeClient, targets, prompt, config.requestTimeoutMs);
-    output.write(formatResults(results));
+    await reportAnswers(config, targets, makeClient, output, prompt);
   } finally {
     readlineInterface.close();
   }
