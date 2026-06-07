@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   toTargets,
@@ -71,24 +71,41 @@ describe('generateAll', () => {
     assert.equal(results[2].error, 'строковый сбой'); // не-Error → String()
   });
 
-  it('задаёт дефолтный max_tokens (без него провайдеры подставляют 0 и падают)', async t => {
-    let capturedOptions: CompleteOptions | undefined;
+  /** Перехватывает опции, переданные в completeWithUsage одной модели. */
+  function captureOptions(t: TestContext): {
+    factory: () => ChatCompletionClient;
+    options: () => CompleteOptions | undefined;
+  } {
+    let captured: CompleteOptions | undefined;
     const client = new ChatCompletionClient(makeConfig());
     t.mock.method(
       client,
       'completeWithUsage',
       async (_messages: ChatMessage[], options: CompleteOptions) => {
-        capturedOptions = options;
+        captured = options;
         return {
           content: 'ок',
           usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
         };
       },
     );
+    return { factory: () => client, options: () => captured };
+  }
 
-    await generateAll(() => client, [{ apiId: 'a/b', id: 'a/b', url: 'u' }], 'p', 60000);
+  it('по умолчанию задаёт max_tokens = 2048 (без него провайдеры подставляют 0 и падают)', async t => {
+    const { factory, options } = captureOptions(t);
 
-    assert.equal(capturedOptions?.maxTokens, 1024);
+    await generateAll(factory, [{ apiId: 'a/b', id: 'a/b', url: 'u' }], 'p', 60000);
+
+    assert.equal(options()?.maxTokens, 2048);
+  });
+
+  it('передаёт явный max_tokens, когда он задан', async t => {
+    const { factory, options } = captureOptions(t);
+
+    await generateAll(factory, [{ apiId: 'a/b', id: 'a/b', url: 'u' }], 'p', 60000, 500);
+
+    assert.equal(options()?.maxTokens, 500);
   });
 
   it('повторяет маршрут после сбоя и возвращает ответ', async t => {

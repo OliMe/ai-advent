@@ -17,6 +17,18 @@ export function parseModels(raw: string): string[] {
     .filter(id => id.length > 0);
 }
 
+/**
+ * Разбирает значение --max-tokens: положительное целое или undefined (флаг не
+ * задан либо значение некорректно — тогда берётся дефолтный потолок).
+ */
+export function parseMaxTokens(raw: string | undefined): number | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
 /** Строка со списком выбранных моделей и ссылками на них. */
 function listModels(models: TargetModel[]): string {
   return `Модели:\n${models.map(model => `  - ${model.id} (${model.url})`).join('\n')}\n\n`;
@@ -29,9 +41,10 @@ async function reportAnswers(
   makeClient: ClientFactory,
   output: Writable,
   prompt: string,
+  maxTokens: number | undefined,
 ): Promise<void> {
   output.write(`\nЗапрашиваю модели параллельно (${models.length})...\n\n`);
-  const results = await generateAll(makeClient, models, prompt, config.requestTimeoutMs);
+  const results = await generateAll(makeClient, models, prompt, config.requestTimeoutMs, maxTokens);
   output.write(formatResults(results));
 }
 
@@ -45,9 +58,10 @@ export async function runOnce(
   makeClient: ClientFactory,
   output: Writable,
   prompt: string,
+  maxTokens?: number,
 ): Promise<void> {
   output.write(listModels(models));
-  await reportAnswers(config, models, makeClient, output, prompt);
+  await reportAnswers(config, models, makeClient, output, prompt, maxTokens);
 }
 
 /**
@@ -63,6 +77,7 @@ export async function runMulti(
   output: Writable,
   // Передаётся явно — это же даёт тестам шов для подмены интерфейса.
   createInterface: typeof readline.createInterface,
+  maxTokens?: number,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
   try {
@@ -79,7 +94,7 @@ export async function runMulti(
       return;
     }
 
-    await reportAnswers(config, targets, makeClient, output, prompt);
+    await reportAnswers(config, targets, makeClient, output, prompt, maxTokens);
   } finally {
     readlineInterface.close();
   }

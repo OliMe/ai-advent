@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as readline from 'node:readline/promises';
 import { PassThrough } from 'node:stream';
-import { parseModels, runMulti, runOnce } from '../run.ts';
+import { parseModels, parseMaxTokens, runMulti, runOnce } from '../run.ts';
 import type { TargetModel } from '../generate.ts';
 import { makeFactory, makeConfig, makeCollector } from './helpers.ts';
 
@@ -43,6 +43,22 @@ function driveMulti(
 describe('parseModels', () => {
   it('делит по запятой, обрезает и отбрасывает пустые', () => {
     assert.deepEqual(parseModels('a/b, c/d ,, e/f '), ['a/b', 'c/d', 'e/f']);
+  });
+});
+
+describe('parseMaxTokens', () => {
+  it('возвращает положительное целое', () => {
+    assert.equal(parseMaxTokens('500'), 500);
+  });
+
+  it('возвращает undefined, если флаг не задан', () => {
+    assert.equal(parseMaxTokens(undefined), undefined);
+  });
+
+  it('возвращает undefined при некорректном значении (не число, ноль, дробь)', () => {
+    assert.equal(parseMaxTokens('abc'), undefined);
+    assert.equal(parseMaxTokens('0'), undefined);
+    assert.equal(parseMaxTokens('12.5'), undefined);
   });
 });
 

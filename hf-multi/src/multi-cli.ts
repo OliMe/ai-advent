@@ -2,7 +2,7 @@ import { stdin, stdout } from 'node:process';
 import * as readline from 'node:readline/promises';
 import { loadConfig, ChatCompletionClient } from '../../core/src/index.ts';
 import { selectDefaultModels } from './hub.ts';
-import { runMulti, runOnce, parseModels } from './run.ts';
+import { runMulti, runOnce, parseModels, parseMaxTokens } from './run.ts';
 import { toTargets, fromHfModels } from './generate.ts';
 
 /** Сколько кандидатов брать с HF Hub для отбора по числу параметров. */
@@ -25,14 +25,17 @@ async function main(): Promise<void> {
     ? toTargets(parseModels(modelsFlag))
     : fromHfModels(await selectDefaultModels(CANDIDATE_LIMIT));
 
+  // Флаг --max-tokens=N переопределяет дефолтный потолок длины ответа.
+  const maxTokens = parseMaxTokens(flagValue('max-tokens'));
+
   // Флаг --prompt="…" запускает неинтерактивный режим: ничего не спрашиваем.
   const prompt = flagValue('prompt')?.trim();
   if (prompt) {
-    await runOnce(config, models, makeClient, stdout, prompt);
+    await runOnce(config, models, makeClient, stdout, prompt, maxTokens);
     return;
   }
 
-  await runMulti(config, models, makeClient, stdin, stdout, readline.createInterface);
+  await runMulti(config, models, makeClient, stdin, stdout, readline.createInterface, maxTokens);
 }
 
 main().catch(error => {

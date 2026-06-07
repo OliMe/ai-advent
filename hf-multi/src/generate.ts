@@ -53,9 +53,10 @@ const RETRY_LIMIT = 1;
 /**
  * Дефолтный потолок длины ответа. Без явного max_tokens некоторые провайдеры
  * подставляют 0 и падают на проверке контекста («max_tokens=0 … exceeds»).
- * Значение с запасом влезает в контекст моделей даже на 4096 токенов.
+ * Значение с запасом влезает в контекст моделей даже на 4096 токенов;
+ * переопределяется флагом --max-tokens.
  */
-const DEFAULT_MAX_TOKENS = 1024;
+export const DEFAULT_MAX_TOKENS = 2048;
 
 /** Результат-ошибка с замером времени. */
 function errorResult(model: TargetModel, error: unknown, startedAt: number): ModelResult {
@@ -78,6 +79,7 @@ async function generateOne(
   model: TargetModel,
   prompt: string,
   requestTimeoutMs: number,
+  maxTokens: number,
 ): Promise<ModelResult> {
   const startedAt = Date.now();
   let lastError: unknown;
@@ -85,7 +87,7 @@ async function generateOne(
     try {
       const { content, usage } = await makeClient(model.apiId).completeWithUsage(
         [{ role: 'user', content: prompt }],
-        { signal: AbortSignal.timeout(requestTimeoutMs), maxTokens: DEFAULT_MAX_TOKENS },
+        { signal: AbortSignal.timeout(requestTimeoutMs), maxTokens },
       );
       return { model, text: content, usage, elapsedMs: Date.now() - startedAt };
     } catch (error) {
@@ -104,8 +106,11 @@ export async function generateAll(
   models: TargetModel[],
   prompt: string,
   requestTimeoutMs: number,
+  maxTokens: number = DEFAULT_MAX_TOKENS,
 ): Promise<ModelResult[]> {
-  return Promise.all(models.map(model => generateOne(makeClient, model, prompt, requestTimeoutMs)));
+  return Promise.all(
+    models.map(model => generateOne(makeClient, model, prompt, requestTimeoutMs, maxTokens)),
+  );
 }
 
 /** Человекочитаемое число параметров: «7.6 B» или «751 M». */
