@@ -9,7 +9,12 @@ import {
   type ModelResult,
   type TargetModel,
 } from '../generate.ts';
-import { makeFactory } from './helpers.ts';
+import {
+  ChatCompletionClient,
+  type CompleteOptions,
+  type ChatMessage,
+} from '../../../core/src/index.ts';
+import { makeFactory, makeConfig } from './helpers.ts';
 
 describe('toTargets', () => {
   it('строит цели с ссылками из id', () => {
@@ -64,6 +69,26 @@ describe('generateAll', () => {
     assert.equal(results[1].error, 'недоступна'); // Error → message
     assert.equal(typeof results[1].elapsedMs, 'number'); // время меряется и при ошибке
     assert.equal(results[2].error, 'строковый сбой'); // не-Error → String()
+  });
+
+  it('задаёт дефолтный max_tokens (без него провайдеры подставляют 0 и падают)', async t => {
+    let capturedOptions: CompleteOptions | undefined;
+    const client = new ChatCompletionClient(makeConfig());
+    t.mock.method(
+      client,
+      'completeWithUsage',
+      async (_messages: ChatMessage[], options: CompleteOptions) => {
+        capturedOptions = options;
+        return {
+          content: 'ок',
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+        };
+      },
+    );
+
+    await generateAll(() => client, [{ apiId: 'a/b', id: 'a/b', url: 'u' }], 'p', 60000);
+
+    assert.equal(capturedOptions?.maxTokens, 1024);
   });
 
   it('повторяет маршрут после сбоя и возвращает ответ', async t => {

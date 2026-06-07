@@ -50,6 +50,13 @@ export function fromHfModels(models: HfModel[]): TargetModel[] {
 /** Сколько раз повторить запрос после сбоя: холодный старт и блипы провайдера лечатся повтором. */
 const RETRY_LIMIT = 1;
 
+/**
+ * Дефолтный потолок длины ответа. Без явного max_tokens некоторые провайдеры
+ * подставляют 0 и падают на проверке контекста («max_tokens=0 … exceeds»).
+ * Значение с запасом влезает в контекст моделей даже на 4096 токенов.
+ */
+const DEFAULT_MAX_TOKENS = 1024;
+
 /** Результат-ошибка с замером времени. */
 function errorResult(model: TargetModel, error: unknown, startedAt: number): ModelResult {
   return {
@@ -78,7 +85,7 @@ async function generateOne(
     try {
       const { content, usage } = await makeClient(model.apiId).completeWithUsage(
         [{ role: 'user', content: prompt }],
-        { signal: AbortSignal.timeout(requestTimeoutMs) },
+        { signal: AbortSignal.timeout(requestTimeoutMs), maxTokens: DEFAULT_MAX_TOKENS },
       );
       return { model, text: content, usage, elapsedMs: Date.now() - startedAt };
     } catch (error) {
