@@ -47,13 +47,8 @@ export function fromHfModels(models: HfModel[]): TargetModel[] {
   }));
 }
 
-/** Прерывание по таймауту/отмене. */
-function isAbort(error: unknown): boolean {
-  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
-}
-
-/** Сколько раз повторить запрос после таймаута: холодный старт мог прогреть модель. */
-const TIMEOUT_RETRY_LIMIT = 1;
+/** Сколько раз повторить запрос после сбоя: холодный старт и блипы провайдера лечатся повтором. */
+const RETRY_LIMIT = 1;
 
 /** Результат-ошибка с замером времени. */
 function errorResult(model: TargetModel, error: unknown, startedAt: number): ModelResult {
@@ -65,11 +60,11 @@ function errorResult(model: TargetModel, error: unknown, startedAt: number): Mod
 }
 
 /**
- * Запрашивает одну модель. Маршруты пробуются по очереди: сначала закреплённый
- * провайдер (`<id>:<provider>`), затем голый id (router выберет сам) — разные
- * аккаунты принимают разные маршруты. Таймаут же повторяется тем же маршрутом
- * (мелкие модели часто отваливаются на холодном старте, а после него отвечают),
- * другой маршрут при таймауте не пробуем — модель просто медленная.
+ * Запрашивает одну модель закреплённым маршрутом (`<id>:<provider>`). При сбое —
+ * таймаут на холодном старте или блип провайдера — повторяет тот же маршрут
+ * (после прогрева/повтора обычно отвечает). На голый id не уходим: у router'а
+ * без провайдера часто нет включённого провайдера, и это лишь маскирует реальную
+ * ошибку пина — отдаём её как есть.
  */
 async function generateOne(
   makeClient: ClientFactory,
@@ -78,27 +73,16 @@ async function generateOne(
   requestTimeoutMs: number,
 ): Promise<ModelResult> {
   const startedAt = Date.now();
-  const routes = model.apiId === model.id ? [model.apiId] : [model.apiId, model.id];
   let lastError: unknown;
-  for (const route of routes) {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const { content, usage } = await makeClient(route).completeWithUsage(
-          [{ role: 'user', content: prompt }],
-          { signal: AbortSignal.timeout(requestTimeoutMs) },
-        );
-        return { model, text: content, usage, elapsedMs: Date.now() - startedAt };
-      } catch (error) {
-        lastError = error;
-        // Не таймаут — другой маршрут (провайдер) ещё может ответить.
-        if (!isAbort(error)) {
-          break;
-        }
-        // Таймаут — повторяем тот же маршрут, пока не исчерпан лимит повторов.
-        if (attempt >= TIMEOUT_RETRY_LIMIT) {
-          return errorResult(model, error, startedAt);
-        }
-      }
+  for (let attempt = 0; attempt <= RETRY_LIMIT; attempt++) {
+    try {
+      const { content, usage } = await makeClient(model.apiId).completeWithUsage(
+        [{ role: 'user', content: prompt }],
+        { signal: AbortSignal.timeout(requestTimeoutMs) },
+      );
+      return { model, text: content, usage, elapsedMs: Date.now() - startedAt };
+    } catch (error) {
+      lastError = error;
     }
   }
   return errorResult(model, lastError, startedAt);

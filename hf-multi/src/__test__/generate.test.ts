@@ -66,31 +66,11 @@ describe('generateAll', () => {
     assert.equal(results[2].error, 'строковый сбой'); // не-Error → String()
   });
 
-  it('при отказе пин-провайдера пробует голый id', async t => {
-    const factory = makeFactory(t, async route => {
-      if (route === 'm/x:prov') throw new Error('provider not valid');
-      return `ответ ${route}`;
-    });
-
-    const results = await generateAll(
-      factory,
-      [{ apiId: 'm/x:prov', id: 'm/x', url: 'u' }],
-      'p',
-      60000,
-    );
-
-    assert.equal(results[0].text, 'ответ m/x'); // сработал голый id
-  });
-
-  it('повторяет тот же маршрут после таймаута и возвращает ответ', async t => {
+  it('повторяет маршрут после сбоя и возвращает ответ', async t => {
     let calls = 0;
     const factory = makeFactory(t, async route => {
       calls++;
-      if (calls === 1) {
-        const error = new Error('timeout');
-        error.name = 'TimeoutError';
-        throw error;
-      }
+      if (calls === 1) throw new Error('блип провайдера'); // первый запрос моргнул
       return `ответ ${route}`;
     });
 
@@ -101,17 +81,15 @@ describe('generateAll', () => {
       60000,
     );
 
-    assert.equal(results[0].text, 'ответ m/x:prov'); // повтор того же маршрута, не голый id
+    assert.equal(results[0].text, 'ответ m/x:prov'); // повтор того же закреплённого маршрута
     assert.equal(calls, 2);
   });
 
-  it('при таймауте повторяет тот же маршрут и не трогает голый id', async t => {
+  it('повторяет только пин и отдаёт честную ошибку, не уходя на голый id', async t => {
     const routes: string[] = [];
     const factory = makeFactory(t, async route => {
       routes.push(route);
-      const error = new Error('timeout');
-      error.name = 'TimeoutError';
-      throw error;
+      throw new Error('provider not valid'); // ошибка именно пин-провайдера
     });
 
     const results = await generateAll(
@@ -121,8 +99,8 @@ describe('generateAll', () => {
       60000,
     );
 
-    assert.deepEqual(routes, ['m/x:prov', 'm/x:prov']); // повтор пина, голый id не пробовали
-    assert.match(results[0].error ?? '', /timeout/);
+    assert.deepEqual(routes, ['m/x:prov', 'm/x:prov']); // только пин, дважды; голый id не пробуем
+    assert.equal(results[0].error, 'provider not valid'); // честная ошибка пина, не bare «not supported»
   });
 });
 
