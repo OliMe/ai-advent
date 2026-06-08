@@ -2,7 +2,8 @@ import { describe, it } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { ChatCompletionClient } from '../chat-completion-client.ts';
-import { makeConfig, completionResponse } from './helpers.ts';
+import type { CompletionResult } from '../chat-completion-client.ts';
+import { makeConfig, completionResponse, streamResponse } from './helpers.ts';
 
 /** Реализация-заглушка fetch: получает URL и init, возвращает Response. */
 type FetchStub = (url: string, init: RequestInit) => Promise<Response>;
@@ -307,5 +308,111 @@ describe('ChatCompletionClient.complete — повторы', () => {
 
     await assert.rejects(client.complete([], {}), /429/);
     assert.equal(calls, 2); // 1 попытка + 1 повтор
+  });
+});
+
+describe('ChatCompletionClient.streamWithUsage', () => {
+  /** Прогоняет стрим из заданных SSE-кусков, собирая дельты content и reasoning. */
+  async function runStream(
+    t: TestContext,
+    chunks: string[],
+  ): Promise<{ result: CompletionResult; contentDeltas: string[]; reasoningDeltas: string[] }> {
+    const client = clientWithFetch(t, async () => streamResponse(chunks));
+    const contentDeltas: string[] = [];
+    const reasoningDeltas: string[] = [];
+    const result = await client.streamWithUsage([{ role: 'user', content: 'hi' }], {}, delta => {
+      if (delta.content !== undefined) contentDeltas.push(delta.content);
+      if (delta.reasoning !== undefined) reasoningDeltas.push(delta.reasoning);
+    });
+    return { result, contentDeltas, reasoningDeltas };
+  }
+
+  it('собирает дельты content, отдаёт полный текст и usage', async t => {
+    const { result, contentDeltas } = await runStream(t, [
+      'data: {"choices":[{"delta":{"content":"При"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"вет"}}]}\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n',
+      'data: [DONE]\n',
+    ]);
+
+    assert.equal(result.content, 'Привет');
+    assert.deepEqual(result.usage, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 });
+    assert.deepEqual(contentDeltas, ['При', 'вет']);
+  });
+
+  it('отдаёт reasoning_content отдельной дельтой', async t => {
+    const { result, contentDeltas, reasoningDeltas } = await runStream(t, [
+      'data: {"choices":[{"delta":{"reasoning_content":"дум"}}]}\n',
+      'data: {"choices":[{"delta":{"content":"Ответ"}}]}\n',
+      'data: [DONE]\n',
+    ]);
+
+    assert.equal(result.content, 'Ответ');
+    assert.deepEqual(reasoningDeltas, ['дум']);
+    assert.deepEqual(contentDeltas, ['Ответ']);
+  });
+
+  it('шлёт stream:true и stream_options.include_usage', async t => {
+    let capturedInit: RequestInit | undefined;
+    const client = clientWithFetch(t, async (_url, init) => {
+      capturedInit = init;
+      return streamResponse(['data: {"choices":[{"delta":{"content":"x"}}]}\n', 'data: [DONE]\n']);
+    });
+
+    await client.streamWithUsage([{ role: 'user', content: 'hi' }], {}, () => {});
+
+    const body = JSON.parse(String(capturedInit?.body));
+    assert.equal(body.stream, true);
+    assert.deepEqual(body.stream_options, { include_usage: true });
+  });
+
+  it('склеивает SSE-строку, разорванную между чтениями', async t => {
+    const { result } = await runStream(t, [
+      'data: {"choices":[{"delta":{"con',
+      'tent":"X"}}]}\n',
+      'data: [DONE]\n',
+    ]);
+
+    assert.equal(result.content, 'X');
+  });
+
+  it('пропускает не-data и пустые строки', async t => {
+    const { result } = await runStream(t, [
+      ': keep-alive\n',
+      '\n',
+      'data: {"choices":[{"delta":{"content":"Y"}}]}\n',
+      'data: [DONE]\n',
+    ]);
+
+    assert.equal(result.content, 'Y');
+  });
+
+  it('завершается по концу тела без [DONE]', async t => {
+    const { result } = await runStream(t, ['data: {"choices":[{"delta":{"content":"Z"}}]}\n']);
+
+    assert.equal(result.content, 'Z');
+  });
+
+  it('бросает «обрезан по лимиту» при пустом content и finish_reason length', async t => {
+    await assert.rejects(
+      runStream(t, [
+        'data: {"choices":[{"delta":{"content":""},"finish_reason":"length"}]}\n',
+        'data: [DONE]\n',
+      ]),
+      /обрезан по лимиту/,
+    );
+  });
+
+  it('бросает «пустой ответ» при потоке без текста', async t => {
+    await assert.rejects(runStream(t, ['data: [DONE]\n']), /пустой ответ/);
+  });
+
+  it('бросает «пустой ответ» при отсутствии тела', async t => {
+    const client = clientWithFetch(t, async () => new Response(null, { status: 200 }));
+
+    await assert.rejects(
+      client.streamWithUsage([{ role: 'user', content: 'hi' }], {}, () => {}),
+      /пустой ответ/,
+    );
   });
 });

@@ -1,5 +1,5 @@
 export { ChatCompletionClient } from './chat-completion-client.ts';
-export type { CompleteOptions, CompletionResult } from './chat-completion-client.ts';
+export type { CompleteOptions, CompletionResult, StreamDelta } from './chat-completion-client.ts';
 export { loadConfig } from './config.ts';
 export type { AppConfig } from './config.ts';
 export type {
@@ -10,6 +10,7 @@ export type {
   GenerationLimits,
   ChatCompletionRequest,
   ChatCompletionChoice,
+  ChatCompletionChunk,
   Usage,
   ChatCompletionResponse,
   ApiErrorResponse,

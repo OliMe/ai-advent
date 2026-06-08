@@ -19,10 +19,21 @@ import {
   estimateTokens,
   historyBudgetTokens,
   trimHistoryToBudget,
+  createSpinner,
+  streamAnswer,
 } from '../index.ts';
 import { ChatCompletionClient } from '../../../core/src/index.ts';
-import type { AppConfig, ChatMessage } from '../../../core/src/index.ts';
-import { makeConfig, completionResponse } from '../../../core/src/__test__/helpers.ts';
+import type {
+  AppConfig,
+  ChatMessage,
+  CompleteOptions,
+  StreamDelta,
+} from '../../../core/src/index.ts';
+import {
+  makeConfig,
+  completionResponse,
+  streamResponse,
+} from '../../../core/src/__test__/helpers.ts';
 
 /** Поток-приёмник: накапливает записанный текст. */
 function makeCollector(): { stream: Writable; text: () => string } {
@@ -51,6 +62,7 @@ function driveInteractive(
   lines: string[],
   temperature = 0.7,
   config: AppConfig = makeConfig(),
+  stream = true,
 ): { finished: Promise<void>; text: () => string } {
   const input = new PassThrough();
   let buffer = '';
@@ -73,6 +85,7 @@ function driveInteractive(
     {},
     false,
     temperature,
+    stream,
     input,
     output,
     readline.createInterface,
@@ -87,6 +100,33 @@ function clientWith(
 ): ChatCompletionClient {
   const client = new ChatCompletionClient(makeConfig());
   t.mock.method(client, 'complete', complete);
+  return client;
+}
+
+/**
+ * Клиент с подменённым streamWithUsage: impl(messages, options) даёт полный текст
+ * ответа, который отдаётся одной content-дельтой; capture видит опции запроса.
+ */
+function clientWithStream(
+  t: TestContext,
+  impl: (messages: ChatMessage[], options: CompleteOptions) => Promise<string> | string,
+  capture?: (messages: ChatMessage[], options: CompleteOptions) => void,
+): ChatCompletionClient {
+  const client = new ChatCompletionClient(makeConfig());
+  t.mock.method(
+    client,
+    'streamWithUsage',
+    async (
+      messages: ChatMessage[],
+      options: CompleteOptions,
+      onDelta: (delta: StreamDelta) => void,
+    ) => {
+      capture?.(messages, options);
+      const content = await impl(messages, options);
+      onDelta({ content });
+      return { content, usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } };
+    },
+  );
   return client;
 }
 
@@ -134,7 +174,7 @@ describe('askModel', () => {
 });
 
 describe('runOnce', () => {
-  it('пишет ответ модели в вывод с переводом строки', async t => {
+  it('без стрима пишет ответ модели и шлёт system+user', async t => {
     const calls: unknown[] = [];
     const client = clientWith(t, async messages => {
       calls.push(messages);
@@ -142,7 +182,7 @@ describe('runOnce', () => {
     });
     const output = makeCollector();
 
-    await runOnce(client, makeConfig(), 'привет', {}, false, 0.7, output.stream);
+    await runOnce(client, makeConfig(), 'привет', {}, false, 0.7, false, output.stream);
 
     assert.equal(output.text(), 'единственный ответ\n');
     assert.deepEqual(calls[0], [
@@ -150,11 +190,20 @@ describe('runOnce', () => {
       { role: 'user', content: 'привет' },
     ]);
   });
+
+  it('со стримом печатает ответ и завершает переводом строки', async t => {
+    const client = clientWithStream(t, () => 'потоковый ответ');
+    const output = makeCollector();
+
+    await runOnce(client, makeConfig(), 'привет', {}, false, 0.7, true, output.stream);
+
+    assert.equal(output.text(), 'потоковый ответ\n');
+  });
 });
 
 describe('runInteractive', () => {
   it('ведёт диалог, пропускает пустой ввод и выходит по /quit', async t => {
-    const client = clientWith(t, async () => 'ОТВЕТ');
+    const client = clientWithStream(t, () => 'ОТВЕТ');
 
     const { finished, text } = driveInteractive(client, ['Привет', '', '/quit']);
     await finished;
@@ -165,7 +214,7 @@ describe('runInteractive', () => {
   });
 
   it('печатает ошибку и откатывает ход, затем выходит по /exit', async t => {
-    const client = clientWith(t, async () => {
+    const client = clientWithStream(t, () => {
       throw new Error('сбой API');
     });
 
@@ -176,8 +225,24 @@ describe('runInteractive', () => {
     assert.match(text(), /До встречи!/);
   });
 
+  it('без стрима печатает полный ответ ассистента', async t => {
+    const client = clientWith(t, async () => 'ПОЛНЫЙ ОТВЕТ');
+
+    const { finished, text } = driveInteractive(
+      client,
+      ['Привет', '/exit'],
+      0.7,
+      makeConfig(),
+      false,
+    );
+    await finished;
+
+    assert.match(text(), /Ассистент: ПОЛНЫЙ ОТВЕТ/);
+    assert.match(text(), /До встречи!/);
+  });
+
   it('выходит штатно при Ctrl+C (SIGINT закрывает интерфейс)', async t => {
-    const client = clientWith(t, async () => 'не-важно');
+    const client = clientWithStream(t, () => 'не-важно');
     const input = new PassThrough();
     const output = makeCollector();
     let captured: readline.Interface | undefined;
@@ -188,6 +253,7 @@ describe('runInteractive', () => {
       {},
       false,
       0.7,
+      true,
       input,
       output.stream,
       () => {
@@ -205,10 +271,13 @@ describe('runInteractive', () => {
 
   it('меняет температуру командой /temp и применяет её к следующему запросу', async t => {
     let capturedTemperature: number | undefined;
-    const client = clientWith(t, async (_messages, options) => {
-      capturedTemperature = options?.temperature;
-      return 'ОТВЕТ';
-    });
+    const client = clientWithStream(
+      t,
+      () => 'ОТВЕТ',
+      (_messages, options) => {
+        capturedTemperature = options.temperature;
+      },
+    );
 
     const { finished, text } = driveInteractive(client, ['/temp 0.2', 'привет', '/exit']);
     await finished;
@@ -218,7 +287,7 @@ describe('runInteractive', () => {
   });
 
   it('сообщает о некорректной температуре в /temp', async t => {
-    const client = clientWith(t, async () => 'ОТВЕТ');
+    const client = clientWithStream(t, () => 'ОТВЕТ');
 
     const { finished, text } = driveInteractive(client, ['/temp abc', '/exit']);
     await finished;
@@ -228,10 +297,13 @@ describe('runInteractive', () => {
 
   it('обрезает историю скользящим окном по бюджету токенов', async t => {
     const sentBatches: ChatMessage[][] = [];
-    const client = clientWith(t, async messages => {
-      sentBatches.push(messages as ChatMessage[]);
-      return 'короткий ответ';
-    });
+    const client = clientWithStream(
+      t,
+      () => 'короткий ответ',
+      messages => {
+        sentBatches.push(messages);
+      },
+    );
     // Крошечный контекст: старый длинный ход не помещается в окно следующего хода.
     const config = makeConfig({ contextTokens: 300 });
     const firstQuestion = 'ПЕРВЫЙ ' + 'а'.repeat(3000);
@@ -303,6 +375,105 @@ describe('trimHistoryToBudget', () => {
   });
 });
 
+describe('createSpinner', () => {
+  /** Поток-приёмник с пометкой TTY. */
+  function makeTtyCollector(): { stream: Writable & { isTTY?: boolean }; text: () => string } {
+    const collector = makeCollector();
+    const stream = collector.stream as Writable & { isTTY?: boolean };
+    stream.isTTY = true;
+    return { stream, text: collector.text };
+  }
+
+  it('на TTY анимируется и очищает строку при остановке (повторный stop — no-op)', t => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const out = makeTtyCollector();
+
+    const spinner = createSpinner(out.stream, 'думает…');
+    t.mock.timers.tick(100); // первый кадр
+    t.mock.timers.tick(100); // второй кадр
+    spinner.stop();
+    spinner.stop(); // повторный вызов ничего не делает
+
+    assert.match(out.text(), /думает…/);
+    assert.match(out.text(), /\[K/); // строка спиннера очищена
+  });
+
+  it('без TTY ничего не пишет', () => {
+    const out = makeCollector();
+
+    const spinner = createSpinner(out.stream, 'думает…');
+    spinner.stop();
+
+    assert.equal(out.text(), '');
+  });
+});
+
+describe('streamAnswer', () => {
+  /** Клиент, чей streamWithUsage отдаёт заданные дельты и итог. */
+  function streamingClient(t: TestContext, deltas: StreamDelta[], content: string) {
+    const client = new ChatCompletionClient(makeConfig());
+    t.mock.method(
+      client,
+      'streamWithUsage',
+      async (
+        _messages: ChatMessage[],
+        _options: CompleteOptions,
+        onDelta: (delta: StreamDelta) => void,
+      ) => {
+        for (const delta of deltas) onDelta(delta);
+        return { content, usage: undefined };
+      },
+    );
+    return client;
+  }
+
+  it('печатает content, зовёт onFirstContent один раз, игнорирует reasoning', async t => {
+    const client = streamingClient(
+      t,
+      [{ reasoning: 'дум' }, { content: 'При' }, { content: 'вет' }],
+      'Привет',
+    );
+    const out = makeCollector();
+    let firstContentCalls = 0;
+
+    const result = await streamAnswer(
+      client,
+      [{ role: 'user', content: 'x' }],
+      5000,
+      {},
+      false,
+      0.7,
+      out.stream,
+      () => {
+        firstContentCalls++;
+        out.stream.write('PFX:');
+      },
+    );
+
+    assert.equal(result.content, 'Привет');
+    assert.equal(firstContentCalls, 1); // префикс печатается ровно на первом видимом токене
+    assert.equal(out.text(), 'PFX:Привет'); // reasoning не печатается
+  });
+
+  it('работает без onFirstContent', async t => {
+    const client = streamingClient(t, [{ content: 'A' }], 'A');
+    const out = makeCollector();
+
+    const result = await streamAnswer(
+      client,
+      [{ role: 'user', content: 'x' }],
+      5000,
+      {},
+      false,
+      0.7,
+      out.stream,
+    );
+
+    assert.equal(result.content, 'A');
+    assert.equal(out.text(), 'A');
+  });
+});
+
 describe('validTemperature', () => {
   it('принимает конечное неотрицательное число', () => {
     assert.equal(validTemperature('0.4'), 0.4);
@@ -362,6 +533,11 @@ describe('parseArgs', () => {
     const result = parseArgs(['--no-thinking', 'привет']);
     assert.equal(result.prompt, 'привет');
     assert.equal(result.disableThinking, true);
+  });
+
+  it('--no-stream выключает потоковый вывод; по умолчанию он включён', () => {
+    assert.equal(parseArgs(['--no-stream', 'привет']).stream, false);
+    assert.equal(parseArgs(['привет']).stream, true);
   });
 
   it('--json включает формат json_object', () => {
@@ -471,14 +647,31 @@ describe('main', () => {
     }
   });
 
-  it('режим одного запроса при наличии промпта в аргументах', async t => {
+  it('режим одного запроса при наличии промпта в аргументах (стрим)', async t => {
     t.mock.method(globalThis, 'fetch', (async () =>
-      completionResponse('ответ из main')) as unknown as typeof fetch);
+      streamResponse([
+        'data: {"choices":[{"delta":{"content":"ответ из main"}}]}\n',
+        'data: [DONE]\n',
+      ])) as unknown as typeof fetch);
     const output = makeCollector();
 
     await main(['node', 'cli.ts', 'скажи', 'привет'], new PassThrough(), output.stream);
 
     assert.match(output.text(), /ответ из main/);
+  });
+
+  it('режим одного запроса с --no-stream использует обычный ответ', async t => {
+    t.mock.method(globalThis, 'fetch', (async () =>
+      completionResponse('ответ без стрима')) as unknown as typeof fetch);
+    const output = makeCollector();
+
+    await main(
+      ['node', 'cli.ts', '--no-stream', 'скажи', 'привет'],
+      new PassThrough(),
+      output.stream,
+    );
+
+    assert.match(output.text(), /ответ без стрима/);
   });
 
   it('интерактивный режим при отсутствии промпта', async () => {

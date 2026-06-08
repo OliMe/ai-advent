@@ -48,6 +48,8 @@ export interface ChatCompletionRequest {
   stop?: string | string[];
   response_format?: ResponseFormat;
   stream?: boolean;
+  /** Опции потокового режима; include_usage просит прислать usage в финальном чанке. */
+  stream_options?: { include_usage: boolean };
   /** Управление «рассуждениями» (специфично для GLM/z.ai; другие провайдеры игнорируют). */
   thinking?: { type: 'enabled' | 'disabled' };
 }
@@ -72,6 +74,19 @@ export interface ChatCompletionResponse {
   model: string;
   created: number;
   choices: ChatCompletionChoice[];
+  usage?: Usage;
+}
+
+/**
+ * Один чанк потокового ответа (SSE). У reasoning-моделей текст ответа приходит в
+ * `delta.content`, а «рассуждения» — отдельно в `delta.reasoning_content`.
+ * Статистика токенов приходит в финальном чанке (при include_usage).
+ */
+export interface ChatCompletionChunk {
+  choices?: Array<{
+    delta?: { content?: string; reasoning_content?: string };
+    finish_reason?: string | null;
+  }>;
   usage?: Usage;
 }
 

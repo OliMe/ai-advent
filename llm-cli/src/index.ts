@@ -5,6 +5,7 @@ import { loadConfig, ChatCompletionClient } from '../../core/src/index.ts';
 import type {
   AppConfig,
   ChatMessage,
+  CompletionResult,
   GenerationLimits,
   ResponseFormat,
 } from '../../core/src/index.ts';
@@ -111,6 +112,76 @@ export function trimHistoryToBudget(history: ChatMessage[], budgetTokens: number
   return [...systemMessages, ...keptInReverse];
 }
 
+/** Кадры анимации спиннера статуса. */
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/**
+ * Индикатор «думает…»: крутится, пока модель не выдала видимый текст. Работает
+ * только в терминале (TTY) — в пайпах/тестах это no-op, чтобы не сорить в вывод.
+ */
+export function createSpinner(
+  output: Writable & { isTTY?: boolean },
+  label: string,
+): { stop: () => void } {
+  if (!output.isTTY) {
+    return { stop: () => {} };
+  }
+  let frame = 0;
+  const timer = setInterval(() => {
+    output.write(`\r${SPINNER_FRAMES[frame % SPINNER_FRAMES.length]} ${label}`);
+    frame++;
+  }, 100);
+  let stopped = false;
+  return {
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(timer);
+      output.write('\r\x1b[K'); // вернуть каретку и очистить строку спиннера
+    },
+  };
+}
+
+/**
+ * Стримит ответ модели, печатая видимый текст по мере поступления. Пока идут
+ * только «рассуждения» (reasoning), крутится спиннер; на первом видимом токене
+ * спиннер гаснет и (если задан) вызывается onFirstContent — напечатать префикс.
+ * Возвращает полный текст и usage.
+ */
+export async function streamAnswer(
+  client: ChatCompletionClient,
+  messages: ChatMessage[],
+  requestTimeoutMs: number,
+  limits: GenerationLimits,
+  disableThinking: boolean,
+  temperature: number,
+  output: Writable,
+  onFirstContent?: () => void,
+): Promise<CompletionResult> {
+  const signal = AbortSignal.timeout(requestTimeoutMs);
+  const spinner = createSpinner(output, 'думает…');
+  let started = false;
+  try {
+    return await client.streamWithUsage(
+      messages,
+      { signal, disableThinking, temperature, ...limits },
+      delta => {
+        if (delta.content) {
+          if (!started) {
+            spinner.stop();
+            onFirstContent?.();
+            started = true;
+          }
+          output.write(delta.content);
+        }
+        // delta.reasoning не печатаем — спиннер продолжает крутиться.
+      },
+    );
+  } finally {
+    spinner.stop(); // на случай ошибки или ответа без видимого текста
+  }
+}
+
 /** Режим одного запроса: промпт передан аргументами командной строки. */
 export async function runOnce(
   client: ChatCompletionClient,
@@ -119,21 +190,35 @@ export async function runOnce(
   limits: GenerationLimits,
   disableThinking: boolean,
   temperature: number,
+  stream: boolean,
   output: Writable,
 ): Promise<void> {
   const messages: ChatMessage[] = [
     { role: 'system', content: augmentSystemPrompt(config.systemPrompt, limits) },
     { role: 'user', content: prompt },
   ];
-  const answer = await askModel(
-    client,
-    messages,
-    config.requestTimeoutMs,
-    limits,
-    disableThinking,
-    temperature,
-  );
-  output.write(answer + '\n');
+  if (stream) {
+    await streamAnswer(
+      client,
+      messages,
+      config.requestTimeoutMs,
+      limits,
+      disableThinking,
+      temperature,
+      output,
+    );
+    output.write('\n');
+  } else {
+    const answer = await askModel(
+      client,
+      messages,
+      config.requestTimeoutMs,
+      limits,
+      disableThinking,
+      temperature,
+    );
+    output.write(answer + '\n');
+  }
 }
 
 /** Интерактивный режим: диалог с сохранением истории. */
@@ -143,6 +228,7 @@ export async function runInteractive(
   limits: GenerationLimits,
   disableThinking: boolean,
   temperature: number,
+  stream: boolean,
   input: Readable,
   output: Writable,
   // Передаётся явно — это же даёт тестам шов для подмены интерфейса.
@@ -196,16 +282,32 @@ export async function runInteractive(
       // Скользящее окно: держим историю в пределах контекста модели.
       history = trimHistoryToBudget(history, historyBudget);
       try {
-        const answer = await askModel(
-          client,
-          history,
-          config.requestTimeoutMs,
-          limits,
-          disableThinking,
-          temperature,
-        );
+        let answer: string;
+        if (stream) {
+          const result = await streamAnswer(
+            client,
+            history,
+            config.requestTimeoutMs,
+            limits,
+            disableThinking,
+            temperature,
+            output,
+            () => output.write(`\n${ASSISTANT_LABEL}: `),
+          );
+          answer = result.content;
+          output.write('\n\n');
+        } else {
+          answer = await askModel(
+            client,
+            history,
+            config.requestTimeoutMs,
+            limits,
+            disableThinking,
+            temperature,
+          );
+          output.write(`\n${ASSISTANT_LABEL}: ${answer}\n\n`);
+        }
         history.push({ role: 'assistant', content: answer });
-        output.write(`\n${ASSISTANT_LABEL}: ${answer}\n\n`);
       } catch (error) {
         // Откатываем неудачный ход, чтобы история осталась согласованной.
         history.pop();
@@ -238,6 +340,8 @@ export interface ParsedArgs {
   temperature?: number;
   /** Размер контекста из флага `--context-tokens`; undefined — взять из конфигурации. */
   contextTokens?: number;
+  /** Потоковый вывод ответа; выключается флагом `--no-stream`. */
+  stream: boolean;
 }
 
 /** Разбирает значение флага как положительное целое или бросает понятную ошибку. */
@@ -284,6 +388,7 @@ export function parseArgs(args: string[]): ParsedArgs {
   let disableThinking = false;
   let temperature: number | undefined;
   let contextTokens: number | undefined;
+  let stream = true;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -301,6 +406,10 @@ export function parseArgs(args: string[]): ParsedArgs {
     }
     if (name === '--no-thinking') {
       disableThinking = true;
+      continue;
+    }
+    if (name === '--no-stream') {
+      stream = false;
       continue;
     }
 
@@ -338,6 +447,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     disableThinking,
     temperature,
     contextTokens,
+    stream,
   };
 }
 
@@ -352,13 +462,14 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     disableThinking,
     temperature: parsedTemperature,
     contextTokens: parsedContextTokens,
+    stream,
   } = parseArgs(argv.slice(2));
   // Флаг приоритетнее переменной среды; не задан — берём из конфигурации.
   const temperature = parsedTemperature ?? config.temperature;
   const contextTokens = parsedContextTokens ?? config.contextTokens;
 
   if (prompt) {
-    await runOnce(client, config, prompt, limits, disableThinking, temperature, output);
+    await runOnce(client, config, prompt, limits, disableThinking, temperature, stream, output);
   } else {
     await runInteractive(
       client,
@@ -366,6 +477,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       limits,
       disableThinking,
       temperature,
+      stream,
       input,
       output,
       readline.createInterface,
