@@ -14,6 +14,7 @@ const ENV_KEYS = [
   'LLM_REQUEST_TIMEOUT_MS',
   'LLM_MAX_RETRIES',
   'LLM_RETRY_BASE_MS',
+  'LLM_CONTEXT_TOKENS',
 ];
 
 describe('loadConfig', () => {
@@ -75,6 +76,7 @@ describe('loadConfig', () => {
     assert.equal(config.requestTimeoutMs, 60_000);
     assert.equal(config.maxRetries, 3);
     assert.equal(config.retryBaseMs, 500);
+    assert.equal(config.contextTokens, 8192);
     assert.match(config.systemPrompt, /ассистент/i);
   });
 
@@ -125,6 +127,24 @@ describe('loadConfig', () => {
     process.env.LLM_REQUEST_TIMEOUT_MS = '0';
 
     assert.equal(loadConfig().requestTimeoutMs, 60_000);
+  });
+
+  it('читает размер контекста', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+    process.env.LLM_CONTEXT_TOKENS = '32768';
+
+    assert.equal(loadConfig().contextTokens, 32768);
+  });
+
+  it('откатывается к размеру контекста по умолчанию при невалидном значении', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+    process.env.LLM_CONTEXT_TOKENS = '0';
+
+    assert.equal(loadConfig().contextTokens, 8192);
   });
 
   it('читает число повторов и базовую задержку', () => {

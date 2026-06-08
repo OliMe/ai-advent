@@ -11,6 +11,7 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     requestTimeoutMs: 60_000,
     maxRetries: 0,
     retryBaseMs: 1,
+    contextTokens: 8192,
     ...overrides,
   };
 }

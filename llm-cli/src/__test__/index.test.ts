@@ -16,8 +16,12 @@ import {
   parseArgs,
   augmentSystemPrompt,
   validTemperature,
+  estimateTokens,
+  historyBudgetTokens,
+  trimHistoryToBudget,
 } from '../index.ts';
 import { ChatCompletionClient } from '../../../core/src/index.ts';
+import type { AppConfig, ChatMessage } from '../../../core/src/index.ts';
 import { makeConfig, completionResponse } from '../../../core/src/__test__/helpers.ts';
 
 /** Поток-приёмник: накапливает записанный текст. */
@@ -46,6 +50,7 @@ function driveInteractive(
   client: ChatCompletionClient,
   lines: string[],
   temperature = 0.7,
+  config: AppConfig = makeConfig(),
 ): { finished: Promise<void>; text: () => string } {
   const input = new PassThrough();
   let buffer = '';
@@ -64,7 +69,7 @@ function driveInteractive(
   });
   const finished = runInteractive(
     client,
-    makeConfig(),
+    config,
     {},
     false,
     temperature,
@@ -219,6 +224,82 @@ describe('runInteractive', () => {
     await finished;
 
     assert.match(text(), /Некорректная температура/);
+  });
+
+  it('обрезает историю скользящим окном по бюджету токенов', async t => {
+    const sentBatches: ChatMessage[][] = [];
+    const client = clientWith(t, async messages => {
+      sentBatches.push(messages as ChatMessage[]);
+      return 'короткий ответ';
+    });
+    // Крошечный контекст: старый длинный ход не помещается в окно следующего хода.
+    const config = makeConfig({ contextTokens: 300 });
+    const firstQuestion = 'ПЕРВЫЙ ' + 'а'.repeat(3000);
+
+    const { finished } = driveInteractive(
+      client,
+      [firstQuestion, 'второй вопрос', '/exit'],
+      0.7,
+      config,
+    );
+    await finished;
+
+    const lastSent = sentBatches[sentBatches.length - 1];
+    assert.equal(lastSent[0].role, 'system'); // системное сообщение сохраняется
+    assert.ok(lastSent.some(message => message.content === 'второй вопрос')); // свежий ход на месте
+    assert.ok(!lastSent.some(message => message.content.includes('ПЕРВЫЙ'))); // старый ход выпал
+  });
+});
+
+describe('estimateTokens', () => {
+  it('оценивает число токенов как ceil(длина / 3)', () => {
+    assert.equal(estimateTokens(''), 0);
+    assert.equal(estimateTokens('абвгде'), 2);
+    assert.equal(estimateTokens('абвг'), 2); // ceil(4/3)
+  });
+});
+
+describe('historyBudgetTokens', () => {
+  it('вычитает явный резерв под ответ из контекста', () => {
+    assert.equal(historyBudgetTokens(8192, 1000), 7192);
+  });
+
+  it('при отсутствии --max-tokens вычитает дефолтный резерв', () => {
+    assert.equal(historyBudgetTokens(8192), 8192 - 1024);
+  });
+
+  it('не опускается ниже минимума', () => {
+    assert.equal(historyBudgetTokens(100), 256);
+  });
+});
+
+describe('trimHistoryToBudget', () => {
+  const system: ChatMessage = { role: 'system', content: 'сис' };
+  const turn = (role: ChatMessage['role'], n: number): ChatMessage => ({
+    role,
+    content: `${role}-${n} ${'x'.repeat(60)}`,
+  });
+
+  it('сохраняет всё, когда укладывается в бюджет', () => {
+    const history = [system, turn('user', 1), turn('assistant', 1)];
+    assert.deepEqual(trimHistoryToBudget(history, 10_000), history);
+  });
+
+  it('сохраняет систему и свежие реплики, отбрасывая старые', () => {
+    const history = [system, turn('user', 1), turn('assistant', 1), turn('user', 2)];
+    const result = trimHistoryToBudget(history, 60);
+
+    assert.equal(result[0], system); // система всегда первая
+    assert.ok(result.some(message => message.content.startsWith('user-2'))); // свежий ход
+    assert.ok(!result.some(message => message.content.startsWith('user-1'))); // старый выпал
+  });
+
+  it('сохраняет последнее сообщение, даже если оно превышает бюджет', () => {
+    const history = [system, turn('user', 1)];
+    const result = trimHistoryToBudget(history, 1);
+
+    assert.equal(result.length, 2); // система + последний ход
+    assert.ok(result.some(message => message.content.startsWith('user-1')));
   });
 });
 

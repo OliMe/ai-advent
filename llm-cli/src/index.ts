@@ -56,6 +56,61 @@ export function augmentSystemPrompt(systemPrompt: string, limits: GenerationLimi
   return systemPrompt;
 }
 
+/** Сколько символов считаем за один токен в грубой оценке (провайдер-агностично). */
+const CHARS_PER_TOKEN = 3;
+/** Накладные токены на одно сообщение (роль и служебная разметка). */
+const MESSAGE_OVERHEAD_TOKENS = 4;
+/** Сколько токенов резервируем под ответ, если --max-tokens не задан. */
+const DEFAULT_RESPONSE_RESERVE_TOKENS = 1024;
+/** Нижняя граница бюджета истории, чтобы он не оказался нулём/отрицательным. */
+const MIN_HISTORY_BUDGET_TOKENS = 256;
+
+/**
+ * Грубая оценка числа токенов в тексте. Точного токенизатора нет (приложение
+ * провайдер-агностично), поэтому считаем консервативно — лучше переоценить
+ * размер и обрезать чуть больше, чем переполнить контекст модели.
+ */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/** Оценка токенов одного сообщения: содержимое плюс накладные расходы. */
+function messageTokens(message: ChatMessage): number {
+  return estimateTokens(message.content) + MESSAGE_OVERHEAD_TOKENS;
+}
+
+/**
+ * Бюджет истории в токенах: контекст модели за вычетом резерва под ответ
+ * (явный --max-tokens или дефолтный резерв), но не ниже минимума.
+ */
+export function historyBudgetTokens(contextTokens: number, maxTokens?: number): number {
+  const responseReserve = maxTokens ?? DEFAULT_RESPONSE_RESERVE_TOKENS;
+  return Math.max(contextTokens - responseReserve, MIN_HISTORY_BUDGET_TOKENS);
+}
+
+/**
+ * Скользящее окно истории по токенам: всегда сохраняет системные сообщения и
+ * оставляет самые свежие реплики, пока укладывается в бюджет. Самое последнее
+ * сообщение сохраняется всегда — даже если оно одно превышает бюджет.
+ */
+export function trimHistoryToBudget(history: ChatMessage[], budgetTokens: number): ChatMessage[] {
+  const systemMessages = history.filter(message => message.role === 'system');
+  const conversation = history.filter(message => message.role !== 'system');
+
+  let usedTokens = systemMessages.reduce((sum, message) => sum + messageTokens(message), 0);
+  const keptInReverse: ChatMessage[] = [];
+  for (let index = conversation.length - 1; index >= 0; index--) {
+    const cost = messageTokens(conversation[index]);
+    if (keptInReverse.length > 0 && usedTokens + cost > budgetTokens) {
+      break;
+    }
+    keptInReverse.push(conversation[index]);
+    usedTokens += cost;
+  }
+  keptInReverse.reverse();
+  return [...systemMessages, ...keptInReverse];
+}
+
 /** Режим одного запроса: промпт передан аргументами командной строки. */
 export async function runOnce(
   client: ChatCompletionClient,
@@ -94,9 +149,11 @@ export async function runInteractive(
   createInterface: typeof readline.createInterface,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
-  const history: ChatMessage[] = [
+  let history: ChatMessage[] = [
     { role: 'system', content: augmentSystemPrompt(config.systemPrompt, limits) },
   ];
+  // Бюджет истории зависит от контекста выбранной модели и резерва под ответ.
+  const historyBudget = historyBudgetTokens(config.contextTokens, limits.maxTokens);
 
   // Ctrl+C (SIGINT) и закрытие ввода (Ctrl+D / EOF) прерывают ожидание строки:
   // abort заставляет question отклониться, и цикл штатно завершается.
@@ -136,6 +193,8 @@ export async function runInteractive(
       }
 
       history.push({ role: 'user', content: userInput });
+      // Скользящее окно: держим историю в пределах контекста модели.
+      history = trimHistoryToBudget(history, historyBudget);
       try {
         const answer = await askModel(
           client,
