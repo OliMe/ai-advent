@@ -385,6 +385,16 @@ describe('parseArgs', () => {
     assert.throws(() => parseArgs(['--max-tokens=abc']), /положительное целое/);
   });
 
+  it('--context-tokens принимает значение через = и через пробел', () => {
+    assert.equal(parseArgs(['--context-tokens=4096']).contextTokens, 4096);
+    assert.equal(parseArgs(['--context-tokens', '8192']).contextTokens, 8192);
+  });
+
+  it('бросает ошибку при невалидном --context-tokens', () => {
+    assert.throws(() => parseArgs(['--context-tokens=0']), /положительное целое/);
+    assert.throws(() => parseArgs(['--context-tokens=abc']), /положительное целое/);
+  });
+
   it('бросает ошибку, если у флага нет значения', () => {
     assert.throws(() => parseArgs(['--max-tokens']), /Не указано значение/);
   });
@@ -476,6 +486,18 @@ describe('main', () => {
     const output = makeCollector();
 
     const finished = main(['node', 'cli.ts'], input, output.stream);
+    input.write('/exit\n');
+    await finished;
+
+    assert.match(output.text(), /Чат с моделью/);
+    assert.match(output.text(), /До встречи!/);
+  });
+
+  it('принимает флаг --context-tokens в интерактивном режиме', async () => {
+    const input = new PassThrough();
+    const output = makeCollector();
+
+    const finished = main(['node', 'cli.ts', '--context-tokens=500'], input, output.stream);
     input.write('/exit\n');
     await finished;
 

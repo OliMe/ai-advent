@@ -236,6 +236,17 @@ export interface ParsedArgs {
   disableThinking: boolean;
   /** Температура из флага `--temperature`; undefined — взять из конфигурации. */
   temperature?: number;
+  /** Размер контекста из флага `--context-tokens`; undefined — взять из конфигурации. */
+  contextTokens?: number;
+}
+
+/** Разбирает значение флага как положительное целое или бросает понятную ошибку. */
+function parsePositiveInteger(name: string, value: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} требует положительное целое, получено: ${value}`);
+  }
+  return parsed;
 }
 
 /**
@@ -262,9 +273,9 @@ function loadJsonSchema(path: string): ResponseFormat {
 
 /**
  * Разбирает аргументы (без `node` и имени скрипта): флаги `--max-tokens`,
- * `--stop` (можно повторять), `--json`, `--json-schema` и `--no-thinking`
- * задают параметры запроса, остальное — слова промпта. Значение флага можно
- * писать как `--flag=value` или `--flag value`.
+ * `--stop` (можно повторять), `--json`, `--json-schema`, `--no-thinking`,
+ * `--temperature` и `--context-tokens` задают параметры запроса, остальное —
+ * слова промпта. Значение флага можно писать как `--flag=value` или `--flag value`.
  */
 export function parseArgs(args: string[]): ParsedArgs {
   const promptParts: string[] = [];
@@ -272,6 +283,7 @@ export function parseArgs(args: string[]): ParsedArgs {
   const limits: GenerationLimits = {};
   let disableThinking = false;
   let temperature: number | undefined;
+  let contextTokens: number | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -298,11 +310,9 @@ export function parseArgs(args: string[]): ParsedArgs {
     }
 
     if (name === '--max-tokens') {
-      const parsed = Number(value);
-      if (!Number.isInteger(parsed) || parsed <= 0) {
-        throw new Error(`--max-tokens требует положительное целое, получено: ${value}`);
-      }
-      limits.maxTokens = parsed;
+      limits.maxTokens = parsePositiveInteger(name, value);
+    } else if (name === '--context-tokens') {
+      contextTokens = parsePositiveInteger(name, value);
     } else if (name === '--stop') {
       stops.push(value);
     } else if (name === '--json-schema') {
@@ -322,7 +332,13 @@ export function parseArgs(args: string[]): ParsedArgs {
     limits.stop = stops.length === 1 ? stops[0] : stops;
   }
 
-  return { prompt: promptParts.join(' ').trim(), limits, disableThinking, temperature };
+  return {
+    prompt: promptParts.join(' ').trim(),
+    limits,
+    disableThinking,
+    temperature,
+    contextTokens,
+  };
 }
 
 /** Точка входа: выбирает режим работы по аргументам командной строки. */
@@ -335,16 +351,18 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     limits,
     disableThinking,
     temperature: parsedTemperature,
+    contextTokens: parsedContextTokens,
   } = parseArgs(argv.slice(2));
-  // Если флаг не задан — берём температуру из конфигурации.
+  // Флаг приоритетнее переменной среды; не задан — берём из конфигурации.
   const temperature = parsedTemperature ?? config.temperature;
+  const contextTokens = parsedContextTokens ?? config.contextTokens;
 
   if (prompt) {
     await runOnce(client, config, prompt, limits, disableThinking, temperature, output);
   } else {
     await runInteractive(
       client,
-      config,
+      { ...config, contextTokens },
       limits,
       disableThinking,
       temperature,
