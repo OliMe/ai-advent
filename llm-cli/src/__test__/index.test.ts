@@ -472,6 +472,30 @@ describe('streamAnswer', () => {
     assert.equal(result.content, 'A');
     assert.equal(out.text(), 'A');
   });
+
+  it('передаёт idleTimeoutMs (таймаут по простою), а не total-signal', async t => {
+    let captured: CompleteOptions | undefined;
+    const client = new ChatCompletionClient(makeConfig());
+    t.mock.method(
+      client,
+      'streamWithUsage',
+      async (
+        _messages: ChatMessage[],
+        options: CompleteOptions,
+        onDelta: (delta: StreamDelta) => void,
+      ) => {
+        captured = options;
+        onDelta({ content: 'A' });
+        return { content: 'A', usage: undefined };
+      },
+    );
+    const out = makeCollector();
+
+    await streamAnswer(client, [{ role: 'user', content: 'x' }], 12345, {}, false, 0.7, out.stream);
+
+    assert.equal(captured?.idleTimeoutMs, 12345); // таймаут по простою = requestTimeoutMs
+    assert.equal(captured?.signal, undefined); // total-таймаут не навешиваем
+  });
 });
 
 describe('validTemperature', () => {

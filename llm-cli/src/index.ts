@@ -158,13 +158,14 @@ export async function streamAnswer(
   output: Writable,
   onFirstContent?: () => void,
 ): Promise<CompletionResult> {
-  const signal = AbortSignal.timeout(requestTimeoutMs);
+  // В потоковом режиме таймаут — по простою (нет новых данных), а не по общей
+  // длительности: длинный, но «живой» ответ не обрывается на полуслове.
   const spinner = createSpinner(output, 'думает…');
   let started = false;
   try {
     return await client.streamWithUsage(
       messages,
-      { signal, disableThinking, temperature, ...limits },
+      { idleTimeoutMs: requestTimeoutMs, disableThinking, temperature, ...limits },
       delta => {
         if (delta.content) {
           if (!started) {

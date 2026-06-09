@@ -25,8 +25,14 @@ export interface StreamDelta {
 
 /** Опции одного запроса к модели: прерывание плюс ограничения генерации. */
 export interface CompleteOptions extends GenerationLimits {
-  /** Прерывание запроса (например, по таймауту). */
+  /** Прерывание запроса (например, по таймауту или отмене пользователем). */
   signal?: AbortSignal;
+  /**
+   * Таймаут простоя для потокового режима (streamWithUsage): запрос обрывается,
+   * только если новых данных нет дольше этого времени. Активный стрим не режется
+   * по общей длительности. Не задан — без таймаута простоя.
+   */
+  idleTimeoutMs?: number;
   /** Отключить «рассуждения» модели (экономит токены; нужно для стоп-маркеров на GLM). */
   disableThinking?: boolean;
   /** Температура для этого запроса; если не задана — берётся из конфигурации. */
@@ -117,65 +123,92 @@ export class ChatCompletionClient {
     options: CompleteOptions,
     onDelta: (delta: StreamDelta) => void,
   ): Promise<CompletionResult> {
-    const response = await this.performRequest(
-      this.buildRequestBody(messages, options, true),
-      options.signal,
-    );
-    if (!response.body) {
-      throw new Error(EMPTY_RESPONSE_MESSAGE);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let content = '';
-    let usage: Usage | undefined;
-    let finishReason: string | null | undefined;
-
-    let streaming = true;
-    while (streaming) {
-      const { value, done } = await reader.read();
-      if (done) {
-        break;
+    // Таймаут простоя: прерываем, только если данные перестали приходить дольше
+    // idleTimeoutMs. Таймер взводится перед запросом (ограничивает время до
+    // первого байта) и сбрасывается на каждом полученном фрагменте.
+    const idleController = new AbortController();
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armIdleTimeout = () => {
+      if (options.idleTimeoutMs === undefined) {
+        return;
       }
-      buffer += decoder.decode(value, { stream: true });
-      // SSE-события разделены переводами строк; обрабатываем полные строки,
-      // незавершённый «хвост» остаётся в буфере до следующего чтения.
-      let newlineIndex = buffer.indexOf('\n');
-      while (newlineIndex !== -1) {
-        const line = buffer.slice(0, newlineIndex).trim();
-        buffer = buffer.slice(newlineIndex + 1);
-        newlineIndex = buffer.indexOf('\n');
-        if (!line.startsWith('data:')) {
-          continue;
-        }
-        const payload = line.slice('data:'.length).trim();
-        if (payload === '[DONE]') {
-          streaming = false;
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+      }
+      idleTimer = setTimeout(() => {
+        const error = new Error('Ответ от API прервался: нет данных дольше таймаута.');
+        error.name = 'TimeoutError';
+        idleController.abort(error);
+      }, options.idleTimeoutMs);
+    };
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, idleController.signal])
+      : idleController.signal;
+
+    armIdleTimeout();
+    try {
+      const response = await this.performRequest(this.buildRequestBody(messages, options, true), signal);
+      if (!response.body) {
+        throw new Error(EMPTY_RESPONSE_MESSAGE);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let content = '';
+      let usage: Usage | undefined;
+      let finishReason: string | null | undefined;
+
+      let streaming = true;
+      while (streaming) {
+        const { value, done } = await reader.read();
+        if (done) {
           break;
         }
-        const chunk = JSON.parse(payload) as ChatCompletionChunk;
-        const choice = chunk.choices?.[0];
-        if (choice?.delta?.reasoning_content) {
-          onDelta({ reasoning: choice.delta.reasoning_content });
-        }
-        if (choice?.delta?.content) {
-          content += choice.delta.content;
-          onDelta({ content: choice.delta.content });
-        }
-        if (choice?.finish_reason) {
-          finishReason = choice.finish_reason;
-        }
-        if (chunk.usage) {
-          usage = chunk.usage;
+        armIdleTimeout(); // данные пришли — перезапускаем таймер простоя
+        buffer += decoder.decode(value, { stream: true });
+        // SSE-события разделены переводами строк; обрабатываем полные строки,
+        // незавершённый «хвост» остаётся в буфере до следующего чтения.
+        let newlineIndex = buffer.indexOf('\n');
+        while (newlineIndex !== -1) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          newlineIndex = buffer.indexOf('\n');
+          if (!line.startsWith('data:')) {
+            continue;
+          }
+          const payload = line.slice('data:'.length).trim();
+          if (payload === '[DONE]') {
+            streaming = false;
+            break;
+          }
+          const chunk = JSON.parse(payload) as ChatCompletionChunk;
+          const choice = chunk.choices?.[0];
+          if (choice?.delta?.reasoning_content) {
+            onDelta({ reasoning: choice.delta.reasoning_content });
+          }
+          if (choice?.delta?.content) {
+            content += choice.delta.content;
+            onDelta({ content: choice.delta.content });
+          }
+          if (choice?.finish_reason) {
+            finishReason = choice.finish_reason;
+          }
+          if (chunk.usage) {
+            usage = chunk.usage;
+          }
         }
       }
-    }
 
-    if (!content) {
-      throw emptyContentError(finishReason);
+      if (!content) {
+        throw emptyContentError(finishReason);
+      }
+      return { content, usage };
+    } finally {
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+      }
     }
-    return { content, usage };
   }
 
   /** Собирает тело запроса из сообщений и ограничений генерации. */

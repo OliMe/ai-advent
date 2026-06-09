@@ -415,4 +415,84 @@ describe('ChatCompletionClient.streamWithUsage', () => {
       /пустой ответ/,
     );
   });
+
+  /**
+   * Заглушка fetch, отдающая SSE-чанки с паузами и честно реагирующая на signal:
+   * при abort поток тела падает с reason — как настоящий fetch.
+   */
+  function delayedStreamStub(chunks: string[], delaysMs: number[]): FetchStub {
+    return async (_url, init) => {
+      const encoder = new TextEncoder();
+      let index = 0;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (index >= chunks.length) {
+            controller.close();
+            return;
+          }
+          try {
+            await new Promise<void>((resolve, reject) => {
+              const onAbort = () => {
+                clearTimeout(timer);
+                reject(init.signal?.reason);
+              };
+              const timer = setTimeout(() => {
+                init.signal?.removeEventListener('abort', onAbort);
+                resolve();
+              }, delaysMs[index]);
+              init.signal?.addEventListener('abort', onAbort, { once: true });
+            });
+          } catch (reason) {
+            controller.error(reason);
+            return;
+          }
+          controller.enqueue(encoder.encode(chunks[index]));
+          index++;
+        },
+      });
+      return new Response(body, { status: 200 });
+    };
+  }
+
+  it('обрывает по простою (TimeoutError), если данные перестали приходить', async t => {
+    // Первый чанк быстрый, второй «зависает» дольше idle-таймаута.
+    const client = clientWithFetch(
+      t,
+      delayedStreamStub(
+        ['data: {"choices":[{"delta":{"content":"При"}}]}\n', 'data: [DONE]\n'],
+        [0, 200],
+      ),
+    );
+
+    await assert.rejects(
+      client.streamWithUsage([{ role: 'user', content: 'hi' }], { idleTimeoutMs: 20 }, () => {}),
+      (error: Error) => error.name === 'TimeoutError',
+    );
+  });
+
+  it('не обрывает «живой» поток: таймаут на простой, а не на общую длительность', async t => {
+    // Каждая пауза (10мс) меньше idle-таймаута (60мс), хотя суммарно их больше.
+    const client = clientWithFetch(
+      t,
+      delayedStreamStub(
+        [
+          'data: {"choices":[{"delta":{"content":"a"}}]}\n',
+          'data: {"choices":[{"delta":{"content":"b"}}]}\n',
+          'data: {"choices":[{"delta":{"content":"c"}}]}\n',
+          'data: [DONE]\n',
+        ],
+        [10, 10, 10, 10],
+      ),
+    );
+
+    // Передаём ещё и пользовательский signal — покрывает ветку AbortSignal.any.
+    const userSignal = new AbortController().signal;
+    const result = await client.streamWithUsage(
+      [{ role: 'user', content: 'hi' }],
+      { idleTimeoutMs: 60, signal: userSignal },
+      () => {},
+    );
+
+    assert.equal(result.content, 'abc');
+  });
 });
