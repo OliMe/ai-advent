@@ -285,6 +285,8 @@ export async function runInteractive(
       try {
         let answer: string;
         if (stream) {
+          // Пустая строка-отступ, чтобы прелоадер/ответ не «прилипали» к строке «Вы: …».
+          output.write('\n');
           const result = await streamAnswer(
             client,
             history,
@@ -293,7 +295,7 @@ export async function runInteractive(
             disableThinking,
             temperature,
             output,
-            () => output.write(`\n${ASSISTANT_LABEL}: `),
+            () => output.write(`${ASSISTANT_LABEL}: `),
           );
           answer = result.content;
           output.write('\n\n');
