@@ -1,13 +1,22 @@
 import * as readline from 'node:readline/promises';
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
-import { loadConfig, ChatCompletionClient } from '../../core/src/index.ts';
+import {
+  loadConfig,
+  ChatCompletionClient,
+  FileSessionStore,
+  createSession,
+} from '../../core/src/index.ts';
 import type {
   AppConfig,
   ChatMessage,
   CompletionResult,
   GenerationLimits,
   ResponseFormat,
+  Session,
+  SessionStore,
 } from '../../core/src/index.ts';
 
 /** Метка ответа модели в интерактивном режиме. */
@@ -55,6 +64,48 @@ export function augmentSystemPrompt(systemPrompt: string, limits: GenerationLimi
     );
   }
   return systemPrompt;
+}
+
+/** Каталог хранения сессий: из LLM_SESSION_DIR или `~/.llm-cli/sessions`. */
+export function sessionDirectory(): string {
+  return process.env.LLM_SESSION_DIR?.trim() || join(homedir(), '.llm-cli', 'sessions');
+}
+
+/**
+ * Готовит сессию для интерактивного режима: новую (по умолчанию) или
+ * восстановленную. resume='last' берёт последнюю, иначе — по id; при fork —
+ * ветвление в новую сессию с копией сообщений (оригинал не трогаем).
+ * Восстановленная сессия используется как есть (система заморожена), новая —
+ * с системным сообщением из текущего конфига.
+ */
+export function resolveSession(
+  store: SessionStore | null,
+  config: AppConfig,
+  limits: GenerationLimits,
+  resume: string | undefined,
+  fork: boolean,
+): Session {
+  const freshSession = (): Session =>
+    createSession(config.model, [
+      { role: 'system', content: augmentSystemPrompt(config.systemPrompt, limits) },
+    ]);
+
+  // Без хранилища (--ephemeral) или без запроса на восстановление — новая сессия.
+  if (store === null || resume === undefined) {
+    return freshSession();
+  }
+
+  const existing = resume === 'last' ? store.latest() : store.load(resume);
+  if (existing === null) {
+    if (resume === 'last') {
+      return freshSession(); // прошлых сессий ещё нет
+    }
+    throw new Error(`Сессия не найдена: ${resume}`);
+  }
+  if (fork) {
+    return createSession(existing.model, [...existing.messages]);
+  }
+  return existing;
 }
 
 /** Сколько символов считаем за один токен в грубой оценке (провайдер-агностично). */
@@ -230,15 +281,17 @@ export async function runInteractive(
   disableThinking: boolean,
   temperature: number,
   stream: boolean,
+  // Транскрипт сессии (с системным сообщением); store=null — без персистентности.
+  session: Session,
+  store: SessionStore | null,
   input: Readable,
   output: Writable,
   // Передаётся явно — это же даёт тестам шов для подмены интерфейса.
   createInterface: typeof readline.createInterface,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
-  let history: ChatMessage[] = [
-    { role: 'system', content: augmentSystemPrompt(config.systemPrompt, limits) },
-  ];
+  // Полный транскрипт храним в session.messages; в модель уходит окно.
+  const history = session.messages;
   // Бюджет истории зависит от контекста выбранной модели и резерва под ответ.
   const historyBudget = historyBudgetTokens(config.contextTokens, limits.maxTokens);
 
@@ -280,8 +333,9 @@ export async function runInteractive(
       }
 
       history.push({ role: 'user', content: userInput });
-      // Скользящее окно: держим историю в пределах контекста модели.
-      history = trimHistoryToBudget(history, historyBudget);
+      // Скользящее окно: в модель уходит обрезанный вид транскрипта (сам
+      // транскрипт остаётся полным — для сохранения сессии).
+      const windowed = trimHistoryToBudget(history, historyBudget);
       try {
         let answer: string;
         if (stream) {
@@ -289,7 +343,7 @@ export async function runInteractive(
           output.write('\n');
           const result = await streamAnswer(
             client,
-            history,
+            windowed,
             config.requestTimeoutMs,
             limits,
             disableThinking,
@@ -302,7 +356,7 @@ export async function runInteractive(
         } else {
           answer = await askModel(
             client,
-            history,
+            windowed,
             config.requestTimeoutMs,
             limits,
             disableThinking,
@@ -311,6 +365,9 @@ export async function runInteractive(
           output.write(`\n${ASSISTANT_LABEL}: ${answer}\n\n`);
         }
         history.push({ role: 'assistant', content: answer });
+        // Сохраняем сессию после завершённого обмена (store=null при --ephemeral).
+        session.updatedAt = new Date().toISOString();
+        store?.save(session);
       } catch (error) {
         // Откатываем неудачный ход, чтобы история осталась согласованной.
         history.pop();
@@ -345,6 +402,12 @@ export interface ParsedArgs {
   contextTokens?: number;
   /** Потоковый вывод ответа; выключается флагом `--no-stream`. */
   stream: boolean;
+  /** Не сохранять сессию (флаг `--ephemeral`). */
+  ephemeral: boolean;
+  /** Восстановить сессию: `last` или id; undefined — новая сессия. */
+  resume?: string;
+  /** Ветвить восстановленную сессию в новую (флаг `--fork`). */
+  fork: boolean;
 }
 
 /** Разбирает значение флага как положительное целое или бросает понятную ошибку. */
@@ -392,6 +455,9 @@ export function parseArgs(args: string[]): ParsedArgs {
   let temperature: number | undefined;
   let contextTokens: number | undefined;
   let stream = true;
+  let ephemeral = false;
+  let resume: string | undefined;
+  let fork = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -413,6 +479,19 @@ export function parseArgs(args: string[]): ParsedArgs {
     }
     if (name === '--no-stream') {
       stream = false;
+      continue;
+    }
+    if (name === '--ephemeral') {
+      ephemeral = true;
+      continue;
+    }
+    if (name === '--fork') {
+      fork = true;
+      continue;
+    }
+    if (name === '--resume') {
+      // Без значения — последняя сессия; иначе конкретный id (через `=`).
+      resume = eq === -1 ? 'last' : arg.slice(eq + 1);
       continue;
     }
 
@@ -451,6 +530,9 @@ export function parseArgs(args: string[]): ParsedArgs {
     temperature,
     contextTokens,
     stream,
+    ephemeral,
+    resume,
+    fork,
   };
 }
 
@@ -466,21 +548,30 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     temperature: parsedTemperature,
     contextTokens: parsedContextTokens,
     stream,
+    ephemeral,
+    resume,
+    fork,
   } = parseArgs(argv.slice(2));
   // Флаг приоритетнее переменной среды; не задан — берём из конфигурации.
   const temperature = parsedTemperature ?? config.temperature;
   const contextTokens = parsedContextTokens ?? config.contextTokens;
+  const interactiveConfig = { ...config, contextTokens };
 
   if (prompt) {
     await runOnce(client, config, prompt, limits, disableThinking, temperature, stream, output);
   } else {
+    // --ephemeral — без хранилища; иначе файловое хранилище сессий.
+    const store = ephemeral ? null : new FileSessionStore(sessionDirectory());
+    const session = resolveSession(store, interactiveConfig, limits, resume, fork);
     await runInteractive(
       client,
-      { ...config, contextTokens },
+      interactiveConfig,
       limits,
       disableThinking,
       temperature,
       stream,
+      session,
+      store,
       input,
       output,
       readline.createInterface,

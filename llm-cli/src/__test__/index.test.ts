@@ -21,19 +21,44 @@ import {
   trimHistoryToBudget,
   createSpinner,
   streamAnswer,
+  sessionDirectory,
+  resolveSession,
 } from '../index.ts';
-import { ChatCompletionClient } from '../../../core/src/index.ts';
+import { ChatCompletionClient, createSession } from '../../../core/src/index.ts';
 import type {
   AppConfig,
   ChatMessage,
   CompleteOptions,
   StreamDelta,
+  Session,
+  SessionStore,
 } from '../../../core/src/index.ts';
 import {
   makeConfig,
   completionResponse,
   streamResponse,
 } from '../../../core/src/__test__/helpers.ts';
+
+/** Сессия с системным сообщением из конфига (для интерактивных тестов). */
+function makeSession(config: AppConfig = makeConfig()): Session {
+  return createSession(config.model, [{ role: 'system', content: config.systemPrompt }]);
+}
+
+/** Хранилище-заглушка для сессий: записывает сохранения, позволяет задать содержимое. */
+function fakeStore(sessions: Session[] = []): SessionStore & { saved: Session[] } {
+  const map = new Map(sessions.map(session => [session.id, session]));
+  const saved: Session[] = [];
+  return {
+    saved,
+    list: () => [], // не используется в этих тестах
+    load: id => map.get(id) ?? null,
+    save: session => {
+      saved.push(session);
+      map.set(session.id, session);
+    },
+    latest: () => sessions[sessions.length - 1] ?? null,
+  };
+}
 
 /** Поток-приёмник: накапливает записанный текст. */
 function makeCollector(): { stream: Writable; text: () => string } {
@@ -63,6 +88,8 @@ function driveInteractive(
   temperature = 0.7,
   config: AppConfig = makeConfig(),
   stream = true,
+  store: SessionStore | null = null,
+  session: Session = makeSession(config),
 ): { finished: Promise<void>; text: () => string } {
   const input = new PassThrough();
   let buffer = '';
@@ -86,6 +113,8 @@ function driveInteractive(
     false,
     temperature,
     stream,
+    session,
+    store,
     input,
     output,
     readline.createInterface,
@@ -254,6 +283,8 @@ describe('runInteractive', () => {
       false,
       0.7,
       true,
+      makeSession(),
+      null,
       input,
       output.stream,
       () => {
@@ -320,6 +351,31 @@ describe('runInteractive', () => {
     assert.equal(lastSent[0].role, 'system'); // системное сообщение сохраняется
     assert.ok(lastSent.some(message => message.content === 'второй вопрос')); // свежий ход на месте
     assert.ok(!lastSent.some(message => message.content.includes('ПЕРВЫЙ'))); // старый ход выпал
+  });
+
+  it('сохраняет сессию после хода (полный транскрипт), store=null не падает', async t => {
+    const client = clientWithStream(t, () => 'ОТВЕТ');
+    const store = fakeStore();
+    const session = makeSession();
+
+    const { finished } = driveInteractive(
+      client,
+      ['привет', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      store,
+      session,
+    );
+    await finished;
+
+    assert.equal(store.saved.length, 1); // сохранили после завершённого обмена
+    assert.deepEqual(
+      session.messages.map(message => message.role),
+      ['system', 'user', 'assistant'],
+    ); // полный транскрипт растёт
+    assert.equal(session.messages.at(-1)?.content, 'ОТВЕТ');
+    assert.notEqual(session.updatedAt, ''); // время обновления проставлено
   });
 });
 
@@ -564,6 +620,20 @@ describe('parseArgs', () => {
     assert.equal(parseArgs(['привет']).stream, true);
   });
 
+  it('--ephemeral и --fork — булевы; по умолчанию выключены', () => {
+    assert.equal(parseArgs(['--ephemeral']).ephemeral, true);
+    assert.equal(parseArgs(['--fork']).fork, true);
+    const none = parseArgs(['привет']);
+    assert.equal(none.ephemeral, false);
+    assert.equal(none.fork, false);
+    assert.equal(none.resume, undefined);
+  });
+
+  it('--resume без значения = last, с = задаёт id', () => {
+    assert.equal(parseArgs(['--resume']).resume, 'last');
+    assert.equal(parseArgs(['--resume=20260610T100000-ab']).resume, '20260610T100000-ab');
+  });
+
   it('--json включает формат json_object', () => {
     const result = parseArgs(['--json', 'дай', 'json']);
     assert.equal(result.prompt, 'дай json');
@@ -640,8 +710,84 @@ describe('parseArgs', () => {
   });
 });
 
+describe('sessionDirectory', () => {
+  it('берёт каталог из LLM_SESSION_DIR, иначе ~/.llm-cli/sessions', () => {
+    const saved = process.env.LLM_SESSION_DIR;
+    try {
+      process.env.LLM_SESSION_DIR = '/tmp/custom-sessions';
+      assert.equal(sessionDirectory(), '/tmp/custom-sessions');
+      delete process.env.LLM_SESSION_DIR;
+      assert.match(sessionDirectory(), /[/\\]\.llm-cli[/\\]sessions$/);
+    } finally {
+      if (saved === undefined) delete process.env.LLM_SESSION_DIR;
+      else process.env.LLM_SESSION_DIR = saved;
+    }
+  });
+});
+
+describe('resolveSession', () => {
+  const config = makeConfig({ model: 'glm', systemPrompt: 'СИС' });
+
+  /** Существующая сессия для подмены в хранилище. */
+  function existing(id: string): Session {
+    return {
+      version: 1,
+      id,
+      model: 'other',
+      createdAt: '2026-06-10T10:00:00.000Z',
+      updatedAt: '2026-06-10T10:00:00.000Z',
+      messages: [
+        { role: 'system', content: 'СТАРАЯ СИСТЕМА' },
+        { role: 'user', content: 'давний вопрос' },
+      ],
+    };
+  }
+
+  it('без resume — новая сессия с системой из конфига', () => {
+    const session = resolveSession(fakeStore(), config, {}, undefined, false);
+    assert.equal(session.messages.length, 1);
+    assert.deepEqual(session.messages[0], { role: 'system', content: 'СИС' });
+  });
+
+  it('store=null (ephemeral) — всегда новая сессия', () => {
+    const session = resolveSession(null, config, {}, 'last', false);
+    assert.equal(session.messages[0].content, 'СИС');
+  });
+
+  it('resume=last без прошлых сессий — новая', () => {
+    const session = resolveSession(fakeStore(), config, {}, 'last', false);
+    assert.equal(session.messages[0].content, 'СИС');
+  });
+
+  it('resume=last с существующей — продолжает её (система заморожена)', () => {
+    const previous = existing('id-last');
+    const session = resolveSession(fakeStore([previous]), config, {}, 'last', false);
+    assert.equal(session.id, 'id-last');
+    assert.equal(session.messages[0].content, 'СТАРАЯ СИСТЕМА'); // конфиг не влияет
+  });
+
+  it('resume по id, которого нет — бросает ошибку', () => {
+    assert.throws(() => resolveSession(fakeStore(), config, {}, 'нет', false), /не найдена/);
+  });
+
+  it('resume по id — продолжает существующую', () => {
+    const previous = existing('id-x');
+    const session = resolveSession(fakeStore([previous]), config, {}, 'id-x', false);
+    assert.equal(session.id, 'id-x');
+  });
+
+  it('fork — новая сессия с копией сообщений, оригинал не меняется', () => {
+    const previous = existing('id-fork');
+    const session = resolveSession(fakeStore([previous]), config, {}, 'id-fork', true);
+
+    assert.notEqual(session.id, 'id-fork'); // другой id
+    assert.deepEqual(session.messages, previous.messages); // копия содержимого
+    assert.notEqual(session.messages, previous.messages); // но не та же ссылка
+  });
+});
+
 describe('main', () => {
-  const ENV_KEYS = ['LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL'];
+  const ENV_KEYS = ['LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL', 'LLM_SESSION_DIR'];
   let savedEnv: Record<string, string | undefined>;
   let savedCwd: string;
   let workDir: string;
@@ -656,6 +802,8 @@ describe('main', () => {
     process.env.LLM_MODEL = 'test-model';
     savedCwd = process.cwd();
     workDir = mkdtempSync(join(tmpdir(), 'llm-main-'));
+    // Сессии — во временный каталог, чтобы не трогать ~/.llm-cli.
+    process.env.LLM_SESSION_DIR = join(workDir, 'sessions');
     process.chdir(workDir);
   });
 
@@ -715,6 +863,18 @@ describe('main', () => {
     const output = makeCollector();
 
     const finished = main(['node', 'cli.ts', '--context-tokens=500'], input, output.stream);
+    input.write('/exit\n');
+    await finished;
+
+    assert.match(output.text(), /Чат с моделью/);
+    assert.match(output.text(), /До встречи!/);
+  });
+
+  it('интерактивный режим с --ephemeral (без хранилища сессий)', async () => {
+    const input = new PassThrough();
+    const output = makeCollector();
+
+    const finished = main(['node', 'cli.ts', '--ephemeral'], input, output.stream);
     input.write('/exit\n');
     await finished;
 
