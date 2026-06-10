@@ -17,6 +17,7 @@ import type {
   ResponseFormat,
   Session,
   SessionStore,
+  SessionSummary,
 } from '../../core/src/index.ts';
 
 /** Метка ответа модели в интерактивном режиме. */
@@ -78,6 +79,13 @@ export function sessionDirectory(): string {
  * Восстановленная сессия используется как есть (система заморожена), новая —
  * с системным сообщением из текущего конфига.
  */
+/** Новая сессия с системным сообщением из текущего конфига. */
+export function newSession(config: AppConfig, limits: GenerationLimits): Session {
+  return createSession(config.model, [
+    { role: 'system', content: augmentSystemPrompt(config.systemPrompt, limits) },
+  ]);
+}
+
 export function resolveSession(
   store: SessionStore | null,
   config: AppConfig,
@@ -85,20 +93,15 @@ export function resolveSession(
   resume: string | undefined,
   fork: boolean,
 ): Session {
-  const freshSession = (): Session =>
-    createSession(config.model, [
-      { role: 'system', content: augmentSystemPrompt(config.systemPrompt, limits) },
-    ]);
-
   // Без хранилища (--ephemeral) или без запроса на восстановление — новая сессия.
   if (store === null || resume === undefined) {
-    return freshSession();
+    return newSession(config, limits);
   }
 
   const existing = resume === 'last' ? store.latest() : store.load(resume);
   if (existing === null) {
     if (resume === 'last') {
-      return freshSession(); // прошлых сессий ещё нет
+      return newSession(config, limits); // прошлых сессий ещё нет
     }
     throw new Error(`Сессия не найдена: ${resume}`);
   }
@@ -273,6 +276,39 @@ export async function runOnce(
   }
 }
 
+/** Сообщение, когда сессионные команды вызваны при отключённом хранилище. */
+const EPHEMERAL_NOTICE = 'Хранилище сессий отключено (--ephemeral).\n\n';
+
+/** Текст справки по интерактивным командам. */
+export function helpText(): string {
+  return (
+    'Команды:\n' +
+    '  /help            — этот список\n' +
+    '  /sessions        — сохранённые сессии\n' +
+    '  /resume <id>     — восстановить сессию\n' +
+    '  /fork <id>       — ответвиться от сессии в новую\n' +
+    '  /reset           — начать новую пустую сессию\n' +
+    '  /system <текст>  — изменить системный промпт\n' +
+    '  /temp <число>    — изменить температуру\n' +
+    '  /exit, /quit     — выход\n\n'
+  );
+}
+
+/** Форматирует список сессий для команды /sessions. */
+export function formatSessionList(summaries: SessionSummary[]): string {
+  if (summaries.length === 0) {
+    return 'Сохранённых сессий нет.\n\n';
+  }
+  const lines = summaries.map(summary => `  ${summary.id}  ${summary.preview || '(пусто)'}`);
+  return `Сессии:\n${lines.join('\n')}\n\n`;
+}
+
+/** Перезаписывает системное сообщение сессии (действует с этого момента). */
+function setSystemPrompt(session: Session, text: string): void {
+  session.messages[0] = { role: 'system', content: text };
+  session.updatedAt = new Date().toISOString();
+}
+
 /** Интерактивный режим: диалог с сохранением истории. */
 export async function runInteractive(
   client: ChatCompletionClient,
@@ -290,8 +326,9 @@ export async function runInteractive(
   createInterface: typeof readline.createInterface,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
-  // Полный транскрипт храним в session.messages; в модель уходит окно.
-  const history = session.messages;
+  // Активная сессия (команды /resume, /fork, /reset могут её сменить).
+  // Полный транскрипт храним в currentSession.messages; в модель уходит окно.
+  let currentSession = session;
   // Бюджет истории зависит от контекста выбранной модели и резерва под ответ.
   const historyBudget = historyBudgetTokens(config.contextTokens, limits.maxTokens);
 
@@ -304,7 +341,7 @@ export async function runInteractive(
 
   output.write(
     `Чат с моделью «${config.model}» (температура ${temperature}). ` +
-      'Сообщение — текст; смена температуры — /temp <число>; выход — /exit или Ctrl+C.\n',
+      'Сообщение — текст; команды — /help; выход — /exit или Ctrl+C.\n',
   );
 
   try {
@@ -320,7 +357,40 @@ export async function runInteractive(
       }
       if (!userInput) continue;
       if (userInput === '/exit' || userInput === '/quit') break;
-
+      if (userInput === '/help') {
+        output.write(helpText());
+        continue;
+      }
+      if (userInput === '/reset') {
+        currentSession = newSession(config, limits);
+        output.write('Начата новая сессия.\n\n');
+        continue;
+      }
+      if (userInput === '/sessions') {
+        output.write(store === null ? EPHEMERAL_NOTICE : formatSessionList(store.list()));
+        continue;
+      }
+      if (userInput.startsWith('/resume ') || userInput.startsWith('/fork ')) {
+        const isFork = userInput.startsWith('/fork ');
+        const id = userInput.slice((isFork ? '/fork ' : '/resume ').length).trim();
+        const loaded = store?.load(id) ?? null;
+        if (store === null) {
+          output.write(EPHEMERAL_NOTICE);
+        } else if (loaded === null) {
+          output.write(`Сессия не найдена: ${id}\n\n`);
+        } else {
+          currentSession = isFork ? createSession(loaded.model, [...loaded.messages]) : loaded;
+          output.write(`${isFork ? 'Ответвление от' : 'Восстановлена'} сессия ${id}.\n\n`);
+        }
+        continue;
+      }
+      if (userInput.startsWith('/system ')) {
+        // userInput уже обрезан, поэтому после '/system ' гарантированно есть текст.
+        setSystemPrompt(currentSession, userInput.slice('/system '.length).trim());
+        store?.save(currentSession);
+        output.write('Системный промпт обновлён.\n\n');
+        continue;
+      }
       if (userInput.startsWith('/temp ')) {
         const parsed = validTemperature(userInput.slice('/temp '.length).trim());
         if (parsed === null) {
@@ -332,10 +402,10 @@ export async function runInteractive(
         continue;
       }
 
-      history.push({ role: 'user', content: userInput });
+      currentSession.messages.push({ role: 'user', content: userInput });
       // Скользящее окно: в модель уходит обрезанный вид транскрипта (сам
       // транскрипт остаётся полным — для сохранения сессии).
-      const windowed = trimHistoryToBudget(history, historyBudget);
+      const windowed = trimHistoryToBudget(currentSession.messages, historyBudget);
       try {
         let answer: string;
         if (stream) {
@@ -364,13 +434,13 @@ export async function runInteractive(
           );
           output.write(`\n${ASSISTANT_LABEL}: ${answer}\n\n`);
         }
-        history.push({ role: 'assistant', content: answer });
+        currentSession.messages.push({ role: 'assistant', content: answer });
         // Сохраняем сессию после завершённого обмена (store=null при --ephemeral).
-        session.updatedAt = new Date().toISOString();
-        store?.save(session);
+        currentSession.updatedAt = new Date().toISOString();
+        store?.save(currentSession);
       } catch (error) {
         // Откатываем неудачный ход, чтобы история осталась согласованной.
-        history.pop();
+        currentSession.messages.pop();
         output.write(`\n[ошибка] ${describeError(error)}\n\n`);
       }
     }

@@ -23,8 +23,11 @@ import {
   streamAnswer,
   sessionDirectory,
   resolveSession,
+  newSession,
+  helpText,
+  formatSessionList,
 } from '../index.ts';
-import { ChatCompletionClient, createSession } from '../../../core/src/index.ts';
+import { ChatCompletionClient, createSession, summarize } from '../../../core/src/index.ts';
 import type {
   AppConfig,
   ChatMessage,
@@ -44,13 +47,28 @@ function makeSession(config: AppConfig = makeConfig()): Session {
   return createSession(config.model, [{ role: 'system', content: config.systemPrompt }]);
 }
 
+/** Сохранённая сессия с заданным id (для /resume и /fork). */
+function storedSession(id: string): Session {
+  return {
+    version: 1,
+    id,
+    model: 'm',
+    createdAt: '2026-06-10T10:00:00.000Z',
+    updatedAt: '2026-06-10T10:00:00.000Z',
+    messages: [
+      { role: 'system', content: 'СИС' },
+      { role: 'user', content: 'прошлый вопрос' },
+    ],
+  };
+}
+
 /** Хранилище-заглушка для сессий: записывает сохранения, позволяет задать содержимое. */
 function fakeStore(sessions: Session[] = []): SessionStore & { saved: Session[] } {
   const map = new Map(sessions.map(session => [session.id, session]));
   const saved: Session[] = [];
   return {
     saved,
-    list: () => [], // не используется в этих тестах
+    list: () => sessions.map(summarize),
     load: id => map.get(id) ?? null,
     save: session => {
       saved.push(session);
@@ -376,6 +394,151 @@ describe('runInteractive', () => {
     ); // полный транскрипт растёт
     assert.equal(session.messages.at(-1)?.content, 'ОТВЕТ');
     assert.notEqual(session.updatedAt, ''); // время обновления проставлено
+  });
+
+  it('/help печатает список команд', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(client, ['/help', '/exit']);
+    await finished;
+
+    assert.match(text(), /\/resume/);
+    assert.match(text(), /\/system/);
+  });
+
+  it('/reset начинает новую сессию', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(client, ['/reset', '/exit']);
+    await finished;
+
+    assert.match(text(), /Начата новая сессия/);
+  });
+
+  it('/sessions при --ephemeral сообщает об отключённом хранилище', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/sessions', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+    );
+    await finished;
+
+    assert.match(text(), /отключено/);
+  });
+
+  it('/sessions со хранилищем печатает список', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/sessions', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+    );
+    await finished;
+
+    assert.match(text(), /Сохранённых сессий нет/);
+  });
+
+  it('/resume при --ephemeral сообщает об отключённом хранилище', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/resume любой', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+    );
+    await finished;
+
+    assert.match(text(), /отключено/);
+  });
+
+  it('/resume несуществующей сессии — «не найдена»', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/resume нет', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+    );
+    await finished;
+
+    assert.match(text(), /не найдена: нет/);
+  });
+
+  it('/resume восстанавливает сессию по id', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/resume sess-1', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore([storedSession('sess-1')]),
+    );
+    await finished;
+
+    assert.match(text(), /Восстановлена сессия sess-1/);
+  });
+
+  it('/fork ответвляется от сессии в новую', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/fork sess-2', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore([storedSession('sess-2')]),
+    );
+    await finished;
+
+    assert.match(text(), /Ответвление от сессия sess-2/);
+  });
+
+  it('/system перезаписывает систему и сохраняет (с хранилищем)', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const store = fakeStore();
+    const session = makeSession();
+    const { finished, text } = driveInteractive(
+      client,
+      ['/system Ты пират', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      store,
+      session,
+    );
+    await finished;
+
+    assert.match(text(), /Системный промпт обновлён/);
+    assert.equal(session.messages[0].content, 'Ты пират');
+    assert.ok(store.saved.length >= 1);
+  });
+
+  it('/system без хранилища меняет систему, но не сохраняет', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    const { finished, text } = driveInteractive(
+      client,
+      ['/system Ты эксперт', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      session,
+    );
+    await finished;
+
+    assert.match(text(), /Системный промпт обновлён/);
+    assert.equal(session.messages[0].content, 'Ты эксперт');
   });
 });
 
@@ -783,6 +946,37 @@ describe('resolveSession', () => {
     assert.notEqual(session.id, 'id-fork'); // другой id
     assert.deepEqual(session.messages, previous.messages); // копия содержимого
     assert.notEqual(session.messages, previous.messages); // но не та же ссылка
+  });
+});
+
+describe('helpText / formatSessionList / newSession', () => {
+  it('helpText содержит ключевые команды', () => {
+    const text = helpText();
+    assert.match(text, /\/sessions/);
+    assert.match(text, /\/fork/);
+    assert.match(text, /\/reset/);
+  });
+
+  it('formatSessionList: пусто, с превью и с пустым превью', () => {
+    assert.match(formatSessionList([]), /Сохранённых сессий нет/);
+    assert.match(
+      formatSessionList([
+        { id: 'a', model: 'm', createdAt: 't', updatedAt: 't', preview: 'вопрос', messageCount: 2 },
+      ]),
+      /a {2}вопрос/,
+    );
+    assert.match(
+      formatSessionList([
+        { id: 'b', model: 'm', createdAt: 't', updatedAt: 't', preview: '', messageCount: 1 },
+      ]),
+      /\(пусто\)/,
+    );
+  });
+
+  it('newSession создаёт сессию с системой из конфига', () => {
+    const session = newSession(makeConfig({ model: 'glm', systemPrompt: 'СИС' }), {});
+    assert.equal(session.model, 'glm');
+    assert.deepEqual(session.messages, [{ role: 'system', content: 'СИС' }]);
   });
 });
 
