@@ -328,6 +328,7 @@ export function helpText(): string {
     '  /fork <id>       — ответвиться от сессии в новую\n' +
     '  /reset           — начать новую пустую сессию\n' +
     '  /system <текст>  — изменить системный промпт\n' +
+    '  /file <путь>     — добавить содержимое файла в контекст\n' +
     '  /temp <число>    — изменить температуру\n' +
     '  /exit, /quit     — выход\n\n'
   );
@@ -430,6 +431,24 @@ export async function runInteractive(
         output.write('Системный промпт обновлён.\n\n');
         continue;
       }
+      if (userInput.startsWith('/file ')) {
+        const path = userInput.slice('/file '.length).trim();
+        let content: string;
+        try {
+          content = readFileContent(path);
+        } catch (error) {
+          output.write(`${describeError(error)}\n\n`);
+          continue;
+        }
+        // Содержимое файла кладём в историю как контекст; модель не дёргаем —
+        // ответит на следующий вопрос пользователя уже с файлом в контексте.
+        const attachment = formatAttachment(path, content);
+        currentSession.messages.push({ role: 'user', content: attachment });
+        output.write(
+          `Файл «${path}» добавлен в контекст (~${estimateTokens(attachment)} токенов).\n\n`,
+        );
+        continue;
+      }
       if (userInput.startsWith('/temp ')) {
         const parsed = validTemperature(userInput.slice('/temp '.length).trim());
         if (parsed === null) {
@@ -525,6 +544,8 @@ export interface ParsedArgs {
   resume?: string;
   /** Ветвить восстановленную сессию в новую (флаг `--fork`). */
   fork: boolean;
+  /** Файлы (`--file`, можно несколько), чьё содержимое идёт в запрос. */
+  files: string[];
 }
 
 /** Разбирает значение флага как положительное целое или бросает понятную ошибку. */
@@ -558,6 +579,30 @@ function loadJsonSchema(path: string): ResponseFormat {
   return { type: 'json_schema', json_schema: { name: 'response', strict: true, schema } };
 }
 
+/** Читает текстовый файл или бросает понятную ошибку. */
+function readFileContent(path: string): string {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    throw new Error(`Не удалось прочитать файл: ${path}`);
+  }
+}
+
+/** Оформляет содержимое файла для вставки в запрос (с пометкой и кодовым блоком). */
+export function formatAttachment(path: string, content: string): string {
+  return `Содержимое файла «${path}»:\n\`\`\`\n${content}\n\`\`\``;
+}
+
+/** Читает файлы и собирает их оформленное содержимое в один блок. */
+export function attachFiles(paths: string[]): string {
+  return paths.map(path => formatAttachment(path, readFileContent(path))).join('\n\n');
+}
+
+/** Объединяет вложения файлов и текст промпта в одно сообщение. */
+export function combinePrompt(attachments: string, prompt: string): string {
+  return attachments && prompt ? `${attachments}\n\n${prompt}` : attachments || prompt;
+}
+
 /**
  * Разбирает аргументы (без `node` и имени скрипта): флаги `--max-tokens`,
  * `--stop` (можно повторять), `--json`, `--json-schema`, `--no-thinking`,
@@ -567,6 +612,7 @@ function loadJsonSchema(path: string): ResponseFormat {
 export function parseArgs(args: string[]): ParsedArgs {
   const promptParts: string[] = [];
   const stops: string[] = [];
+  const files: string[] = [];
   const limits: GenerationLimits = {};
   let disableThinking = false;
   let temperature: number | undefined;
@@ -623,6 +669,8 @@ export function parseArgs(args: string[]): ParsedArgs {
       contextTokens = parsePositiveInteger(name, value);
     } else if (name === '--stop') {
       stops.push(value);
+    } else if (name === '--file') {
+      files.push(value);
     } else if (name === '--json-schema') {
       limits.responseFormat = loadJsonSchema(value);
     } else if (name === '--temperature') {
@@ -650,6 +698,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     ephemeral,
     resume,
     fork,
+    files,
   };
 }
 
@@ -668,14 +717,18 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     ephemeral,
     resume,
     fork,
+    files,
   } = parseArgs(argv.slice(2));
   // Флаг приоритетнее переменной среды; не задан — берём из конфигурации.
   const temperature = parsedTemperature ?? config.temperature;
   const contextTokens = parsedContextTokens ?? config.contextTokens;
   const interactiveConfig = { ...config, contextTokens };
 
-  if (prompt) {
-    await runOnce(client, config, prompt, limits, disableThinking, temperature, stream, output);
+  // Содержимое --file идёт в запрос вместе с текстом промпта (режим одного запроса).
+  const fullPrompt = combinePrompt(files.length > 0 ? attachFiles(files) : '', prompt);
+
+  if (fullPrompt) {
+    await runOnce(client, config, fullPrompt, limits, disableThinking, temperature, stream, output);
   } else {
     // --ephemeral — без хранилища; иначе файловое хранилище сессий.
     const store = ephemeral ? null : new FileSessionStore(sessionDirectory());

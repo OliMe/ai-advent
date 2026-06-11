@@ -29,6 +29,9 @@ import {
   newSession,
   helpText,
   formatSessionList,
+  formatAttachment,
+  attachFiles,
+  combinePrompt,
 } from '../index.ts';
 import { ChatCompletionClient, createSession, summarize } from '../../../core/src/index.ts';
 import type {
@@ -555,6 +558,42 @@ describe('runInteractive', () => {
     assert.match(text(), /Системный промпт обновлён/);
     assert.equal(session.messages[0].content, 'Ты эксперт');
   });
+
+  it('/file добавляет содержимое файла в контекст и шлёт его в запросе', async t => {
+    const dir = mkdtempSync(join(tmpdir(), 'llm-file-'));
+    try {
+      const path = join(dir, 'note.txt');
+      writeFileSync(path, 'СЕКРЕТНЫЙ ТЕКСТ');
+      const sent: ChatMessage[][] = [];
+      const client = clientWithStream(
+        t,
+        () => 'ОК',
+        messages => sent.push(messages),
+      );
+
+      const { finished, text } = driveInteractive(client, [
+        `/file ${path}`,
+        'что в файле?',
+        '/exit',
+      ]);
+      await finished;
+
+      assert.match(text(), /добавлен в контекст/);
+      const lastSent = sent[sent.length - 1];
+      assert.ok(lastSent.some(message => message.content.includes('СЕКРЕТНЫЙ ТЕКСТ')));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('/file несуществующего файла — ошибка, диалог продолжается', async t => {
+    const client = clientWithStream(t, () => 'ОК');
+    const { finished, text } = driveInteractive(client, ['/file /нет/файла.txt', '/exit']);
+    await finished;
+
+    assert.match(text(), /Не удалось прочитать файл/);
+    assert.match(text(), /До встречи!/);
+  });
 });
 
 describe('estimateTokens', () => {
@@ -603,6 +642,38 @@ describe('historyTokens / requestCostUsd / formatUsageStats', () => {
       makeConfig({ priceInputPer1M: 2, priceOutputPer1M: 0, usdToRub: 100 }),
     );
     assert.match(line, /\$2\.000000 \/ 200\.0000 ₽/);
+  });
+});
+
+describe('formatAttachment / attachFiles / combinePrompt', () => {
+  it('formatAttachment оформляет содержимое с пометкой и кодоблоком', () => {
+    const text = formatAttachment('a.ts', 'код');
+    assert.match(text, /Содержимое файла «a\.ts»/);
+    assert.match(text, /```\nкод\n```/);
+  });
+
+  it('attachFiles читает несколько файлов и склеивает их', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'llm-files-'));
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'AAA');
+      writeFileSync(join(dir, 'b.txt'), 'BBB');
+      const result = attachFiles([join(dir, 'a.txt'), join(dir, 'b.txt')]);
+      assert.match(result, /AAA/);
+      assert.match(result, /BBB/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('attachFiles бросает понятную ошибку для отсутствующего файла', () => {
+    assert.throws(() => attachFiles(['/нет/такого.txt']), /Не удалось прочитать файл/);
+  });
+
+  it('combinePrompt: вложения+промпт, только вложения, только промпт, пусто', () => {
+    assert.equal(combinePrompt('Ф', 'П'), 'Ф\n\nП');
+    assert.equal(combinePrompt('Ф', ''), 'Ф');
+    assert.equal(combinePrompt('', 'П'), 'П');
+    assert.equal(combinePrompt('', ''), '');
   });
 });
 
@@ -869,6 +940,12 @@ describe('parseArgs', () => {
     assert.deepEqual(parseArgs(['--stop', 'A', '--stop=B']).limits.stop, ['A', 'B']);
   });
 
+  it('--file можно указать несколько раз', () => {
+    const result = parseArgs(['--file', 'a.txt', '--file=b.txt', 'вопрос']);
+    assert.deepEqual(result.files, ['a.txt', 'b.txt']);
+    assert.equal(result.prompt, 'вопрос');
+  });
+
   it('бросает ошибку при невалидном --max-tokens', () => {
     assert.throws(() => parseArgs(['--max-tokens=0']), /положительное целое/);
     assert.throws(() => parseArgs(['--max-tokens=abc']), /положительное целое/);
@@ -1094,6 +1171,27 @@ describe('main', () => {
     );
 
     assert.match(output.text(), /ответ без стрима/);
+  });
+
+  it('режим одного запроса с --file включает содержимое файла в запрос', async t => {
+    const path = join(workDir, 'data.txt');
+    writeFileSync(path, 'ДАННЫЕ ИЗ ФАЙЛА');
+    let captured: { messages: ChatMessage[] } | undefined;
+    t.mock.method(globalThis, 'fetch', (async (_url: string, init: RequestInit) => {
+      captured = JSON.parse(String(init.body));
+      return completionResponse('ответ');
+    }) as unknown as typeof fetch);
+    const output = makeCollector();
+
+    await main(
+      ['node', 'cli.ts', '--no-stream', '--file', path, 'обработай'],
+      new PassThrough(),
+      output.stream,
+    );
+
+    const userMessage = captured?.messages.find(message => message.role === 'user');
+    assert.match(userMessage?.content ?? '', /ДАННЫЕ ИЗ ФАЙЛА/);
+    assert.match(userMessage?.content ?? '', /обработай/);
   });
 
   it('интерактивный режим при отсутствии промпта', async () => {
