@@ -12,6 +12,12 @@ export interface AppConfig {
   maxRetries: number;
   /** Базовая задержка экспоненциального бэкоффа между повторами, мс. */
   retryBaseMs: number;
+  /** Цена входных токенов, $ за 1M (0 — тариф не задан, стоимость не считаем). */
+  priceInputPer1M: number;
+  /** Цена выходных токенов, $ за 1M (0 — тариф не задан). */
+  priceOutputPer1M: number;
+  /** Курс доллара к рублю для вывода стоимости в ₽. */
+  usdToRub: number;
 }
 
 const DEFAULT_TEMPERATURE = 0.7;
@@ -20,6 +26,14 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_BASE_MS = 500;
 const DEFAULT_CONTEXT_TOKENS = 8192;
+const DEFAULT_PRICE_PER_1M = 0;
+const DEFAULT_USD_RUB = 90;
+
+/** Конечное неотрицательное число из env или значение по умолчанию. */
+function nonNegativeNumber(raw: string | undefined, fallback: number): number {
+  const value = Number(raw ?? fallback);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
 
 /**
  * Подгружает переменные из файла .env в process.env, если файл существует.
@@ -62,6 +76,7 @@ export function loadConfig(): AppConfig {
   const maxRetries = Number(process.env.LLM_MAX_RETRIES ?? DEFAULT_MAX_RETRIES);
   const retryBaseMs = Number(process.env.LLM_RETRY_BASE_MS ?? DEFAULT_RETRY_BASE_MS);
   const contextTokens = Number(process.env.LLM_CONTEXT_TOKENS ?? DEFAULT_CONTEXT_TOKENS);
+  const usdToRub = Number(process.env.LLM_USD_RUB ?? DEFAULT_USD_RUB);
 
   return {
     apiKey,
@@ -84,5 +99,10 @@ export function loadConfig(): AppConfig {
       Number.isInteger(contextTokens) && contextTokens > 0
         ? contextTokens
         : DEFAULT_CONTEXT_TOKENS,
+    // Тарифы — неотрицательные числа ($/1M); 0 означает «тариф не задан».
+    priceInputPer1M: nonNegativeNumber(process.env.LLM_PRICE_INPUT_PER_1M, DEFAULT_PRICE_PER_1M),
+    priceOutputPer1M: nonNegativeNumber(process.env.LLM_PRICE_OUTPUT_PER_1M, DEFAULT_PRICE_PER_1M),
+    // Курс ₽/$ — положительный; иначе значение по умолчанию.
+    usdToRub: Number.isFinite(usdToRub) && usdToRub > 0 ? usdToRub : DEFAULT_USD_RUB,
   };
 }

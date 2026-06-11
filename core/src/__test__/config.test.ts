@@ -15,6 +15,9 @@ const ENV_KEYS = [
   'LLM_MAX_RETRIES',
   'LLM_RETRY_BASE_MS',
   'LLM_CONTEXT_TOKENS',
+  'LLM_PRICE_INPUT_PER_1M',
+  'LLM_PRICE_OUTPUT_PER_1M',
+  'LLM_USD_RUB',
 ];
 
 describe('loadConfig', () => {
@@ -77,6 +80,9 @@ describe('loadConfig', () => {
     assert.equal(config.maxRetries, 3);
     assert.equal(config.retryBaseMs, 500);
     assert.equal(config.contextTokens, 8192);
+    assert.equal(config.priceInputPer1M, 0);
+    assert.equal(config.priceOutputPer1M, 0);
+    assert.equal(config.usdToRub, 90);
     assert.match(config.systemPrompt, /ассистент/i);
   });
 
@@ -145,6 +151,34 @@ describe('loadConfig', () => {
     process.env.LLM_CONTEXT_TOKENS = '0';
 
     assert.equal(loadConfig().contextTokens, 8192);
+  });
+
+  it('читает тарифы и курс', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+    process.env.LLM_PRICE_INPUT_PER_1M = '0.6';
+    process.env.LLM_PRICE_OUTPUT_PER_1M = '2.2';
+    process.env.LLM_USD_RUB = '100';
+
+    const config = loadConfig();
+    assert.equal(config.priceInputPer1M, 0.6);
+    assert.equal(config.priceOutputPer1M, 2.2);
+    assert.equal(config.usdToRub, 100);
+  });
+
+  it('откатывается к дефолтам при невалидных тарифах и курсе', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+    process.env.LLM_PRICE_INPUT_PER_1M = '-1';
+    process.env.LLM_PRICE_OUTPUT_PER_1M = 'abc';
+    process.env.LLM_USD_RUB = '0';
+
+    const config = loadConfig();
+    assert.equal(config.priceInputPer1M, 0);
+    assert.equal(config.priceOutputPer1M, 0);
+    assert.equal(config.usdToRub, 90);
   });
 
   it('читает число повторов и базовую задержку', () => {

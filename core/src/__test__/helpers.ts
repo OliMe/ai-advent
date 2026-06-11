@@ -12,6 +12,9 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maxRetries: 0,
     retryBaseMs: 1,
     contextTokens: 8192,
+    priceInputPer1M: 0,
+    priceOutputPer1M: 0,
+    usdToRub: 90,
     ...overrides,
   };
 }

@@ -19,6 +19,9 @@ import {
   estimateTokens,
   historyBudgetTokens,
   trimHistoryToBudget,
+  historyTokens,
+  requestCostUsd,
+  formatUsageStats,
   createSpinner,
   streamAnswer,
   sessionDirectory,
@@ -32,6 +35,7 @@ import type {
   AppConfig,
   ChatMessage,
   CompleteOptions,
+  CompletionResult,
   StreamDelta,
   Session,
   SessionStore,
@@ -140,13 +144,16 @@ function driveInteractive(
   return { finished, text: () => buffer };
 }
 
-/** Клиент с подменённым методом complete. */
+/** Клиент с подменённым completeWithUsage (используется в не-стрим режиме). */
 function clientWith(
   t: TestContext,
-  complete: ChatCompletionClient['complete'],
+  impl: (
+    messages: ChatMessage[],
+    options: CompleteOptions,
+  ) => Promise<CompletionResult> | CompletionResult,
 ): ChatCompletionClient {
   const client = new ChatCompletionClient(makeConfig());
-  t.mock.method(client, 'complete', complete);
+  t.mock.method(client, 'completeWithUsage', impl);
   return client;
 }
 
@@ -194,11 +201,11 @@ describe('describeError', () => {
 });
 
 describe('askModel', () => {
-  it('передаёт клиенту AbortSignal, ограничения и disableThinking, возвращает ответ', async t => {
-    let capturedOptions: Parameters<ChatCompletionClient['complete']>[1];
+  it('передаёт клиенту AbortSignal, ограничения и disableThinking, возвращает ответ+usage', async t => {
+    let capturedOptions: CompleteOptions | undefined;
     const client = clientWith(t, async (_messages, options) => {
       capturedOptions = options;
-      return 'ответ';
+      return { content: 'ответ', usage: undefined };
     });
 
     const result = await askModel(
@@ -210,7 +217,7 @@ describe('askModel', () => {
       0.3,
     );
 
-    assert.equal(result, 'ответ');
+    assert.equal(result.content, 'ответ');
     assert.ok(capturedOptions?.signal instanceof AbortSignal);
     assert.equal(capturedOptions?.maxTokens, 50);
     assert.deepEqual(capturedOptions?.stop, ['END']);
@@ -225,7 +232,7 @@ describe('runOnce', () => {
     const calls: unknown[] = [];
     const client = clientWith(t, async messages => {
       calls.push(messages);
-      return 'единственный ответ';
+      return { content: 'единственный ответ', usage: undefined };
     });
     const output = makeCollector();
 
@@ -273,7 +280,7 @@ describe('runInteractive', () => {
   });
 
   it('без стрима печатает полный ответ ассистента', async t => {
-    const client = clientWith(t, async () => 'ПОЛНЫЙ ОТВЕТ');
+    const client = clientWith(t, async () => ({ content: 'ПОЛНЫЙ ОТВЕТ', usage: undefined }));
 
     const { finished, text } = driveInteractive(
       client,
@@ -394,6 +401,14 @@ describe('runInteractive', () => {
     ); // полный транскрипт растёт
     assert.equal(session.messages.at(-1)?.content, 'ОТВЕТ');
     assert.notEqual(session.updatedAt, ''); // время обновления проставлено
+  });
+
+  it('печатает статистику (вход/выход/история) под ответом', async t => {
+    const client = clientWithStream(t, () => 'ОТВЕТ');
+    const { finished, text } = driveInteractive(client, ['привет', '/exit']);
+    await finished;
+
+    assert.match(text(), /\[вход 1 · выход 2 · история ~\d+/);
   });
 
   it('/help печатает список команд', async t => {
@@ -547,6 +562,47 @@ describe('estimateTokens', () => {
     assert.equal(estimateTokens(''), 0);
     assert.equal(estimateTokens('абвгде'), 2);
     assert.equal(estimateTokens('абвг'), 2); // ceil(4/3)
+  });
+});
+
+describe('historyTokens / requestCostUsd / formatUsageStats', () => {
+  it('historyTokens суммирует оценку по сообщениям (с накладными)', () => {
+    const tokens = historyTokens([
+      { role: 'system', content: 'абвгде' }, // ceil(6/3)=2 +4 = 6
+      { role: 'user', content: 'абв' }, // ceil(3/3)=1 +4 = 5
+    ]);
+    assert.equal(tokens, 11);
+  });
+
+  it('requestCostUsd считает по тарифам $/1M', () => {
+    const cost = requestCostUsd(
+      { prompt_tokens: 1_000_000, completion_tokens: 2_000_000, total_tokens: 3_000_000 },
+      makeConfig({ priceInputPer1M: 0.5, priceOutputPer1M: 1.5 }),
+    );
+    assert.equal(cost, 0.5 * 1 + 1.5 * 2); // 3.5
+  });
+
+  it('formatUsageStats: «н/д» при отсутствии usage', () => {
+    assert.match(formatUsageStats(undefined, 42, makeConfig()), /токены: н\/д · история ~42/);
+  });
+
+  it('formatUsageStats: подсказка, когда тарифы не заданы', () => {
+    const line = formatUsageStats(
+      { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      100,
+      makeConfig(),
+    );
+    assert.match(line, /вход 10 · выход 20 · история ~100/);
+    assert.match(line, /задайте LLM_PRICE/);
+  });
+
+  it('formatUsageStats: стоимость в $ и ₽ при заданных тарифах', () => {
+    const line = formatUsageStats(
+      { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
+      0,
+      makeConfig({ priceInputPer1M: 2, priceOutputPer1M: 0, usdToRub: 100 }),
+    );
+    assert.match(line, /\$2\.000000 \/ 200\.0000 ₽/);
   });
 });
 

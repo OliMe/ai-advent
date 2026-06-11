@@ -18,6 +18,7 @@ import type {
   Session,
   SessionStore,
   SessionSummary,
+  Usage,
 } from '../../core/src/index.ts';
 
 /** Метка ответа модели в интерактивном режиме. */
@@ -33,7 +34,7 @@ export function validTemperature(value: string): number | null {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
-/** Запускает один запрос с таймаутом и ограничениями и возвращает ответ модели. */
+/** Запускает один запрос с таймаутом и ограничениями; возвращает ответ и usage. */
 export async function askModel(
   client: ChatCompletionClient,
   messages: ChatMessage[],
@@ -41,11 +42,11 @@ export async function askModel(
   limits: GenerationLimits,
   disableThinking: boolean,
   temperature: number,
-): Promise<string> {
+): Promise<CompletionResult> {
   // AbortSignal.timeout даёт при срабатывании TimeoutError — его легко
   // отличить от AbortError, который возникает при отмене пользователем.
   const signal = AbortSignal.timeout(requestTimeoutMs);
-  return client.complete(messages, { signal, disableThinking, temperature, ...limits });
+  return client.completeWithUsage(messages, { signal, disableThinking, temperature, ...limits });
 }
 
 /**
@@ -132,6 +133,44 @@ export function estimateTokens(text: string): number {
 /** Оценка токенов одного сообщения: содержимое плюс накладные расходы. */
 function messageTokens(message: ChatMessage): number {
   return estimateTokens(message.content) + MESSAGE_OVERHEAD_TOKENS;
+}
+
+/** Приблизительный размер всей истории сессии в токенах. */
+export function historyTokens(messages: ChatMessage[]): number {
+  return messages.reduce((sum, message) => sum + messageTokens(message), 0);
+}
+
+/** Стоимость запроса в долларах по тарифам конфига ($/1M токенов). */
+export function requestCostUsd(usage: Usage, config: AppConfig): number {
+  return (
+    (usage.prompt_tokens * config.priceInputPer1M +
+      usage.completion_tokens * config.priceOutputPer1M) /
+    1_000_000
+  );
+}
+
+/**
+ * Строка статистики под ответом: токены входа/выхода запроса, размер истории
+ * сессии и стоимость в $ и ₽. Если usage не пришёл — «н/д»; если тарифы не
+ * заданы — подсказка задать LLM_PRICE_*.
+ */
+export function formatUsageStats(
+  usage: Usage | undefined,
+  historyTokenCount: number,
+  config: AppConfig,
+): string {
+  if (usage === undefined) {
+    return `[токены: н/д · история ~${historyTokenCount}]`;
+  }
+  const hasPricing = config.priceInputPer1M > 0 || config.priceOutputPer1M > 0;
+  const usd = requestCostUsd(usage, config);
+  const cost = hasPricing
+    ? ` · ≈ $${usd.toFixed(6)} / ${(usd * config.usdToRub).toFixed(4)} ₽`
+    : ' · цена: задайте LLM_PRICE_INPUT_PER_1M / LLM_PRICE_OUTPUT_PER_1M';
+  return (
+    `[вход ${usage.prompt_tokens} · выход ${usage.completion_tokens} · ` +
+    `история ~${historyTokenCount}${cost}]`
+  );
 }
 
 /**
@@ -264,7 +303,7 @@ export async function runOnce(
     );
     output.write('\n');
   } else {
-    const answer = await askModel(
+    const { content } = await askModel(
       client,
       messages,
       config.requestTimeoutMs,
@@ -272,7 +311,7 @@ export async function runOnce(
       disableThinking,
       temperature,
     );
-    output.write(answer + '\n');
+    output.write(content + '\n');
   }
 }
 
@@ -408,6 +447,7 @@ export async function runInteractive(
       const windowed = trimHistoryToBudget(currentSession.messages, historyBudget);
       try {
         let answer: string;
+        let usage: Usage | undefined;
         if (stream) {
           // Пустая строка-отступ, чтобы прелоадер/ответ не «прилипали» к строке «Вы: …».
           output.write('\n');
@@ -422,9 +462,10 @@ export async function runInteractive(
             () => output.write(`${ASSISTANT_LABEL}: `),
           );
           answer = result.content;
+          usage = result.usage;
           output.write('\n\n');
         } else {
-          answer = await askModel(
+          const result = await askModel(
             client,
             windowed,
             config.requestTimeoutMs,
@@ -432,12 +473,18 @@ export async function runInteractive(
             disableThinking,
             temperature,
           );
+          answer = result.content;
+          usage = result.usage;
           output.write(`\n${ASSISTANT_LABEL}: ${answer}\n\n`);
         }
         currentSession.messages.push({ role: 'assistant', content: answer });
         // Сохраняем сессию после завершённого обмена (store=null при --ephemeral).
         currentSession.updatedAt = new Date().toISOString();
         store?.save(currentSession);
+        // Статистика по запросу и истории под ответом.
+        output.write(
+          `${formatUsageStats(usage, historyTokens(currentSession.messages), config)}\n\n`,
+        );
       } catch (error) {
         // Откатываем неудачный ход, чтобы история осталась согласованной.
         currentSession.messages.pop();
