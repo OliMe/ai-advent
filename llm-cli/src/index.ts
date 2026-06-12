@@ -158,9 +158,11 @@ export function formatUsageStats(
   usage: Usage | undefined,
   historyTokenCount: number,
   config: AppConfig,
+  label?: string,
 ): string {
+  const prefix = label ? `${label} · ` : '';
   if (usage === undefined) {
-    return `[токены: н/д · история ~${historyTokenCount}]`;
+    return `[${prefix}токены: н/д · история ~${historyTokenCount}]`;
   }
   const hasPricing = config.priceInputPer1M > 0 || config.priceOutputPer1M > 0;
   const usd = requestCostUsd(usage, config);
@@ -168,7 +170,7 @@ export function formatUsageStats(
     ? ` · ≈ $${usd.toFixed(6)} / ${(usd * config.usdToRub).toFixed(4)} ₽`
     : ' · цена: задайте LLM_PRICE_INPUT_PER_1M / LLM_PRICE_OUTPUT_PER_1M';
   return (
-    `[вход ${usage.prompt_tokens} · выход ${usage.completion_tokens} · ` +
+    `[${prefix}вход ${usage.prompt_tokens} · выход ${usage.completion_tokens} · ` +
     `история ~${historyTokenCount}${cost}]`
   );
 }
@@ -216,6 +218,151 @@ export function trimHistoryToBudget(history: ChatMessage[], budgetTokens: number
   }
   keptInReverse.reverse();
   return [...systemMessages, ...keptInReverse];
+}
+
+/** Стратегия управления памятью диалога: окно или сжатие. */
+export type MemoryKind = 'window' | 'summary';
+
+/** Готовит сообщения для запроса к модели из полного транскрипта сессии. */
+export interface MemoryStrategy {
+  prepare(
+    messages: ChatMessage[],
+    onCompression?: (usage: Usage | undefined) => void,
+  ): Promise<ChatMessage[]>;
+  /** Сбрасывает состояние при смене сессии (/reset, /resume, /fork). */
+  reset(): void;
+}
+
+/** Оставляет самые свежие реплики в пределах бюджета; возвращает их и число «спила». */
+function fitFromNewest(
+  messages: ChatMessage[],
+  budget: number,
+): { kept: ChatMessage[]; spillCount: number } {
+  const keptInReverse: ChatMessage[] = [];
+  let used = 0;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const cost = messageTokens(messages[index]);
+    if (keptInReverse.length > 0 && used + cost > budget) {
+      break;
+    }
+    keptInReverse.push(messages[index]);
+    used += cost;
+  }
+  keptInReverse.reverse();
+  return { kept: keptInReverse, spillCount: messages.length - keptInReverse.length };
+}
+
+/** Стратегия скользящего окна (по умолчанию): обрезка по бюджету, без вызовов модели. */
+class WindowStrategy implements MemoryStrategy {
+  private readonly budget: number;
+  constructor(budget: number) {
+    this.budget = budget;
+  }
+  async prepare(messages: ChatMessage[]): Promise<ChatMessage[]> {
+    return trimHistoryToBudget(messages, this.budget);
+  }
+  reset(): void {}
+}
+
+/** Потолок длины резюме: доля бюджета, но не ниже минимума. */
+function summaryMaxTokens(budget: number): number {
+  return Math.max(64, Math.floor(budget / 4));
+}
+
+/**
+ * Стратегия сжатия: старые реплики, не помещающиеся в бюджет, сворачиваются в
+ * системное резюме (отдельным вызовом модели), свежие остаются дословно. При
+ * сбое сжатия на этот ход откатывается к окну.
+ */
+class SummaryStrategy implements MemoryStrategy {
+  private readonly budget: number;
+  private readonly client: ChatCompletionClient;
+  private readonly requestTimeoutMs: number;
+  private summary = '';
+  private summarizedCount = 0;
+
+  constructor(budget: number, client: ChatCompletionClient, requestTimeoutMs: number) {
+    this.budget = budget;
+    this.client = client;
+    this.requestTimeoutMs = requestTimeoutMs;
+  }
+
+  reset(): void {
+    this.summary = '';
+    this.summarizedCount = 0;
+  }
+
+  private summaryMessage(): ChatMessage | null {
+    return this.summary
+      ? { role: 'system', content: `Краткое содержание более раннего диалога: ${this.summary}` }
+      : null;
+  }
+
+  /** Сворачивает реплики (с учётом прежнего резюме) в обновлённое резюме. */
+  private async fold(spill: ChatMessage[]): Promise<CompletionResult> {
+    const dialogue = spill
+      .map(
+        message =>
+          `${message.role === 'assistant' ? 'Ассистент' : 'Пользователь'}: ${message.content}`,
+      )
+      .join('\n');
+    const instruction =
+      (this.summary
+        ? `Есть краткое содержание диалога:\n${this.summary}\n\nОбнови его, добавив реплики ниже. `
+        : 'Сожми этот фрагмент диалога в краткое содержание. ') +
+      'Сохрани факты, решения, имена и числа, без воды. Верни только краткое содержание:\n' +
+      dialogue;
+    const result = await this.client.completeWithUsage([{ role: 'user', content: instruction }], {
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
+      disableThinking: true,
+      maxTokens: summaryMaxTokens(this.budget),
+    });
+    this.summary = result.content.trim();
+    return result;
+  }
+
+  async prepare(
+    messages: ChatMessage[],
+    onCompression?: (usage: Usage | undefined) => void,
+  ): Promise<ChatMessage[]> {
+    const systemMessage = messages[0];
+    const conversation = messages.slice(1);
+    const systemTokens = messageTokens(systemMessage);
+    try {
+      // Сворачиваем «спил», пока несвёрнутые свежие реплики не уложатся в бюджет.
+      while (true) {
+        const summaryMsg = this.summaryMessage();
+        const summaryTok = summaryMsg ? messageTokens(summaryMsg) : 0;
+        const available = this.budget - systemTokens - summaryTok;
+        const pending = conversation.slice(this.summarizedCount);
+        const { kept, spillCount } = fitFromNewest(pending, available);
+        if (spillCount === 0) {
+          return [systemMessage, ...(summaryMsg ? [summaryMsg] : []), ...kept];
+        }
+        const result = await this.fold(pending.slice(0, spillCount));
+        this.summarizedCount += spillCount;
+        onCompression?.(result.usage);
+      }
+    } catch {
+      // Сжатие не удалось — мягко откатываемся к окну на этот ход.
+      return trimHistoryToBudget(messages, this.budget);
+    }
+  }
+}
+
+/**
+ * Создаёт стратегию памяти. Клиент сжатия инъектируется отдельно — это шов,
+ * чтобы в будущем назначить более дешёвую/специализированную модель.
+ */
+export function createMemoryStrategy(
+  kind: MemoryKind,
+  budget: number,
+  summaryClient: ChatCompletionClient,
+  requestTimeoutMs: number,
+): MemoryStrategy {
+  return kind === 'summary'
+    ? new SummaryStrategy(budget, summaryClient, requestTimeoutMs)
+    : new WindowStrategy(budget);
 }
 
 /** Кадры анимации спиннера статуса. */
@@ -370,6 +517,8 @@ export async function runInteractive(
   disableThinking: boolean,
   temperature: number,
   stream: boolean,
+  // Стратегия управления памятью диалога (окно/сжатие).
+  memory: MemoryKind,
   // Транскрипт сессии (с системным сообщением); store=null — без персистентности.
   session: Session,
   store: SessionStore | null,
@@ -384,6 +533,8 @@ export async function runInteractive(
   let currentSession = session;
   // Бюджет истории зависит от контекста выбранной модели и резерва под ответ.
   const historyBudget = historyBudgetTokens(config.contextTokens, limits.maxTokens);
+  // Стратегия памяти: клиент сжатия — тот же (шов для будущей дешёвой модели).
+  const strategy = createMemoryStrategy(memory, historyBudget, client, config.requestTimeoutMs);
   // Суммарные токены за всю сессию — для итоговой сводки при выходе.
   const totals: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   let requestCount = 0;
@@ -419,6 +570,7 @@ export async function runInteractive(
       }
       if (userInput === '/reset') {
         currentSession = newSession(config, limits);
+        strategy.reset();
         output.write('Начата новая сессия.\n\n');
         continue;
       }
@@ -436,6 +588,7 @@ export async function runInteractive(
           output.write(`Сессия не найдена: ${id}\n\n`);
         } else {
           currentSession = isFork ? createSession(loaded.model, [...loaded.messages]) : loaded;
+          strategy.reset();
           output.write(`${isFork ? 'Ответвление от' : 'Восстановлена'} сессия ${id}.\n\n`);
         }
         continue;
@@ -477,9 +630,20 @@ export async function runInteractive(
       }
 
       currentSession.messages.push({ role: 'user', content: userInput });
-      // Скользящее окно: в модель уходит обрезанный вид транскрипта (сам
-      // транскрипт остаётся полным — для сохранения сессии).
-      const windowed = trimHistoryToBudget(currentSession.messages, historyBudget);
+      // Стратегия памяти готовит, что уйдёт в модель (сам транскрипт остаётся
+      // полным). Прогон сжатия печатается отдельной строкой и идёт в итоги.
+      const onCompression = (compressionUsage: Usage | undefined): void => {
+        output.write(
+          `${formatUsageStats(compressionUsage, historyTokens(currentSession.messages), config, 'сжатие')}\n\n`,
+        );
+        if (compressionUsage !== undefined) {
+          totals.prompt_tokens += compressionUsage.prompt_tokens;
+          totals.completion_tokens += compressionUsage.completion_tokens;
+          totals.total_tokens += compressionUsage.total_tokens;
+          requestCount++;
+        }
+      };
+      const windowed = await strategy.prepare(currentSession.messages, onCompression);
       try {
         let answer: string;
         let usage: Usage | undefined;
@@ -573,6 +737,8 @@ export interface ParsedArgs {
   fork: boolean;
   /** Файлы (`--file`, можно несколько), чьё содержимое идёт в запрос. */
   files: string[];
+  /** Стратегия управления памятью диалога (`--memory`); по умолчанию `window`. */
+  memory: MemoryKind;
 }
 
 /** Разбирает значение флага как положительное целое или бросает понятную ошибку. */
@@ -648,6 +814,7 @@ export function parseArgs(args: string[]): ParsedArgs {
   let ephemeral = false;
   let resume: string | undefined;
   let fork = false;
+  let memory: MemoryKind = 'window';
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -698,6 +865,11 @@ export function parseArgs(args: string[]): ParsedArgs {
       stops.push(value);
     } else if (name === '--file') {
       files.push(value);
+    } else if (name === '--memory') {
+      if (value !== 'window' && value !== 'summary') {
+        throw new Error(`--memory требует window или summary, получено: ${value}`);
+      }
+      memory = value;
     } else if (name === '--json-schema') {
       limits.responseFormat = loadJsonSchema(value);
     } else if (name === '--temperature') {
@@ -726,6 +898,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     resume,
     fork,
     files,
+    memory,
   };
 }
 
@@ -745,6 +918,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     resume,
     fork,
     files,
+    memory,
   } = parseArgs(argv.slice(2));
   // Флаг приоритетнее переменной среды; не задан — берём из конфигурации.
   const temperature = parsedTemperature ?? config.temperature;
@@ -767,6 +941,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       disableThinking,
       temperature,
       stream,
+      memory,
       session,
       store,
       input,
