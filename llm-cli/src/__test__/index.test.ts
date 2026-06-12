@@ -22,6 +22,7 @@ import {
   historyTokens,
   requestCostUsd,
   formatUsageStats,
+  formatSessionTotals,
   createSpinner,
   streamAnswer,
   sessionDirectory,
@@ -414,6 +415,23 @@ describe('runInteractive', () => {
     assert.match(text(), /\[вход 1 · выход 2 · история ~\d+/);
   });
 
+  it('при выходе печатает сводку за сессию с суммой токенов', async t => {
+    const client = clientWithStream(t, () => 'ОК'); // usage {1,2,3} за каждый ход
+    const { finished, text } = driveInteractive(client, ['раз', 'два', '/exit']);
+    await finished;
+
+    assert.match(text(), /Итого за сессию: вход 2 · выход 4 · всего 6/);
+  });
+
+  it('без запросов сводку за сессию не печатает', async t => {
+    const client = clientWithStream(t, () => 'неважно');
+    const { finished, text } = driveInteractive(client, ['/exit']);
+    await finished;
+
+    assert.doesNotMatch(text(), /Итого за сессию/);
+    assert.match(text(), /До встречи!/);
+  });
+
   it('/help печатает список команд', async t => {
     const client = clientWithStream(t, () => 'X');
     const { finished, text } = driveInteractive(client, ['/help', '/exit']);
@@ -639,6 +657,22 @@ describe('historyTokens / requestCostUsd / formatUsageStats', () => {
     const line = formatUsageStats(
       { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
       0,
+      makeConfig({ priceInputPer1M: 2, priceOutputPer1M: 0, usdToRub: 100 }),
+    );
+    assert.match(line, /\$2\.000000 \/ 200\.0000 ₽/);
+  });
+
+  it('formatSessionTotals: суммарные токены без тарифов', () => {
+    const line = formatSessionTotals(
+      { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      makeConfig(),
+    );
+    assert.match(line, /Итого за сессию: вход 10 · выход 20 · всего 30/);
+  });
+
+  it('formatSessionTotals: со стоимостью при заданных тарифах', () => {
+    const line = formatSessionTotals(
+      { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
       makeConfig({ priceInputPer1M: 2, priceOutputPer1M: 0, usdToRub: 100 }),
     );
     assert.match(line, /\$2\.000000 \/ 200\.0000 ₽/);

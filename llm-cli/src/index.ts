@@ -173,6 +173,19 @@ export function formatUsageStats(
   );
 }
 
+/** Итоговая сводка за сессию: суммарные токены и стоимость в $ и ₽. */
+export function formatSessionTotals(totals: Usage, config: AppConfig): string {
+  const hasPricing = config.priceInputPer1M > 0 || config.priceOutputPer1M > 0;
+  const usd = requestCostUsd(totals, config);
+  const cost = hasPricing
+    ? ` · ≈ $${usd.toFixed(6)} / ${(usd * config.usdToRub).toFixed(4)} ₽`
+    : '';
+  return (
+    `Итого за сессию: вход ${totals.prompt_tokens} · выход ${totals.completion_tokens} · ` +
+    `всего ${totals.total_tokens}${cost}`
+  );
+}
+
 /**
  * Бюджет истории в токенах: контекст модели за вычетом резерва под ответ
  * (явный --max-tokens или дефолтный резерв), но не ниже минимума.
@@ -371,6 +384,9 @@ export async function runInteractive(
   let currentSession = session;
   // Бюджет истории зависит от контекста выбранной модели и резерва под ответ.
   const historyBudget = historyBudgetTokens(config.contextTokens, limits.maxTokens);
+  // Суммарные токены за всю сессию — для итоговой сводки при выходе.
+  const totals: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  let requestCount = 0;
 
   // Ctrl+C (SIGINT) и закрытие ввода (Ctrl+D / EOF) прерывают ожидание строки:
   // abort заставляет question отклониться, и цикл штатно завершается.
@@ -504,11 +520,22 @@ export async function runInteractive(
         output.write(
           `${formatUsageStats(usage, historyTokens(currentSession.messages), config)}\n\n`,
         );
+        // Накапливаем итог за сессию (если провайдер прислал usage).
+        if (usage !== undefined) {
+          totals.prompt_tokens += usage.prompt_tokens;
+          totals.completion_tokens += usage.completion_tokens;
+          totals.total_tokens += usage.total_tokens;
+          requestCount++;
+        }
       } catch (error) {
         // Откатываем неудачный ход, чтобы история осталась согласованной.
         currentSession.messages.pop();
         output.write(`\n[ошибка] ${describeError(error)}\n\n`);
       }
+    }
+    // Итоговая сводка за сессию — только если были запросы с usage.
+    if (requestCount > 0) {
+      output.write(`\n${formatSessionTotals(totals, config)}\n`);
     }
     output.write('\nДо встречи!\n');
   } finally {
