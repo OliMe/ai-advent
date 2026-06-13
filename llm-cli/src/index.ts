@@ -120,6 +120,8 @@ const MESSAGE_OVERHEAD_TOKENS = 4;
 const DEFAULT_RESPONSE_RESERVE_TOKENS = 1024;
 /** Нижняя граница бюджета истории, чтобы он не оказался нулём/отрицательным. */
 const MIN_HISTORY_BUDGET_TOKENS = 256;
+/** Сколько последних реплик стратегия summary держит дословно по умолчанию. */
+const DEFAULT_KEEP_RECENT = 6;
 
 /**
  * Грубая оценка числа токенов в тексте. Точного токенизатора нет (приложение
@@ -233,25 +235,6 @@ export interface MemoryStrategy {
   reset(): void;
 }
 
-/** Оставляет самые свежие реплики в пределах бюджета; возвращает их и число «спила». */
-function fitFromNewest(
-  messages: ChatMessage[],
-  budget: number,
-): { kept: ChatMessage[]; spillCount: number } {
-  const keptInReverse: ChatMessage[] = [];
-  let used = 0;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const cost = messageTokens(messages[index]);
-    if (keptInReverse.length > 0 && used + cost > budget) {
-      break;
-    }
-    keptInReverse.push(messages[index]);
-    used += cost;
-  }
-  keptInReverse.reverse();
-  return { kept: keptInReverse, spillCount: messages.length - keptInReverse.length };
-}
-
 /** Стратегия скользящего окна (по умолчанию): обрезка по бюджету, без вызовов модели. */
 class WindowStrategy implements MemoryStrategy {
   private readonly budget: number;
@@ -270,19 +253,26 @@ function summaryMaxTokens(budget: number): number {
 }
 
 /**
- * Стратегия сжатия: старые реплики, не помещающиеся в бюджет, сворачиваются в
- * системное резюме (отдельным вызовом модели), свежие остаются дословно. При
- * сбое сжатия на этот ход откатывается к окну.
+ * Стратегия сжатия: последние N реплик хранятся дословно, всё, что старше,
+ * сворачивается в системное резюме (отдельным вызовом модели). При сбое сжатия
+ * на этот ход откатывается к окну.
  */
 class SummaryStrategy implements MemoryStrategy {
   private readonly budget: number;
+  private readonly recentCount: number;
   private readonly client: ChatCompletionClient;
   private readonly requestTimeoutMs: number;
   private summary = '';
   private summarizedCount = 0;
 
-  constructor(budget: number, client: ChatCompletionClient, requestTimeoutMs: number) {
+  constructor(
+    budget: number,
+    recentCount: number,
+    client: ChatCompletionClient,
+    requestTimeoutMs: number,
+  ) {
     this.budget = budget;
+    this.recentCount = recentCount;
     this.client = client;
     this.requestTimeoutMs = requestTimeoutMs;
   }
@@ -327,22 +317,18 @@ class SummaryStrategy implements MemoryStrategy {
   ): Promise<ChatMessage[]> {
     const systemMessage = messages[0];
     const conversation = messages.slice(1);
-    const systemTokens = messageTokens(systemMessage);
+    // Дословно держим последние N реплик; всё, что старше, — в резюме.
+    const keepFrom = Math.max(0, conversation.length - this.recentCount);
     try {
-      // Сворачиваем «спил», пока несвёрнутые свежие реплики не уложатся в бюджет.
-      while (true) {
-        const summaryMsg = this.summaryMessage();
-        const summaryTok = summaryMsg ? messageTokens(summaryMsg) : 0;
-        const available = this.budget - systemTokens - summaryTok;
-        const pending = conversation.slice(this.summarizedCount);
-        const { kept, spillCount } = fitFromNewest(pending, available);
-        if (spillCount === 0) {
-          return [systemMessage, ...(summaryMsg ? [summaryMsg] : []), ...kept];
-        }
-        const result = await this.fold(pending.slice(0, spillCount));
-        this.summarizedCount += spillCount;
+      const toFold = conversation.slice(this.summarizedCount, keepFrom);
+      if (toFold.length > 0) {
+        const result = await this.fold(toFold);
+        this.summarizedCount = keepFrom;
         onCompression?.(result.usage);
       }
+      const kept = conversation.slice(keepFrom);
+      const summaryMsg = this.summaryMessage();
+      return [systemMessage, ...(summaryMsg ? [summaryMsg] : []), ...kept];
     } catch {
       // Сжатие не удалось — мягко откатываемся к окну на этот ход.
       return trimHistoryToBudget(messages, this.budget);
@@ -357,11 +343,12 @@ class SummaryStrategy implements MemoryStrategy {
 export function createMemoryStrategy(
   kind: MemoryKind,
   budget: number,
+  recentCount: number,
   summaryClient: ChatCompletionClient,
   requestTimeoutMs: number,
 ): MemoryStrategy {
   return kind === 'summary'
-    ? new SummaryStrategy(budget, summaryClient, requestTimeoutMs)
+    ? new SummaryStrategy(budget, recentCount, summaryClient, requestTimeoutMs)
     : new WindowStrategy(budget);
 }
 
@@ -517,8 +504,9 @@ export async function runInteractive(
   disableThinking: boolean,
   temperature: number,
   stream: boolean,
-  // Стратегия управления памятью диалога (окно/сжатие).
+  // Стратегия управления памятью диалога (окно/сжатие) и сколько свежего держать.
   memory: MemoryKind,
+  keepRecent: number,
   // Транскрипт сессии (с системным сообщением); store=null — без персистентности.
   session: Session,
   store: SessionStore | null,
@@ -534,7 +522,13 @@ export async function runInteractive(
   // Бюджет истории зависит от контекста выбранной модели и резерва под ответ.
   const historyBudget = historyBudgetTokens(config.contextTokens, limits.maxTokens);
   // Стратегия памяти: клиент сжатия — тот же (шов для будущей дешёвой модели).
-  const strategy = createMemoryStrategy(memory, historyBudget, client, config.requestTimeoutMs);
+  const strategy = createMemoryStrategy(
+    memory,
+    historyBudget,
+    keepRecent,
+    client,
+    config.requestTimeoutMs,
+  );
   // Суммарные токены за всю сессию — для итоговой сводки при выходе.
   const totals: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   let requestCount = 0;
@@ -739,6 +733,8 @@ export interface ParsedArgs {
   files: string[];
   /** Стратегия управления памятью диалога (`--memory`); по умолчанию `window`. */
   memory: MemoryKind;
+  /** Сколько последних реплик держать дословно при summary (`--keep-recent`). */
+  keepRecent: number;
 }
 
 /** Разбирает значение флага как положительное целое или бросает понятную ошибку. */
@@ -815,6 +811,7 @@ export function parseArgs(args: string[]): ParsedArgs {
   let resume: string | undefined;
   let fork = false;
   let memory: MemoryKind = 'window';
+  let keepRecent = DEFAULT_KEEP_RECENT;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -870,6 +867,8 @@ export function parseArgs(args: string[]): ParsedArgs {
         throw new Error(`--memory требует window или summary, получено: ${value}`);
       }
       memory = value;
+    } else if (name === '--keep-recent') {
+      keepRecent = parsePositiveInteger(name, value);
     } else if (name === '--json-schema') {
       limits.responseFormat = loadJsonSchema(value);
     } else if (name === '--temperature') {
@@ -899,6 +898,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     fork,
     files,
     memory,
+    keepRecent,
   };
 }
 
@@ -919,6 +919,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     fork,
     files,
     memory,
+    keepRecent,
   } = parseArgs(argv.slice(2));
   // Флаг приоритетнее переменной среды; не задан — берём из конфигурации.
   const temperature = parsedTemperature ?? config.temperature;
@@ -942,6 +943,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       temperature,
       stream,
       memory,
+      keepRecent,
       session,
       store,
       input,

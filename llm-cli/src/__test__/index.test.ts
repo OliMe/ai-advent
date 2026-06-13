@@ -120,6 +120,7 @@ function driveInteractive(
   store: SessionStore | null = null,
   session: Session = makeSession(config),
   memory: MemoryKind = 'window',
+  keepRecent = 6,
 ): { finished: Promise<void>; text: () => string } {
   const input = new PassThrough();
   let buffer = '';
@@ -144,6 +145,7 @@ function driveInteractive(
     temperature,
     stream,
     memory,
+    keepRecent,
     session,
     store,
     input,
@@ -318,6 +320,7 @@ describe('runInteractive', () => {
       0.7,
       true,
       'window',
+      6,
       makeSession(),
       null,
       input,
@@ -438,7 +441,7 @@ describe('runInteractive', () => {
     assert.match(text(), /До встречи!/);
   });
 
-  it('стратегия summary: прогон сжатия помечается и учитывается в итогах', async t => {
+  it('стратегия summary: после N реплик сжатие помечается и идёт в итоги', async t => {
     const client = new ChatCompletionClient(makeConfig());
     t.mock.method(
       client,
@@ -459,18 +462,19 @@ describe('runInteractive', () => {
       content: 'резюме',
       usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
     }));
-    const config = makeConfig({ contextTokens: 300 }); // крошечный контекст → сжатие
-    const big = 'а'.repeat(2000);
+    const config = makeConfig();
 
+    // N=2: после второго хода старые реплики выходят за окно и сворачиваются.
     const { finished, text } = driveInteractive(
       client,
-      [big, big, '/exit'],
+      ['раз', 'два', 'три', '/exit'],
       0.7,
       config,
       true,
       null,
       makeSession(config),
       'summary',
+      2,
     );
     await finished;
 
@@ -1046,6 +1050,15 @@ describe('parseArgs', () => {
     assert.throws(() => parseArgs(['--memory=foo']), /window или summary/);
   });
 
+  it('--keep-recent принимает положительное целое; по умолчанию задан', () => {
+    assert.equal(parseArgs(['--keep-recent=3']).keepRecent, 3);
+    assert.equal(typeof parseArgs(['привет']).keepRecent, 'number');
+  });
+
+  it('--keep-recent отвергает невалидное', () => {
+    assert.throws(() => parseArgs(['--keep-recent=0']), /положительное целое/);
+  });
+
   it('бросает ошибку при невалидном --max-tokens', () => {
     assert.throws(() => parseArgs(['--max-tokens=0']), /положительное целое/);
     assert.throws(() => parseArgs(['--max-tokens=abc']), /положительное целое/);
@@ -1117,6 +1130,7 @@ describe('стратегии памяти (createMemoryStrategy)', () => {
     const strategy = createMemoryStrategy(
       'window',
       10_000,
+      6,
       new ChatCompletionClient(makeConfig()),
       5000,
     );
@@ -1125,25 +1139,25 @@ describe('стратегии памяти (createMemoryStrategy)', () => {
     strategy.reset(); // no-op, не падает
   });
 
-  it('summary: всё влезает — без сжатия, резюме не добавляется', async t => {
+  it('summary: реплик не больше N — без сжатия, резюме не добавляется', async t => {
     const client = clientWith(t, async () => ({ content: 'не-нужно', usage: undefined }));
-    const strategy = createMemoryStrategy('summary', 10_000, client, 5000);
-    const result = await strategy.prepare([sys, big('user', 1)]);
+    const strategy = createMemoryStrategy('summary', 1000, 2, client, 5000); // N=2
+    const result = await strategy.prepare([sys, big('user', 1), big('assistant', 1)]);
 
     assert.deepEqual(
       result.map(m => m.role),
-      ['system', 'user'],
+      ['system', 'user', 'assistant'],
     );
     assert.ok(!result.some(m => m.content.includes('Краткое содержание')));
   });
 
-  it('summary: только система — пустой pending', async t => {
+  it('summary: только система', async t => {
     const client = clientWith(t, async () => ({ content: 'x', usage: undefined }));
-    const strategy = createMemoryStrategy('summary', 1000, client, 5000);
+    const strategy = createMemoryStrategy('summary', 1000, 2, client, 5000);
     assert.deepEqual(await strategy.prepare([sys]), [sys]);
   });
 
-  it('summary: старые реплики сворачиваются в системное резюме (два прогона)', async t => {
+  it('summary: сворачивает всё, кроме последних N; второй прогон — с непустым резюме', async t => {
     let folds = 0;
     const client = clientWith(t, async () => {
       folds++;
@@ -1152,23 +1166,36 @@ describe('стратегии памяти (createMemoryStrategy)', () => {
         usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
       };
     });
-    const strategy = createMemoryStrategy('summary', 60, client, 5000);
+    const strategy = createMemoryStrategy('summary', 1000, 2, client, 5000); // N=2
     const compressions: (Usage | undefined)[] = [];
-    const messages = [sys, big('user', 1), big('assistant', 1), big('user', 2)];
+    const m1 = [
+      sys,
+      big('user', 1),
+      big('assistant', 1),
+      big('user', 2),
+      big('assistant', 2),
+      big('user', 3),
+    ];
 
-    const result = await strategy.prepare(messages, u => compressions.push(u));
+    const r1 = await strategy.prepare(m1, u => compressions.push(u));
+    assert.equal(r1[0], sys);
+    assert.equal(r1[1].role, 'system'); // резюме как system-сообщение
+    assert.match(r1[1].content, /Краткое содержание/);
+    assert.equal(r1.length, 4); // система + резюме + последние 2 реплики
+    assert.ok(r1[2].content.startsWith('assistant-2'));
+    assert.ok(r1[3].content.startsWith('user-3')); // дословно — последние 2
 
-    assert.equal(result[0], sys); // система первой
-    assert.equal(result[1].role, 'system'); // резюме как system-сообщение
-    assert.match(result[1].content, /Краткое содержание/);
-    assert.ok(result.some(m => m.content.startsWith('user-2'))); // свежая реплика на месте
-    assert.equal(folds, 2); // свёрнуто в два прогона (user и assistant)
+    const m2 = [...m1, big('assistant', 3), big('user', 4)];
+    const r2 = await strategy.prepare(m2, u => compressions.push(u));
+    assert.match(r2[1].content, /Краткое содержание/);
+    assert.ok(r2.some(m => m.content.startsWith('user-4')));
+    assert.equal(folds, 2); // два прогона сжатия (пустое и непустое резюме)
     assert.equal(compressions.length, 2);
   });
 
   it('summary: без onCompression тоже сворачивает', async t => {
     const client = clientWith(t, async () => ({ content: 'РЕЗ', usage: undefined }));
-    const strategy = createMemoryStrategy('summary', 80, client, 5000);
+    const strategy = createMemoryStrategy('summary', 1000, 1, client, 5000); // N=1
     const messages = [sys, big('user', 1), big('assistant', 1), big('user', 2)];
     const result = await strategy.prepare(messages); // onCompression не передан
     assert.match(result[1].content, /Краткое содержание/);
@@ -1178,18 +1205,18 @@ describe('стратегии памяти (createMemoryStrategy)', () => {
     const client = clientWith(t, async () => {
       throw new Error('сжатие упало');
     });
-    const strategy = createMemoryStrategy('summary', 80, client, 5000);
+    const strategy = createMemoryStrategy('summary', 1000, 1, client, 5000);
     const messages = [sys, big('user', 1), big('assistant', 1), big('user', 2)];
-    assert.deepEqual(await strategy.prepare(messages), trimHistoryToBudget(messages, 80));
+    assert.deepEqual(await strategy.prepare(messages), trimHistoryToBudget(messages, 1000));
   });
 
   it('summary: reset() очищает резюме', async t => {
     const client = clientWith(t, async () => ({ content: 'РЕЗ', usage: undefined }));
-    const strategy = createMemoryStrategy('summary', 80, client, 5000);
+    const strategy = createMemoryStrategy('summary', 1000, 1, client, 5000);
     const messages = [sys, big('user', 1), big('assistant', 1), big('user', 2)];
     await strategy.prepare(messages); // создаём резюме
     strategy.reset();
-    const after = await strategy.prepare([sys, big('user', 1)]); // мало → без резюме
+    const after = await strategy.prepare([sys, big('user', 1)]); // ≤ N → без резюме
     assert.ok(!after.some(m => m.content.includes('Краткое содержание')));
   });
 });
