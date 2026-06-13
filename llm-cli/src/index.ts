@@ -247,10 +247,8 @@ class WindowStrategy implements MemoryStrategy {
   reset(): void {}
 }
 
-/** Потолок длины резюме: доля бюджета, но не ниже минимума. */
-function summaryMaxTokens(budget: number): number {
-  return Math.max(64, Math.floor(budget / 4));
-}
+/** Компактный потолок длины резюме: сжатие должно быть дешёвым и реально сжимать. */
+const SUMMARY_MAX_TOKENS = 256;
 
 /**
  * Стратегия сжатия: последние N реплик хранятся дословно, всё, что старше,
@@ -305,7 +303,7 @@ class SummaryStrategy implements MemoryStrategy {
     const result = await this.client.completeWithUsage([{ role: 'user', content: instruction }], {
       signal: AbortSignal.timeout(this.requestTimeoutMs),
       disableThinking: true,
-      maxTokens: summaryMaxTokens(this.budget),
+      maxTokens: SUMMARY_MAX_TOKENS,
     });
     this.summary = result.content.trim();
     return result;
