@@ -482,6 +482,46 @@ describe('runInteractive', () => {
     assert.match(text(), /Итого за сессию:/); // сжатие учтено в итогах
   });
 
+  it('стратегия facts: обновление фактов помечается [факты] и идёт в итоги', async t => {
+    const client = new ChatCompletionClient(makeConfig());
+    t.mock.method(
+      client,
+      'streamWithUsage',
+      async (
+        _messages: ChatMessage[],
+        _options: CompleteOptions,
+        onDelta: (delta: StreamDelta) => void,
+      ) => {
+        onDelta({ content: 'ОК' });
+        return {
+          content: 'ОК',
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+        };
+      },
+    );
+    t.mock.method(client, 'completeWithUsage', async () => ({
+      content: 'Цель: сайт',
+      usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
+    }));
+    const config = makeConfig();
+
+    const { finished, text } = driveInteractive(
+      client,
+      ['привет', '/exit'],
+      0.7,
+      config,
+      true,
+      null,
+      makeSession(config),
+      'facts',
+      2,
+    );
+    await finished;
+
+    assert.match(text(), /\[факты · вход 7 · выход 5/); // обновление фактов помечено
+    assert.match(text(), /Итого за сессию:/); // вызов учтён в итогах
+  });
+
   it('/help печатает список команд', async t => {
     const client = clientWithStream(t, () => 'X');
     const { finished, text } = driveInteractive(client, ['/help', '/exit']);
@@ -1040,14 +1080,15 @@ describe('parseArgs', () => {
     assert.equal(result.prompt, 'вопрос');
   });
 
-  it('--memory принимает window/summary; по умолчанию window', () => {
+  it('--memory принимает window/summary/facts; по умолчанию window', () => {
     assert.equal(parseArgs(['--memory=summary']).memory, 'summary');
     assert.equal(parseArgs(['--memory', 'window']).memory, 'window');
+    assert.equal(parseArgs(['--memory=facts']).memory, 'facts');
     assert.equal(parseArgs(['привет']).memory, 'window');
   });
 
   it('--memory отвергает иные значения', () => {
-    assert.throws(() => parseArgs(['--memory=foo']), /window или summary/);
+    assert.throws(() => parseArgs(['--memory=foo']), /window, summary или facts/);
   });
 
   it('--keep-recent принимает положительное целое; по умолчанию задан', () => {
@@ -1218,6 +1259,106 @@ describe('стратегии памяти (createMemoryStrategy)', () => {
     strategy.reset();
     const after = await strategy.prepare([sys, big('user', 1)]); // ≤ N → без резюме
     assert.ok(!after.some(m => m.content.includes('Краткое содержание')));
+  });
+
+  it('facts: добавляет блок фактов и держит последние N дословно', async t => {
+    let updates = 0;
+    const client = clientWith(t, async () => {
+      updates++;
+      return {
+        content: 'Цель: сайт',
+        usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
+      };
+    });
+    const strategy = createMemoryStrategy('facts', 1000, 2, client, 5000); // N=2
+    const updateUsage: (Usage | undefined)[] = [];
+    const messages = [
+      sys,
+      big('user', 1),
+      big('assistant', 1),
+      big('user', 2),
+      big('assistant', 2),
+      big('user', 3),
+    ];
+
+    const result = await strategy.prepare(messages, u => updateUsage.push(u));
+    assert.equal(result[0], sys);
+    assert.equal(result[1].role, 'system'); // блок фактов как system-сообщение
+    assert.match(result[1].content, /Известные факты/);
+    assert.match(result[1].content, /Цель: сайт/);
+    assert.equal(result.length, 4); // система + факты + последние 2 реплики
+    assert.ok(result[2].content.startsWith('assistant-2'));
+    assert.ok(result[3].content.startsWith('user-3'));
+    assert.equal(updates, 1);
+    assert.equal(updateUsage.length, 1);
+  });
+
+  it('facts: на втором ходу учитывает только новые реплики', async t => {
+    const seen: string[] = [];
+    const client = clientWith(t, async messages => {
+      seen.push(messages[0].content);
+      return { content: 'Цель: сайт', usage: undefined };
+    });
+    const strategy = createMemoryStrategy('facts', 1000, 2, client, 5000);
+    const m1 = [sys, big('user', 1)];
+    await strategy.prepare(m1);
+    const m2 = [...m1, big('assistant', 1), big('user', 2)];
+    await strategy.prepare(m2);
+    // Второй промпт обновления содержит только новое (ответ 1 + вопрос 2), не вопрос 1.
+    assert.ok(seen[1].includes('assistant-1'));
+    assert.ok(seen[1].includes('user-2'));
+    assert.ok(!seen[1].includes('user-1 '));
+  });
+
+  it('facts: при сбое обновления оставляет прежние факты', async t => {
+    let calls = 0;
+    const client = clientWith(t, async () => {
+      calls++;
+      if (calls === 2) throw new Error('обновление упало');
+      return { content: 'Цель: сайт', usage: undefined };
+    });
+    const strategy = createMemoryStrategy('facts', 1000, 1, client, 5000);
+    await strategy.prepare([sys, big('user', 1)]); // факты созданы
+    const after = await strategy.prepare([
+      sys,
+      big('user', 1),
+      big('assistant', 1),
+      big('user', 2),
+    ]);
+    // Несмотря на сбой второго обновления, прежний блок фактов сохранён.
+    assert.match(after[1].content, /Цель: сайт/);
+  });
+
+  it('facts: только система — без вызова модели и без блока фактов', async t => {
+    const client = clientWith(t, async () => ({ content: 'x', usage: undefined }));
+    const strategy = createMemoryStrategy('facts', 1000, 2, client, 5000);
+    const result = await strategy.prepare([sys]);
+    assert.deepEqual(result, [sys]);
+  });
+
+  it('facts: подстраховка окном, если факты + N не влезают в бюджет', async t => {
+    const client = clientWith(t, async () => ({ content: 'x'.repeat(900), usage: undefined }));
+    const strategy = createMemoryStrategy('facts', 100, 5, client, 5000); // крошечный бюджет
+    const messages = [sys, big('user', 1), big('assistant', 1), big('user', 2)];
+    const result = await strategy.prepare(messages);
+    // Блок фактов сам по себе больше бюджета → окно оставляет системные сообщения
+    // и лишь самую свежую реплику (старые user-1/assistant-1 обрезаются).
+    assert.deepEqual(
+      result.map(m => m.role),
+      ['system', 'system', 'user'],
+    );
+    assert.match(result[1].content, /Известные факты/);
+    assert.ok(result[2].content.startsWith('user-2'));
+  });
+
+  it('facts: reset() очищает блок фактов', async t => {
+    const client = clientWith(t, async () => ({ content: 'Цель: сайт', usage: undefined }));
+    const strategy = createMemoryStrategy('facts', 1000, 1, client, 5000);
+    await strategy.prepare([sys, big('user', 1)]); // создаём факты
+    strategy.reset();
+    // clientWith вернёт те же факты, но проверяем, что factedThrough сброшен:
+    const after = await strategy.prepare([sys]); // нет реплик → без вызова, без блока
+    assert.deepEqual(after, [sys]);
   });
 });
 

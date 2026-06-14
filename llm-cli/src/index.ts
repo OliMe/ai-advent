@@ -222,8 +222,8 @@ export function trimHistoryToBudget(history: ChatMessage[], budgetTokens: number
   return [...systemMessages, ...keptInReverse];
 }
 
-/** Стратегия управления памятью диалога: окно или сжатие. */
-export type MemoryKind = 'window' | 'summary';
+/** Стратегия управления памятью диалога: окно, сжатие или блок фактов. */
+export type MemoryKind = 'window' | 'summary' | 'facts';
 
 /** Готовит сообщения для запроса к модели из полного транскрипта сессии. */
 export interface MemoryStrategy {
@@ -248,11 +248,11 @@ class WindowStrategy implements MemoryStrategy {
 }
 
 /**
- * Потолок длины резюме: компромисс между сохранностью данных и экономией. 256 было
- * слишком агрессивно (сильно резало факты), budget/4 — слишком дорого; 512 —
- * баланс. Радикально проблему потери данных решает hybrid-стратегия (резюме + ретрив).
+ * Потолок длины блока памяти (резюме или фактов), который генерирует модель:
+ * компромисс между сохранностью данных и экономией. 256 было слишком агрессивно
+ * (сильно резало факты), budget/4 — слишком дорого; 512 — баланс.
  */
-const SUMMARY_MAX_TOKENS = 512;
+const MEMORY_BLOCK_MAX_TOKENS = 512;
 
 /**
  * Стратегия сжатия: последние N реплик хранятся дословно, всё, что старше,
@@ -307,7 +307,7 @@ class SummaryStrategy implements MemoryStrategy {
     const result = await this.client.completeWithUsage([{ role: 'user', content: instruction }], {
       signal: AbortSignal.timeout(this.requestTimeoutMs),
       disableThinking: true,
-      maxTokens: SUMMARY_MAX_TOKENS,
+      maxTokens: MEMORY_BLOCK_MAX_TOKENS,
     });
     this.summary = result.content.trim();
     return result;
@@ -339,6 +339,99 @@ class SummaryStrategy implements MemoryStrategy {
 }
 
 /**
+ * Стратегия «липких фактов»: отдельный блок «ключ: значение» (цель, ограничения,
+ * предпочтения, решения, договорённости) обновляется моделью на каждом ходу и
+ * отправляется вместе с последними N репликами. В отличие от summary, факты
+ * обновляются всегда (не только при переполнении) и хранят структурированные
+ * данные, а не пересказ. При сбое обновления оставляем прежние факты.
+ */
+class FactsStrategy implements MemoryStrategy {
+  private readonly budget: number;
+  private readonly recentCount: number;
+  private readonly client: ChatCompletionClient;
+  private readonly requestTimeoutMs: number;
+  private facts = '';
+  private factedThrough = 0;
+
+  constructor(
+    budget: number,
+    recentCount: number,
+    client: ChatCompletionClient,
+    requestTimeoutMs: number,
+  ) {
+    this.budget = budget;
+    this.recentCount = recentCount;
+    this.client = client;
+    this.requestTimeoutMs = requestTimeoutMs;
+  }
+
+  reset(): void {
+    this.facts = '';
+    this.factedThrough = 0;
+  }
+
+  private factsMessage(): ChatMessage | null {
+    return this.facts
+      ? { role: 'system', content: `Известные факты о диалоге:\n${this.facts}` }
+      : null;
+  }
+
+  /** Обновляет блок фактов с учётом новых реплик (с приоритетом слов пользователя). */
+  private async update(spill: ChatMessage[]): Promise<CompletionResult> {
+    const dialogue = spill
+      .map(
+        message =>
+          `${message.role === 'assistant' ? 'Ассистент' : 'Пользователь'}: ${message.content}`,
+      )
+      .join('\n');
+    const instruction =
+      (this.facts
+        ? `Текущие факты:\n${this.facts}\n\nОбнови их с учётом новых сообщений ниже. `
+        : 'Извлеки ключевые факты из диалога ниже. ') +
+      'Веди компактный список «ключ: значение»: цель, ограничения, предпочтения, ' +
+      'решения, договорённости. Данные из реплик пользователя приоритетнее данных ' +
+      'из ответов ассистента — при противоречии оставляй версию пользователя. ' +
+      'Обновляй изменившееся, убирай устаревшее, без воды. Верни только список:\n' +
+      dialogue;
+    const result = await this.client.completeWithUsage([{ role: 'user', content: instruction }], {
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
+      disableThinking: true,
+      maxTokens: MEMORY_BLOCK_MAX_TOKENS,
+    });
+    this.facts = result.content.trim();
+    return result;
+  }
+
+  async prepare(
+    messages: ChatMessage[],
+    onCompression?: (usage: Usage | undefined) => void,
+  ): Promise<ChatMessage[]> {
+    const systemMessage = messages[0];
+    const conversation = messages.slice(1);
+    // Новые реплики с прошлого раза: предыдущий ответ ассистента + новый вопрос.
+    const newMessages = conversation.slice(this.factedThrough);
+    if (newMessages.length > 0) {
+      try {
+        const result = await this.update(newMessages);
+        this.factedThrough = conversation.length;
+        onCompression?.(result.usage);
+      } catch {
+        // Обновление не удалось — оставляем прежние факты, повторим в следующий ход.
+      }
+    }
+    // Дословно держим последние N реплик; старое представлено блоком фактов.
+    const keepFrom = Math.max(0, conversation.length - this.recentCount);
+    const kept = conversation.slice(keepFrom);
+    const factsMsg = this.factsMessage();
+    const assembled = [systemMessage, ...(factsMsg ? [factsMsg] : []), ...kept];
+    // Подстраховка: если факты + последние N всё же не влезают — обрезаем по окну.
+    return historyTokens(assembled) > this.budget
+      ? trimHistoryToBudget(assembled, this.budget)
+      : assembled;
+  }
+}
+
+/**
  * Создаёт стратегию памяти. Клиент сжатия инъектируется отдельно — это шов,
  * чтобы в будущем назначить более дешёвую/специализированную модель.
  */
@@ -349,9 +442,14 @@ export function createMemoryStrategy(
   summaryClient: ChatCompletionClient,
   requestTimeoutMs: number,
 ): MemoryStrategy {
-  return kind === 'summary'
-    ? new SummaryStrategy(budget, recentCount, summaryClient, requestTimeoutMs)
-    : new WindowStrategy(budget);
+  switch (kind) {
+    case 'summary':
+      return new SummaryStrategy(budget, recentCount, summaryClient, requestTimeoutMs);
+    case 'facts':
+      return new FactsStrategy(budget, recentCount, summaryClient, requestTimeoutMs);
+    default:
+      return new WindowStrategy(budget);
+  }
 }
 
 /** Кадры анимации спиннера статуса. */
@@ -531,6 +629,8 @@ export async function runInteractive(
     client,
     config.requestTimeoutMs,
   );
+  // Метка строки доп. вызова стратегии: facts обновляет факты, прочие — сжимают.
+  const memoryLabel = memory === 'facts' ? 'факты' : 'сжатие';
   // Суммарные токены за всю сессию — для итоговой сводки при выходе.
   const totals: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   let requestCount = 0;
@@ -627,10 +727,10 @@ export async function runInteractive(
 
       currentSession.messages.push({ role: 'user', content: userInput });
       // Стратегия памяти готовит, что уйдёт в модель (сам транскрипт остаётся
-      // полным). Прогон сжатия печатается отдельной строкой и идёт в итоги.
+      // полным). Доп. вызов (сжатие/факты) печатается строкой и идёт в итоги.
       const onCompression = (compressionUsage: Usage | undefined): void => {
         output.write(
-          `${formatUsageStats(compressionUsage, historyTokens(currentSession.messages), config, 'сжатие')}\n\n`,
+          `${formatUsageStats(compressionUsage, historyTokens(currentSession.messages), config, memoryLabel)}\n\n`,
         );
         if (compressionUsage !== undefined) {
           totals.prompt_tokens += compressionUsage.prompt_tokens;
@@ -865,8 +965,8 @@ export function parseArgs(args: string[]): ParsedArgs {
     } else if (name === '--file') {
       files.push(value);
     } else if (name === '--memory') {
-      if (value !== 'window' && value !== 'summary') {
-        throw new Error(`--memory требует window или summary, получено: ${value}`);
+      if (value !== 'window' && value !== 'summary' && value !== 'facts') {
+        throw new Error(`--memory требует window, summary или facts, получено: ${value}`);
       }
       memory = value;
     } else if (name === '--keep-recent') {
