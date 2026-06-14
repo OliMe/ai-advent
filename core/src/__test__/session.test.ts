@@ -37,6 +37,16 @@ describe('createSession', () => {
     assert.match(session.id, /^\d{8}T\d{6}-[0-9a-f]{6}$/);
     assert.equal(session.messages.length, 0);
   });
+
+  it('без имени ветки не добавляет поле label', () => {
+    const session = createSession('m', [], FIXED, 'x');
+    assert.ok(!('label' in session));
+  });
+
+  it('сохраняет имя ветки, если оно задано', () => {
+    const session = createSession('m', [], FIXED, 'x', 'main');
+    assert.equal(session.label, 'main');
+  });
 });
 
 describe('sessionPreview', () => {
@@ -83,5 +93,11 @@ describe('summarize', () => {
     assert.equal(summary.messageCount, 2);
     assert.equal(summary.createdAt, session.createdAt);
     assert.equal(summary.updatedAt, session.updatedAt);
+    assert.ok(!('label' in summary)); // без label у сессии — нет и в сводке
+  });
+
+  it('переносит имя ветки в сводку', () => {
+    const session = createSession('m', [{ role: 'user', content: 'q' }], FIXED, 'sss', 'alpha');
+    assert.equal(summarize(session).label, 'alpha');
   });
 });

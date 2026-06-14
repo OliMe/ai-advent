@@ -10,6 +10,8 @@ export interface Session {
   id: string;
   /** Модель, которой велась сессия. */
   model: string;
+  /** Осмысленное имя ветки для удобного переключения (напр. «main»). */
+  label?: string;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
@@ -19,6 +21,8 @@ export interface Session {
 export interface SessionSummary {
   id: string;
   model: string;
+  /** Имя ветки (если задано). */
+  label?: string;
   createdAt: string;
   updatedAt: string;
   /** Превью первого пользовательского сообщения. */
@@ -45,18 +49,20 @@ function randomSuffix(): string {
   return randomBytes(3).toString('hex');
 }
 
-/** Создаёт новую сессию с заданными моделью и сообщениями. */
+/** Создаёт новую сессию с заданными моделью, сообщениями и (опционально) именем ветки. */
 export function createSession(
   model: string,
   messages: ChatMessage[],
   now: Date = new Date(),
   idSuffix: string = randomSuffix(),
+  label?: string,
 ): Session {
   const timestamp = now.toISOString();
   return {
     version: SESSION_VERSION,
     id: sessionId(now, idSuffix),
     model,
+    ...(label === undefined ? {} : { label }),
     createdAt: timestamp,
     updatedAt: timestamp,
     messages,
@@ -78,6 +84,7 @@ export function summarize(session: Session): SessionSummary {
   return {
     id: session.id,
     model: session.model,
+    ...(session.label === undefined ? {} : { label: session.label }),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     preview: sessionPreview(session),

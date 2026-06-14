@@ -80,36 +80,68 @@ export function sessionDirectory(): string {
  * Восстановленная сессия используется как есть (система заморожена), новая —
  * с системным сообщением из текущего конфига.
  */
-/** Новая сессия с системным сообщением из текущего конфига. */
+/** Имя ветки по умолчанию — точка возврата к исходному диалогу. */
+const DEFAULT_BRANCH_LABEL = 'main';
+
+/** Новая сессия (ветка «main») с системным сообщением из текущего конфига. */
 export function newSession(config: AppConfig, limits: GenerationLimits): Session {
-  return createSession(config.model, [
-    { role: 'system', content: augmentSystemPrompt(config.systemPrompt, limits) },
-  ]);
+  return createSession(
+    config.model,
+    [{ role: 'system', content: augmentSystemPrompt(config.systemPrompt, limits) }],
+    undefined,
+    undefined,
+    DEFAULT_BRANCH_LABEL,
+  );
 }
 
+/** Занято ли имя ветки среди сохранённых сессий. */
+function branchNameTaken(store: SessionStore, name: string): boolean {
+  return store.list().some(summary => summary.label === name);
+}
+
+/** Находит ветку по имени (label), а если не нашлось — по id. */
+function resolveBranch(store: SessionStore, nameOrId: string): Session | null {
+  const byLabel = store.list().find(summary => summary.label === nameOrId);
+  return byLabel ? store.load(byLabel.id) : store.load(nameOrId);
+}
+
+/**
+ * Готовит сессию для старта: продолжение существующей ветки (`switchTo` — имя/id
+ * или 'last') и/или ответвление в новую именованную ветку (`branchName`). Без
+ * хранилища или без обоих параметров — новая ветка «main». Имя для ветвления
+ * должно быть свободно; несуществующая ветка для switchTo — ошибка.
+ */
 export function resolveSession(
   store: SessionStore | null,
   config: AppConfig,
   limits: GenerationLimits,
-  resume: string | undefined,
-  fork: boolean,
+  switchTo: string | undefined,
+  branchName: string | undefined,
 ): Session {
-  // Без хранилища (--ephemeral) или без запроса на восстановление — новая сессия.
-  if (store === null || resume === undefined) {
+  if (store === null || (switchTo === undefined && branchName === undefined)) {
     return newSession(config, limits);
   }
 
-  const existing = resume === 'last' ? store.latest() : store.load(resume);
-  if (existing === null) {
-    if (resume === 'last') {
-      return newSession(config, limits); // прошлых сессий ещё нет
+  // База: целевая ветка (--switch имя/id/last) либо последняя по времени.
+  let base: Session | null;
+  if (switchTo !== undefined) {
+    base = switchTo === 'last' ? store.latest() : resolveBranch(store, switchTo);
+    if (base === null && switchTo !== 'last') {
+      throw new Error(`Ветка не найдена: ${switchTo}`);
     }
-    throw new Error(`Сессия не найдена: ${resume}`);
+  } else {
+    base = store.latest();
   }
-  if (fork) {
-    return createSession(existing.model, [...existing.messages]);
+
+  if (branchName !== undefined) {
+    if (branchNameTaken(store, branchName)) {
+      throw new Error(`Ветка «${branchName}» уже существует`);
+    }
+    const model = base?.model ?? config.model;
+    const messages = base ? [...base.messages] : newSession(config, limits).messages;
+    return createSession(model, messages, undefined, undefined, branchName);
   }
-  return existing;
+  return base ?? newSession(config, limits);
 }
 
 /** Сколько символов считаем за один токен в грубой оценке (провайдер-агностично). */
@@ -569,25 +601,27 @@ const EPHEMERAL_NOTICE = 'Хранилище сессий отключено (--
 export function helpText(): string {
   return (
     'Команды:\n' +
-    '  /help            — этот список\n' +
-    '  /sessions        — сохранённые сессии\n' +
-    '  /resume <id>     — восстановить сессию\n' +
-    '  /fork <id>       — ответвиться от сессии в новую\n' +
-    '  /reset           — начать новую пустую сессию\n' +
-    '  /system <текст>  — изменить системный промпт\n' +
-    '  /file <путь>     — добавить содержимое файла в контекст\n' +
-    '  /temp <число>    — изменить температуру\n' +
-    '  /exit, /quit     — выход\n\n'
+    '  /help             — этот список\n' +
+    '  /sessions         — ветки (сохранённые сессии)\n' +
+    '  /branch <имя>     — ответвиться в новую ветку с именем\n' +
+    '  /switch <имя|id>  — переключиться на ветку\n' +
+    '  /reset            — начать новую пустую ветку\n' +
+    '  /system <текст>   — изменить системный промпт\n' +
+    '  /file <путь>      — добавить содержимое файла в контекст\n' +
+    '  /temp <число>     — изменить температуру\n' +
+    '  /exit, /quit      — выход\n\n'
   );
 }
 
-/** Форматирует список сессий для команды /sessions. */
+/** Форматирует список веток (сессий) для команды /sessions. */
 export function formatSessionList(summaries: SessionSummary[]): string {
   if (summaries.length === 0) {
-    return 'Сохранённых сессий нет.\n\n';
+    return 'Сохранённых веток нет.\n\n';
   }
-  const lines = summaries.map(summary => `  ${summary.id}  ${summary.preview || '(пусто)'}`);
-  return `Сессии:\n${lines.join('\n')}\n\n`;
+  const lines = summaries.map(
+    summary => `  ${summary.label ?? '—'}  (${summary.id})  ${summary.preview || '(пусто)'}`,
+  );
+  return `Ветки:\n${lines.join('\n')}\n\n`;
 }
 
 /** Перезаписывает системное сообщение сессии (действует с этого момента). */
@@ -674,18 +708,50 @@ export async function runInteractive(
         output.write(store === null ? EPHEMERAL_NOTICE : formatSessionList(store.list()));
         continue;
       }
-      if (userInput.startsWith('/resume ') || userInput.startsWith('/fork ')) {
-        const isFork = userInput.startsWith('/fork ');
-        const id = userInput.slice((isFork ? '/fork ' : '/resume ').length).trim();
-        const loaded = store?.load(id) ?? null;
+      if (userInput === '/branch' || userInput.startsWith('/branch ')) {
+        const name = userInput.slice('/branch'.length).trim();
         if (store === null) {
           output.write(EPHEMERAL_NOTICE);
-        } else if (loaded === null) {
-          output.write(`Сессия не найдена: ${id}\n\n`);
+        } else if (!name) {
+          output.write('Укажите имя ветки: /branch <имя>\n\n');
+        } else if (name === currentSession.label || branchNameTaken(store, name)) {
+          output.write(`Ветка «${name}» уже существует.\n\n`);
         } else {
-          currentSession = isFork ? createSession(loaded.model, [...loaded.messages]) : loaded;
+          // Checkpoint: сохраняем текущую ветку и ответвляемся от неё в новую.
+          currentSession.updatedAt = new Date().toISOString();
+          store.save(currentSession);
+          currentSession = createSession(
+            currentSession.model,
+            [...currentSession.messages],
+            undefined,
+            undefined,
+            name,
+          );
+          store.save(currentSession);
           strategy.reset();
-          output.write(`${isFork ? 'Ответвление от' : 'Восстановлена'} сессия ${id}.\n\n`);
+          output.write(`Создана ветка «${name}» от текущего места, переключились на неё.\n\n`);
+        }
+        continue;
+      }
+      if (userInput === '/switch' || userInput.startsWith('/switch ')) {
+        const arg = userInput.slice('/switch'.length).trim();
+        if (store === null) {
+          output.write(EPHEMERAL_NOTICE);
+        } else if (!arg) {
+          output.write('Укажите имя или id ветки: /switch <имя|id>\n\n');
+        } else if (arg === currentSession.label || arg === currentSession.id) {
+          output.write(`Уже в ветке «${arg}».\n\n`);
+        } else {
+          const target = resolveBranch(store, arg);
+          if (target === null) {
+            output.write(`Ветка не найдена: ${arg}\n\n`);
+          } else {
+            currentSession.updatedAt = new Date().toISOString();
+            store.save(currentSession);
+            currentSession = target;
+            strategy.reset();
+            output.write(`Переключились на ветку «${target.label ?? target.id}».\n\n`);
+          }
         }
         continue;
       }
@@ -827,10 +893,10 @@ export interface ParsedArgs {
   stream: boolean;
   /** Не сохранять сессию (флаг `--ephemeral`). */
   ephemeral: boolean;
-  /** Восстановить сессию: `last` или id; undefined — новая сессия. */
-  resume?: string;
-  /** Ветвить восстановленную сессию в новую (флаг `--fork`). */
-  fork: boolean;
+  /** Переключиться на ветку при старте: `last`, имя или id (`--switch`). */
+  switchTo?: string;
+  /** Ответвиться в новую ветку с этим именем при старте (`--branch`). */
+  branchName?: string;
   /** Файлы (`--file`, можно несколько), чьё содержимое идёт в запрос. */
   files: string[];
   /** Стратегия управления памятью диалога (`--memory`); по умолчанию `window`. */
@@ -910,8 +976,8 @@ export function parseArgs(args: string[]): ParsedArgs {
   let contextTokens: number | undefined;
   let stream = true;
   let ephemeral = false;
-  let resume: string | undefined;
-  let fork = false;
+  let switchTo: string | undefined;
+  let branchName: string | undefined;
   let memory: MemoryKind = 'window';
   let keepRecent = DEFAULT_KEEP_RECENT;
 
@@ -941,13 +1007,9 @@ export function parseArgs(args: string[]): ParsedArgs {
       ephemeral = true;
       continue;
     }
-    if (name === '--fork') {
-      fork = true;
-      continue;
-    }
-    if (name === '--resume') {
-      // Без значения — последняя сессия; иначе конкретный id (через `=`).
-      resume = eq === -1 ? 'last' : arg.slice(eq + 1);
+    if (name === '--switch') {
+      // Без значения — последняя ветка; иначе имя/id (через `=`).
+      switchTo = eq === -1 ? 'last' : arg.slice(eq + 1);
       continue;
     }
 
@@ -971,6 +1033,8 @@ export function parseArgs(args: string[]): ParsedArgs {
       memory = value;
     } else if (name === '--keep-recent') {
       keepRecent = parsePositiveInteger(name, value);
+    } else if (name === '--branch') {
+      branchName = value;
     } else if (name === '--json-schema') {
       limits.responseFormat = loadJsonSchema(value);
     } else if (name === '--temperature') {
@@ -996,8 +1060,8 @@ export function parseArgs(args: string[]): ParsedArgs {
     contextTokens,
     stream,
     ephemeral,
-    resume,
-    fork,
+    switchTo,
+    branchName,
     files,
     memory,
     keepRecent,
@@ -1017,8 +1081,8 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     contextTokens: parsedContextTokens,
     stream,
     ephemeral,
-    resume,
-    fork,
+    switchTo,
+    branchName,
     files,
     memory,
     keepRecent,
@@ -1036,7 +1100,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
   } else {
     // --ephemeral — без хранилища; иначе файловое хранилище сессий.
     const store = ephemeral ? null : new FileSessionStore(sessionDirectory());
-    const session = resolveSession(store, interactiveConfig, limits, resume, fork);
+    const session = resolveSession(store, interactiveConfig, limits, switchTo, branchName);
     await runInteractive(
       client,
       interactiveConfig,

@@ -58,7 +58,7 @@ function makeSession(config: AppConfig = makeConfig()): Session {
   return createSession(config.model, [{ role: 'system', content: config.systemPrompt }]);
 }
 
-/** Сохранённая сессия с заданным id (для /resume и /fork). */
+/** Сохранённая сессия с заданным id (для /switch и /branch). */
 function storedSession(id: string): Session {
   return {
     version: 1,
@@ -527,7 +527,8 @@ describe('runInteractive', () => {
     const { finished, text } = driveInteractive(client, ['/help', '/exit']);
     await finished;
 
-    assert.match(text(), /\/resume/);
+    assert.match(text(), /\/branch/);
+    assert.match(text(), /\/switch/);
     assert.match(text(), /\/system/);
   });
 
@@ -566,14 +567,14 @@ describe('runInteractive', () => {
     );
     await finished;
 
-    assert.match(text(), /Сохранённых сессий нет/);
+    assert.match(text(), /Сохранённых веток нет/);
   });
 
-  it('/resume при --ephemeral сообщает об отключённом хранилище', async t => {
+  it('/branch и /switch при --ephemeral сообщают об отключённом хранилище', async t => {
     const client = clientWithStream(t, () => 'X');
     const { finished, text } = driveInteractive(
       client,
-      ['/resume любой', '/exit'],
+      ['/branch alpha', '/switch alpha', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -584,11 +585,114 @@ describe('runInteractive', () => {
     assert.match(text(), /отключено/);
   });
 
-  it('/resume несуществующей сессии — «не найдена»', async t => {
+  it('/branch без имени — подсказка', async t => {
     const client = clientWithStream(t, () => 'X');
     const { finished, text } = driveInteractive(
       client,
-      ['/resume нет', '/exit'],
+      ['/branch', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+    );
+    await finished;
+
+    assert.match(text(), /Укажите имя ветки/);
+  });
+
+  it('/branch с занятым именем — «уже существует»', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = createSession(
+      'm',
+      [{ role: 'system', content: 'СИС' }],
+      undefined,
+      'aa',
+      'main',
+    );
+    const { finished, text } = driveInteractive(
+      client,
+      ['/branch main', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+    );
+    await finished;
+
+    assert.match(text(), /Ветка «main» уже существует/);
+  });
+
+  it('/branch создаёт ветку от текущего места и переключается на неё', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const store = fakeStore();
+    const session = createSession(
+      'm',
+      [{ role: 'system', content: 'СИС' }],
+      undefined,
+      'aa',
+      'main',
+    );
+    const { finished, text } = driveInteractive(
+      client,
+      ['/branch feature', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      store,
+      session,
+    );
+    await finished;
+
+    assert.match(text(), /Создана ветка «feature»/);
+    // Сохранены и исходная ветка main, и новая feature.
+    assert.ok(store.saved.some(s => s.label === 'main'));
+    assert.ok(store.saved.some(s => s.label === 'feature'));
+  });
+
+  it('/switch без аргумента — подсказка', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/switch', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+    );
+    await finished;
+
+    assert.match(text(), /Укажите имя или id ветки/);
+  });
+
+  it('/switch на текущую ветку — «уже в ветке»', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = createSession(
+      'm',
+      [{ role: 'system', content: 'СИС' }],
+      undefined,
+      'aa',
+      'main',
+    );
+    const { finished, text } = driveInteractive(
+      client,
+      ['/switch main', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+    );
+    await finished;
+
+    assert.match(text(), /Уже в ветке «main»/);
+  });
+
+  it('/switch несуществующей ветки — «не найдена»', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/switch нет', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -599,11 +703,11 @@ describe('runInteractive', () => {
     assert.match(text(), /не найдена: нет/);
   });
 
-  it('/resume восстанавливает сессию по id', async t => {
+  it('/switch по id восстанавливает ветку', async t => {
     const client = clientWithStream(t, () => 'X');
     const { finished, text } = driveInteractive(
       client,
-      ['/resume sess-1', '/exit'],
+      ['/switch sess-1', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -611,22 +715,23 @@ describe('runInteractive', () => {
     );
     await finished;
 
-    assert.match(text(), /Восстановлена сессия sess-1/);
+    assert.match(text(), /Переключились на ветку/);
   });
 
-  it('/fork ответвляется от сессии в новую', async t => {
+  it('/switch по имени (label) восстанавливает ветку', async t => {
     const client = clientWithStream(t, () => 'X');
+    const labelled = { ...storedSession('sess-3'), label: 'alpha' };
     const { finished, text } = driveInteractive(
       client,
-      ['/fork sess-2', '/exit'],
+      ['/switch alpha', '/exit'],
       0.7,
       makeConfig(),
       true,
-      fakeStore([storedSession('sess-2')]),
+      fakeStore([labelled]),
     );
     await finished;
 
-    assert.match(text(), /Ответвление от сессия sess-2/);
+    assert.match(text(), /Переключились на ветку «alpha»/);
   });
 
   it('/system перезаписывает систему и сохраняет (с хранилищем)', async t => {
@@ -1044,18 +1149,24 @@ describe('parseArgs', () => {
     assert.equal(parseArgs(['привет']).stream, true);
   });
 
-  it('--ephemeral и --fork — булевы; по умолчанию выключены', () => {
+  it('--ephemeral булев; по умолчанию выключен, ветка не задана', () => {
     assert.equal(parseArgs(['--ephemeral']).ephemeral, true);
-    assert.equal(parseArgs(['--fork']).fork, true);
     const none = parseArgs(['привет']);
     assert.equal(none.ephemeral, false);
-    assert.equal(none.fork, false);
-    assert.equal(none.resume, undefined);
+    assert.equal(none.switchTo, undefined);
+    assert.equal(none.branchName, undefined);
   });
 
-  it('--resume без значения = last, с = задаёт id', () => {
-    assert.equal(parseArgs(['--resume']).resume, 'last');
-    assert.equal(parseArgs(['--resume=20260610T100000-ab']).resume, '20260610T100000-ab');
+  it('--switch без значения = last, с = задаёт имя/id', () => {
+    assert.equal(parseArgs(['--switch']).switchTo, 'last');
+    assert.equal(parseArgs(['--switch=alpha']).switchTo, 'alpha');
+    assert.equal(parseArgs(['--switch=20260610T100000-ab']).switchTo, '20260610T100000-ab');
+  });
+
+  it('--branch задаёт имя новой ветки', () => {
+    assert.equal(parseArgs(['--branch=alpha']).branchName, 'alpha');
+    assert.equal(parseArgs(['--branch', 'beta']).branchName, 'beta');
+    assert.equal(parseArgs(['привет']).branchName, undefined);
   });
 
   it('--json включает формат json_object', () => {
@@ -1380,12 +1491,13 @@ describe('sessionDirectory', () => {
 describe('resolveSession', () => {
   const config = makeConfig({ model: 'glm', systemPrompt: 'СИС' });
 
-  /** Существующая сессия для подмены в хранилище. */
-  function existing(id: string): Session {
+  /** Существующая сессия (ветка) для подмены в хранилище. */
+  function existing(id: string, label?: string): Session {
     return {
       version: 1,
       id,
       model: 'other',
+      ...(label === undefined ? {} : { label }),
       createdAt: '2026-06-10T10:00:00.000Z',
       updatedAt: '2026-06-10T10:00:00.000Z',
       messages: [
@@ -1395,46 +1507,75 @@ describe('resolveSession', () => {
     };
   }
 
-  it('без resume — новая сессия с системой из конфига', () => {
-    const session = resolveSession(fakeStore(), config, {}, undefined, false);
+  it('без switch/branch — новая ветка main с системой из конфига', () => {
+    const session = resolveSession(fakeStore(), config, {}, undefined, undefined);
     assert.equal(session.messages.length, 1);
     assert.deepEqual(session.messages[0], { role: 'system', content: 'СИС' });
+    assert.equal(session.label, 'main');
   });
 
-  it('store=null (ephemeral) — всегда новая сессия', () => {
-    const session = resolveSession(null, config, {}, 'last', false);
+  it('store=null (ephemeral) — всегда новая ветка', () => {
+    const session = resolveSession(null, config, {}, 'last', undefined);
     assert.equal(session.messages[0].content, 'СИС');
   });
 
-  it('resume=last без прошлых сессий — новая', () => {
-    const session = resolveSession(fakeStore(), config, {}, 'last', false);
+  it('switch=last без прошлых веток — новая', () => {
+    const session = resolveSession(fakeStore(), config, {}, 'last', undefined);
     assert.equal(session.messages[0].content, 'СИС');
   });
 
-  it('resume=last с существующей — продолжает её (система заморожена)', () => {
+  it('switch=last с существующей — продолжает её (система заморожена)', () => {
     const previous = existing('id-last');
-    const session = resolveSession(fakeStore([previous]), config, {}, 'last', false);
+    const session = resolveSession(fakeStore([previous]), config, {}, 'last', undefined);
     assert.equal(session.id, 'id-last');
     assert.equal(session.messages[0].content, 'СТАРАЯ СИСТЕМА'); // конфиг не влияет
   });
 
-  it('resume по id, которого нет — бросает ошибку', () => {
-    assert.throws(() => resolveSession(fakeStore(), config, {}, 'нет', false), /не найдена/);
+  it('switch по id, которого нет — бросает ошибку', () => {
+    assert.throws(() => resolveSession(fakeStore(), config, {}, 'нет', undefined), /не найдена/);
   });
 
-  it('resume по id — продолжает существующую', () => {
+  it('switch по id — продолжает существующую', () => {
     const previous = existing('id-x');
-    const session = resolveSession(fakeStore([previous]), config, {}, 'id-x', false);
+    const session = resolveSession(fakeStore([previous]), config, {}, 'id-x', undefined);
     assert.equal(session.id, 'id-x');
   });
 
-  it('fork — новая сессия с копией сообщений, оригинал не меняется', () => {
-    const previous = existing('id-fork');
-    const session = resolveSession(fakeStore([previous]), config, {}, 'id-fork', true);
+  it('switch по имени (label) — находит нужную ветку', () => {
+    const previous = existing('id-y', 'alpha');
+    const session = resolveSession(fakeStore([previous]), config, {}, 'alpha', undefined);
+    assert.equal(session.id, 'id-y');
+  });
 
-    assert.notEqual(session.id, 'id-fork'); // другой id
+  it('branch от switch-базы — копия сообщений с новым именем, оригинал цел', () => {
+    const previous = existing('id-base', 'main');
+    const session = resolveSession(fakeStore([previous]), config, {}, 'main', 'feature');
+
+    assert.notEqual(session.id, 'id-base'); // другой id
+    assert.equal(session.label, 'feature');
     assert.deepEqual(session.messages, previous.messages); // копия содержимого
     assert.notEqual(session.messages, previous.messages); // но не та же ссылка
+  });
+
+  it('branch без switch — ответвляется от последней ветки', () => {
+    const previous = existing('id-latest', 'main');
+    const session = resolveSession(fakeStore([previous]), config, {}, undefined, 'feature');
+    assert.equal(session.label, 'feature');
+    assert.deepEqual(session.messages, previous.messages);
+  });
+
+  it('branch с занятым именем — бросает ошибку', () => {
+    const previous = existing('id-base', 'feature');
+    assert.throws(
+      () => resolveSession(fakeStore([previous]), config, {}, 'last', 'feature'),
+      /уже существует/,
+    );
+  });
+
+  it('branch без единой сессии — новая ветка с этим именем', () => {
+    const session = resolveSession(fakeStore(), config, {}, undefined, 'feature');
+    assert.equal(session.label, 'feature');
+    assert.equal(session.messages[0].content, 'СИС'); // система из конфига
   });
 });
 
@@ -1442,29 +1583,39 @@ describe('helpText / formatSessionList / newSession', () => {
   it('helpText содержит ключевые команды', () => {
     const text = helpText();
     assert.match(text, /\/sessions/);
-    assert.match(text, /\/fork/);
+    assert.match(text, /\/branch/);
+    assert.match(text, /\/switch/);
     assert.match(text, /\/reset/);
   });
 
-  it('formatSessionList: пусто, с превью и с пустым превью', () => {
-    assert.match(formatSessionList([]), /Сохранённых сессий нет/);
+  it('formatSessionList: пусто, с именем ветки и с пустым превью', () => {
+    assert.match(formatSessionList([]), /Сохранённых веток нет/);
     assert.match(
       formatSessionList([
-        { id: 'a', model: 'm', createdAt: 't', updatedAt: 't', preview: 'вопрос', messageCount: 2 },
+        {
+          id: 'a',
+          model: 'm',
+          label: 'main',
+          createdAt: 't',
+          updatedAt: 't',
+          preview: 'вопрос',
+          messageCount: 2,
+        },
       ]),
-      /a {2}вопрос/,
+      /main {2}\(a\) {2}вопрос/,
     );
     assert.match(
       formatSessionList([
         { id: 'b', model: 'm', createdAt: 't', updatedAt: 't', preview: '', messageCount: 1 },
       ]),
-      /\(пусто\)/,
+      /— {2}\(b\) {2}\(пусто\)/,
     );
   });
 
-  it('newSession создаёт сессию с системой из конфига', () => {
+  it('newSession создаёт ветку main с системой из конфига', () => {
     const session = newSession(makeConfig({ model: 'glm', systemPrompt: 'СИС' }), {});
     assert.equal(session.model, 'glm');
+    assert.equal(session.label, 'main');
     assert.deepEqual(session.messages, [{ role: 'system', content: 'СИС' }]);
   });
 });
