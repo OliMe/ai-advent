@@ -1,23 +1,33 @@
 import * as readline from 'node:readline/promises';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import {
   loadConfig,
   ChatCompletionClient,
   FileSessionStore,
+  FileProfileStore,
+  FileTaskStore,
   createSession,
+  createTask,
+  emptyProfile,
+  summarizeTask,
 } from '../../core/src/index.ts';
 import type {
   AppConfig,
   ChatMessage,
   CompletionResult,
   GenerationLimits,
+  Profile,
+  ProfileStore,
   ResponseFormat,
   Session,
   SessionStore,
   SessionSummary,
+  Task,
+  TaskStore,
+  TaskSummary,
   Usage,
 } from '../../core/src/index.ts';
 
@@ -71,6 +81,21 @@ export function augmentSystemPrompt(systemPrompt: string, limits: GenerationLimi
 /** Каталог хранения сессий: из LLM_SESSION_DIR или `~/.llm-cli/sessions`. */
 export function sessionDirectory(): string {
   return process.env.LLM_SESSION_DIR?.trim() || join(homedir(), '.llm-cli', 'sessions');
+}
+
+/** Базовый каталог памяти (рядом с сессиями): родитель каталога сессий. */
+function memoryBaseDir(): string {
+  return dirname(sessionDirectory());
+}
+
+/** Путь к файлу долговременного профиля пользователя. */
+export function profilePath(): string {
+  return join(memoryBaseDir(), 'profile.json');
+}
+
+/** Каталог хранения задач. */
+export function tasksDirectory(): string {
+  return join(memoryBaseDir(), 'tasks');
 }
 
 /**
@@ -484,6 +509,372 @@ export function createMemoryStrategy(
   }
 }
 
+/** Ограничивает число диапазоном [min, max]. */
+function clampTokens(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/** Бюджеты слоёв памяти: профиль, задача и остаток под короткую память. */
+export interface LayerBudgets {
+  profile: number;
+  task: number;
+  short: number;
+}
+
+/**
+ * Делит бюджет истории между слоями. Профиль и задача — доли от контекста модели
+ * (с потолками), чтобы крупнее окно — крупнее память; флаги-переопределения важнее.
+ * Слои не могут занять больше половины бюджета — остаток гарантирован короткой памяти.
+ */
+export function layerBudgets(
+  historyBudget: number,
+  contextTokens: number,
+  profileOverride?: number,
+  taskOverride?: number,
+): LayerBudgets {
+  let profile = profileOverride ?? clampTokens(Math.round(contextTokens / 32), 256, 1536);
+  let task = taskOverride ?? clampTokens(Math.round(contextTokens / 16), 512, 3072);
+  const layersCap = Math.floor(historyBudget / 2);
+  if (profile + task > layersCap) {
+    const scale = layersCap / (profile + task);
+    profile = Math.floor(profile * scale);
+    task = Math.floor(task * scale);
+  }
+  const short = Math.max(MIN_HISTORY_BUDGET_TOKENS, historyBudget - profile - task);
+  return { profile, task, short };
+}
+
+/** Директива персонализации: велит модели применять профиль и держаться задачи. */
+const PERSONALIZATION_DIRECTIVE =
+  'Учитывай профиль пользователя и текущую задачу ниже. Отвечай конкретно под его ' +
+  'контекст, стек и предпочтения, держись задачи. Избегай общих вступлений и оговорок, ' +
+  'если пользователь их не просит. Профиль — это дефолты; свежая реплика пользователя важнее.';
+
+/** Обрезает текст до бюджета токенов (грубо, по символам), добавляя многоточие. */
+function capToBudget(text: string, budgetTokens: number): string {
+  if (estimateTokens(text) <= budgetTokens) {
+    return text;
+  }
+  return text.slice(0, Math.max(0, budgetTokens * CHARS_PER_TOKEN - 1)) + '…';
+}
+
+/** Параметры менеджера слоистой памяти. */
+export interface MemoryManagerOptions {
+  /** Включена ли слоистая память (--no-memory выключает). */
+  enabled: boolean;
+  /** Короткая память (окно/сжатие/факты) — работает внутри менеджера. */
+  strategy: MemoryStrategy;
+  budgets: LayerBudgets;
+  client: ChatCompletionClient;
+  requestTimeoutMs: number;
+  /** Долговременный профиль (загружен заранее). */
+  profile: Profile;
+  /** Хранилища; null — режим «в памяти, без записи на диск» (--ephemeral). */
+  profileStore: ProfileStore | null;
+  taskStore: TaskStore | null;
+}
+
+/**
+ * Менеджер слоистой памяти: поверх короткой стратегии подмешивает в запрос
+ * долговременный профиль пользователя и текущую задачу, обновляет их по ходу
+ * диалога (извлечение фактов задачи + явные предпочтения) и консолидирует
+ * профиль в конце сессии. Делает ответы персонализированными и нацеленными на
+ * задачу. Хранилища = null — всё держим в памяти, на диск не пишем (--ephemeral).
+ */
+export class MemoryManager {
+  readonly enabled: boolean;
+  private readonly strategy: MemoryStrategy;
+  private readonly budgets: LayerBudgets;
+  private readonly client: ChatCompletionClient;
+  private readonly requestTimeoutMs: number;
+  private readonly profileStore: ProfileStore | null;
+  private readonly taskStore: TaskStore | null;
+  private profile: Profile;
+  private task: Task | null = null;
+  // Индекс задач этого процесса (нужен для in-memory режима без хранилища).
+  private readonly tasks = new Map<string, Task>();
+  private extractedThrough = 0;
+
+  constructor(options: MemoryManagerOptions) {
+    this.enabled = options.enabled;
+    this.strategy = options.strategy;
+    this.budgets = options.budgets;
+    this.client = options.client;
+    this.requestTimeoutMs = options.requestTimeoutMs;
+    this.profile = options.profile;
+    this.profileStore = options.profileStore;
+    this.taskStore = options.taskStore;
+  }
+
+  /** Текущая активная задача (или null). */
+  currentTask(): Task | null {
+    return this.task;
+  }
+
+  /** Пункты профиля пользователя. */
+  profileEntries(): string[] {
+    return this.profile.entries.map(entry => entry.text);
+  }
+
+  /** Сбрасывает состояние короткой памяти при смене ветки/сессии. */
+  reset(): void {
+    this.strategy.reset();
+    this.extractedThrough = 0;
+  }
+
+  /** Сохраняет задачу в хранилище (если есть) и в индекс процесса. */
+  private persistTask(task: Task): void {
+    this.tasks.set(task.id, task);
+    this.taskStore?.save(task);
+  }
+
+  /** Создаёт новую активную задачу и делает её текущей. */
+  setTask(title: string): Task {
+    const task = createTask(title);
+    this.task = task;
+    this.persistTask(task);
+    return task;
+  }
+
+  /** Список задач (из хранилища или из памяти процесса), свежие первыми. */
+  listTasks(): TaskSummary[] {
+    if (this.taskStore !== null) {
+      return this.taskStore.list();
+    }
+    return [...this.tasks.values()]
+      .map(summarizeTask)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  /** Загружает задачу по id из хранилища или индекса процесса. */
+  private loadById(id: string): Task | null {
+    return this.taskStore?.load(id) ?? this.tasks.get(id) ?? null;
+  }
+
+  /** Находит задачу по id или имени (id приоритетнее). */
+  private findTask(idOrName: string): Task | null {
+    const direct = this.loadById(idOrName);
+    if (direct !== null) {
+      return direct;
+    }
+    const match = this.listTasks().find(summary => summary.title === idOrName);
+    return match ? this.loadById(match.id) : null;
+  }
+
+  /** Делает активной существующую задачу (реактивирует завершённую). */
+  switchTask(idOrName: string): Task | null {
+    const task = this.findTask(idOrName);
+    if (task === null) {
+      return null;
+    }
+    if (task.status === 'done') {
+      task.status = 'active';
+      task.updatedAt = new Date().toISOString();
+      this.persistTask(task);
+    }
+    this.task = task;
+    return task;
+  }
+
+  /**
+   * Привязывает менеджер к задаче сессии по её id (при resume/ветвлении/reset).
+   * Нет id — активной задачи нет (предсказуемо для новой ветки).
+   */
+  adopt(taskId: string | undefined): void {
+    this.task = taskId === undefined ? null : this.findTask(taskId);
+  }
+
+  /** Закрывает текущую задачу (помечает done); возвращает её имя или null. */
+  closeTask(): string | null {
+    if (this.task === null) {
+      return null;
+    }
+    const title = this.task.title;
+    this.task.status = 'done';
+    this.task.updatedAt = new Date().toISOString();
+    this.persistTask(this.task);
+    this.task = null;
+    return title;
+  }
+
+  /** Забывает пункт профиля по номеру (1-based); возвращает текст или null. */
+  forgetProfile(oneBasedIndex: number): string | null {
+    const index = oneBasedIndex - 1;
+    if (index < 0 || index >= this.profile.entries.length) {
+      return null;
+    }
+    const [removed] = this.profile.entries.splice(index, 1);
+    this.profile.updatedAt = new Date().toISOString();
+    this.profileStore?.save(this.profile);
+    return removed.text;
+  }
+
+  /** Системный блок профиля (или null, если пусто/выключено). */
+  private profileBlock(): ChatMessage | null {
+    if (!this.enabled || this.profile.entries.length === 0) {
+      return null;
+    }
+    const body = capToBudget(
+      this.profile.entries.map(entry => `- ${entry.text}`).join('\n'),
+      this.budgets.profile,
+    );
+    return { role: 'system', content: `Профиль пользователя:\n${body}` };
+  }
+
+  /** Системный блок текущей задачи (или null, если задачи нет/выключено). */
+  private taskBlock(): ChatMessage | null {
+    if (!this.enabled || this.task === null) {
+      return null;
+    }
+    const details =
+      this.task.details.length > 0
+        ? this.task.details.map(d => `- ${d}`).join('\n')
+        : '(пока без деталей)';
+    return {
+      role: 'system',
+      content: `Текущая задача: ${this.task.title}\n${capToBudget(details, this.budgets.task)}`,
+    };
+  }
+
+  /** Извлекает из новых реплик факты задачи и явные предпочтения (один вызов). */
+  private async extract(newMessages: ChatMessage[]): Promise<CompletionResult> {
+    const dialogue = newMessages
+      .map(m => `${m.role === 'assistant' ? 'Ассистент' : 'Пользователь'}: ${m.content}`)
+      .join('\n');
+    const taskContext =
+      this.task !== null
+        ? `Текущая задача: ${this.task.title}\nИзвестные факты задачи:\n${this.task.details.join('\n')}\n\n`
+        : 'Активной задачи нет.\n\n';
+    const profileContext =
+      this.profile.entries.length > 0
+        ? `Уже известно о пользователе:\n${this.profile.entries.map(e => e.text).join('\n')}\n\n`
+        : '';
+    const instruction =
+      taskContext +
+      profileContext +
+      'Проанализируй новые сообщения и верни СТРОГО JSON с двумя полями. ' +
+      '"task" — обновлённый список фактов текущей задачи (цель, ограничения, решения, ' +
+      'прогресс); если активной задачи нет — пустой массив. ' +
+      '"user" — НОВЫЕ явные предпочтения пользователя (форма ответа, стек, стиль), ' +
+      'заявленные им прямо; если таких нет — пустой массив. Без пояснений.\n\nСообщения:\n' +
+      dialogue;
+    return this.client.completeWithUsage([{ role: 'user', content: instruction }], {
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
+      disableThinking: true,
+      maxTokens: this.budgets.task,
+      responseFormat: { type: 'json_object' },
+    });
+  }
+
+  /** Применяет результат извлечения к задаче и профилю (с сохранением). */
+  private applyExtraction(content: string): void {
+    let parsed: { task?: unknown; user?: unknown };
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return; // невалидный JSON — пропускаем ход извлечения
+    }
+    const now = new Date().toISOString();
+    if (this.task !== null && Array.isArray(parsed.task)) {
+      this.task.details = parsed.task.filter((x): x is string => typeof x === 'string');
+      this.task.updatedAt = now;
+      this.persistTask(this.task);
+    }
+    if (Array.isArray(parsed.user)) {
+      const known = new Set(this.profile.entries.map(entry => entry.text));
+      for (const trait of parsed.user) {
+        if (typeof trait === 'string' && trait.trim() && !known.has(trait.trim())) {
+          this.profile.entries.push({ text: trait.trim(), updatedAt: now });
+          known.add(trait.trim());
+        }
+      }
+      this.profile.updatedAt = now;
+      this.profileStore?.save(this.profile);
+    }
+  }
+
+  /**
+   * Готовит сообщения для запроса: извлекает память из новых реплик, прогоняет
+   * короткую стратегию и подмешивает блоки профиля и задачи + директиву.
+   */
+  async prepare(
+    messages: ChatMessage[],
+    onCompression?: (usage: Usage | undefined) => void,
+    onExtraction?: (usage: Usage | undefined) => void,
+  ): Promise<ChatMessage[]> {
+    const conversation = messages.slice(1);
+    const newMessages = conversation.slice(this.extractedThrough);
+    if (this.enabled && newMessages.length > 0) {
+      try {
+        const result = await this.extract(newMessages);
+        this.applyExtraction(result.content);
+        this.extractedThrough = conversation.length;
+        onExtraction?.(result.usage);
+      } catch {
+        // Извлечение не удалось — оставляем прежнюю память, повторим в следующий ход.
+      }
+    }
+    const shortened = await this.strategy.prepare(messages, onCompression);
+    if (!this.enabled) {
+      return shortened;
+    }
+    const system: ChatMessage = {
+      role: 'system',
+      content: `${shortened[0].content}\n\n${PERSONALIZATION_DIRECTIVE}`,
+    };
+    const blocks: ChatMessage[] = [];
+    const profile = this.profileBlock();
+    if (profile) blocks.push(profile);
+    const task = this.taskBlock();
+    if (task) blocks.push(task);
+    return [system, ...blocks, ...shortened.slice(1)];
+  }
+
+  /** Консолидирует устойчивые черты пользователя в профиль (в конце сессии). */
+  async consolidate(
+    messages: ChatMessage[],
+    onExtraction?: (usage: Usage | undefined) => void,
+  ): Promise<void> {
+    const conversation = messages.slice(1);
+    if (!this.enabled || conversation.length === 0) {
+      return;
+    }
+    const dialogue = conversation
+      .map(m => `${m.role === 'assistant' ? 'Ассистент' : 'Пользователь'}: ${m.content}`)
+      .join('\n');
+    const known =
+      this.profile.entries.length > 0
+        ? `Текущий профиль:\n${this.profile.entries.map(e => e.text).join('\n')}\n\n`
+        : '';
+    const instruction =
+      known +
+      'На основе диалога ниже обнови долговременный профиль пользователя: добавь ' +
+      'устойчивые предпочтения, привычки, стек и стиль; слей дубли; убери разовое и ' +
+      'неважное. Верни ТОЛЬКО список, по одному факту на строку.\n\nДиалог:\n' +
+      dialogue;
+    try {
+      const result = await this.client.completeWithUsage([{ role: 'user', content: instruction }], {
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
+        disableThinking: true,
+        maxTokens: this.budgets.profile,
+      });
+      const now = new Date().toISOString();
+      const entries = result.content
+        .split('\n')
+        .map(line => line.replace(/^[-*\s]+/, '').trim())
+        .filter(line => line.length > 0)
+        .map(text => ({ text, updatedAt: now }));
+      if (entries.length > 0) {
+        this.profile = { ...this.profile, entries, updatedAt: now };
+        this.profileStore?.save(this.profile);
+      }
+      onExtraction?.(result.usage);
+    } catch {
+      // Консолидация не удалась — профиль остаётся прежним.
+    }
+  }
+}
+
 /** Кадры анимации спиннера статуса. */
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -597,19 +988,75 @@ export async function runOnce(
 /** Сообщение, когда сессионные команды вызваны при отключённом хранилище. */
 const EPHEMERAL_NOTICE = 'Хранилище сессий отключено (--ephemeral).\n\n';
 
+/** Сообщение, когда команды памяти вызваны при выключенной слоистой памяти. */
+const MEMORY_OFF_NOTICE = 'Слоистая память выключена (--no-memory).\n\n';
+
+/** Параметры слоистой памяти для интерактивного режима. */
+export interface MemorySettings {
+  /** Включена ли слоистая память (профиль + задача). */
+  enabled: boolean;
+  /** Хранилища; null — в памяти на сессию, без записи на диск (--ephemeral). */
+  profileStore: ProfileStore | null;
+  taskStore: TaskStore | null;
+  /** Переопределение размеров слоёв (иначе — эвристика от контекста). */
+  profileTokens?: number;
+  taskTokens?: number;
+  /** Стартовая задача (из флага --task). */
+  initialTaskTitle?: string;
+}
+
+/** Форматирует список задач для команды /tasks. */
+export function formatTaskList(summaries: TaskSummary[]): string {
+  if (summaries.length === 0) {
+    return 'Задач пока нет.\n\n';
+  }
+  const lines = summaries.map(summary => {
+    const mark = summary.status === 'done' ? '✓' : '•';
+    return `  ${mark} ${summary.title}  (${summary.id})  фактов: ${summary.detailCount}`;
+  });
+  return `Задачи:\n${lines.join('\n')}\n\n`;
+}
+
+/** Форматирует текущую задачу (с деталями) для команды /task. */
+export function formatCurrentTask(task: Task | null): string {
+  if (task === null) {
+    return 'Активной задачи нет. Задать: /task <описание>\n\n';
+  }
+  const details =
+    task.details.length > 0
+      ? task.details.map(detail => `  - ${detail}`).join('\n')
+      : '  (пока без деталей)';
+  return `Текущая задача: ${task.title}\n${details}\n\n`;
+}
+
+/** Форматирует профиль пользователя (нумерованно) для команды /profile. */
+export function formatProfile(entries: string[]): string {
+  if (entries.length === 0) {
+    return 'Профиль пуст — пока ничего не знаю о ваших предпочтениях.\n\n';
+  }
+  const lines = entries.map((entry, index) => `  ${index + 1}. ${entry}`);
+  return `Профиль пользователя:\n${lines.join('\n')}\n\n`;
+}
+
 /** Текст справки по интерактивным командам. */
 export function helpText(): string {
   return (
     'Команды:\n' +
-    '  /help             — этот список\n' +
-    '  /sessions         — ветки (сохранённые сессии)\n' +
-    '  /branch <имя>     — ответвиться в новую ветку с именем\n' +
-    '  /switch <имя|id>  — переключиться на ветку\n' +
-    '  /reset            — начать новую пустую ветку\n' +
-    '  /system <текст>   — изменить системный промпт\n' +
-    '  /file <путь>      — добавить содержимое файла в контекст\n' +
-    '  /temp <число>     — изменить температуру\n' +
-    '  /exit, /quit      — выход\n\n'
+    '  /help               — этот список\n' +
+    '  /sessions           — ветки (сохранённые сессии)\n' +
+    '  /branch <имя>       — ответвиться в новую ветку с именем\n' +
+    '  /switch <имя|id>    — переключиться на ветку\n' +
+    '  /reset              — начать новую пустую ветку\n' +
+    '  /task [текст]       — показать или задать текущую задачу\n' +
+    '  /tasks              — список задач\n' +
+    '  /task switch <id|имя> — переключиться на задачу\n' +
+    '  /task done          — закрыть текущую задачу\n' +
+    '  /profile            — что известно о вас (профиль)\n' +
+    '  /forget <n>         — забыть пункт профиля\n' +
+    '  /system <текст>     — изменить системный промпт\n' +
+    '  /file <путь>        — добавить содержимое файла в контекст\n' +
+    '  /temp <число>       — изменить температуру\n' +
+    '  /exit, /quit        — выход\n\n'
   );
 }
 
@@ -648,26 +1095,65 @@ export async function runInteractive(
   output: Writable,
   // Передаётся явно — это же даёт тестам шов для подмены интерфейса.
   createInterface: typeof readline.createInterface,
+  // Слоистая память (профиль + задача); по умолчанию выключена.
+  memorySettings: MemorySettings = { enabled: false, profileStore: null, taskStore: null },
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
-  // Активная сессия (команды /resume, /fork, /reset могут её сменить).
+  // Активная сессия (команды /branch, /switch, /reset могут её сменить).
   // Полный транскрипт храним в currentSession.messages; в модель уходит окно.
   let currentSession = session;
   // Бюджет истории зависит от контекста выбранной модели и резерва под ответ.
   const historyBudget = historyBudgetTokens(config.contextTokens, limits.maxTokens);
-  // Стратегия памяти: клиент сжатия — тот же (шов для будущей дешёвой модели).
+  // При слоистой памяти часть бюджета уходит профилю и задаче, остаток — короткой.
+  const budgets = memorySettings.enabled
+    ? layerBudgets(
+        historyBudget,
+        config.contextTokens,
+        memorySettings.profileTokens,
+        memorySettings.taskTokens,
+      )
+    : { profile: 0, task: 0, short: historyBudget };
+  // Короткая память (окно/сжатие/факты): клиент сжатия — тот же (шов для дешёвой модели).
   const strategy = createMemoryStrategy(
     memory,
-    historyBudget,
+    budgets.short,
     keepRecent,
     client,
     config.requestTimeoutMs,
   );
-  // Метка строки доп. вызова стратегии: facts обновляет факты, прочие — сжимают.
+  // Менеджер слоистой памяти поверх короткой стратегии.
+  const memoryManager = new MemoryManager({
+    enabled: memorySettings.enabled,
+    strategy,
+    budgets,
+    client,
+    requestTimeoutMs: config.requestTimeoutMs,
+    profile: memorySettings.profileStore?.load() ?? emptyProfile(),
+    profileStore: memorySettings.profileStore,
+    taskStore: memorySettings.taskStore,
+  });
+  memoryManager.adopt(currentSession.taskId);
+  if (memorySettings.initialTaskTitle !== undefined && memoryManager.currentTask() === null) {
+    currentSession.taskId = memoryManager.setTask(memorySettings.initialTaskTitle).id;
+    store?.save(currentSession);
+  }
+  // Метка строки доп. вызова короткой памяти: facts обновляет факты, прочие — сжимают.
   const memoryLabel = memory === 'facts' ? 'факты' : 'сжатие';
   // Суммарные токены за всю сессию — для итоговой сводки при выходе.
   const totals: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   let requestCount = 0;
+  // Печатает строку доп. вызова (сжатие/факты/память/профиль) и копит в итоги.
+  const reportExtra = (usage: Usage | undefined, label: string): void => {
+    output.write(
+      `${formatUsageStats(usage, historyTokens(currentSession.messages), config, label)}\n\n`,
+    );
+    if (usage !== undefined) {
+      totals.prompt_tokens += usage.prompt_tokens;
+      totals.completion_tokens += usage.completion_tokens;
+      totals.total_tokens += usage.total_tokens;
+      requestCount++;
+    }
+  };
 
   // Ctrl+C (SIGINT) и закрытие ввода (Ctrl+D / EOF) прерывают ожидание строки:
   // abort заставляет question отклониться, и цикл штатно завершается.
@@ -700,7 +1186,8 @@ export async function runInteractive(
       }
       if (userInput === '/reset') {
         currentSession = newSession(config, limits);
-        strategy.reset();
+        memoryManager.reset();
+        memoryManager.adopt(currentSession.taskId); // новая ветка без задачи
         output.write('Начата новая сессия.\n\n');
         continue;
       }
@@ -718,6 +1205,7 @@ export async function runInteractive(
           output.write(`Ветка «${name}» уже существует.\n\n`);
         } else {
           // Checkpoint: сохраняем текущую ветку и ответвляемся от неё в новую.
+          const parentTaskId = currentSession.taskId;
           currentSession.updatedAt = new Date().toISOString();
           store.save(currentSession);
           currentSession = createSession(
@@ -727,8 +1215,10 @@ export async function runInteractive(
             undefined,
             name,
           );
+          currentSession.taskId = parentTaskId; // ветка наследует задачу
           store.save(currentSession);
-          strategy.reset();
+          memoryManager.reset();
+          memoryManager.adopt(currentSession.taskId);
           output.write(`Создана ветка «${name}» от текущего места, переключились на неё.\n\n`);
         }
         continue;
@@ -749,7 +1239,8 @@ export async function runInteractive(
             currentSession.updatedAt = new Date().toISOString();
             store.save(currentSession);
             currentSession = target;
-            strategy.reset();
+            memoryManager.reset();
+            memoryManager.adopt(currentSession.taskId);
             output.write(`Переключились на ветку «${target.label ?? target.id}».\n\n`);
           }
         }
@@ -790,22 +1281,90 @@ export async function runInteractive(
         }
         continue;
       }
+      if (userInput === '/tasks') {
+        output.write(
+          memoryManager.enabled ? formatTaskList(memoryManager.listTasks()) : MEMORY_OFF_NOTICE,
+        );
+        continue;
+      }
+      if (userInput === '/task done') {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const closed = memoryManager.closeTask();
+          if (closed === null) {
+            output.write('Активной задачи нет.\n\n');
+          } else {
+            currentSession.taskId = undefined;
+            store?.save(currentSession);
+            output.write(`Задача «${closed}» закрыта.\n\n`);
+          }
+        }
+        continue;
+      }
+      if (userInput.startsWith('/task switch ')) {
+        const arg = userInput.slice('/task switch '.length).trim();
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const task = memoryManager.switchTask(arg);
+          if (task === null) {
+            output.write(`Задача не найдена: ${arg}\n\n`);
+          } else {
+            currentSession.taskId = task.id;
+            store?.save(currentSession);
+            output.write(`Переключились на задачу «${task.title}».\n\n`);
+          }
+        }
+        continue;
+      }
+      if (userInput.startsWith('/task ')) {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const task = memoryManager.setTask(userInput.slice('/task '.length).trim());
+          currentSession.taskId = task.id;
+          store?.save(currentSession);
+          output.write(`Задача установлена: ${task.title}\n\n`);
+        }
+        continue;
+      }
+      if (userInput === '/task') {
+        output.write(
+          memoryManager.enabled
+            ? formatCurrentTask(memoryManager.currentTask())
+            : MEMORY_OFF_NOTICE,
+        );
+        continue;
+      }
+      if (userInput === '/profile') {
+        output.write(
+          memoryManager.enabled ? formatProfile(memoryManager.profileEntries()) : MEMORY_OFF_NOTICE,
+        );
+        continue;
+      }
+      if (userInput.startsWith('/forget ')) {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const index = Number(userInput.slice('/forget '.length).trim());
+          const removed = Number.isInteger(index) ? memoryManager.forgetProfile(index) : null;
+          output.write(
+            removed === null ? 'Нет такого пункта профиля.\n\n' : `Забыто: ${removed}\n\n`,
+          );
+        }
+        continue;
+      }
 
       currentSession.messages.push({ role: 'user', content: userInput });
-      // Стратегия памяти готовит, что уйдёт в модель (сам транскрипт остаётся
-      // полным). Доп. вызов (сжатие/факты) печатается строкой и идёт в итоги.
-      const onCompression = (compressionUsage: Usage | undefined): void => {
-        output.write(
-          `${formatUsageStats(compressionUsage, historyTokens(currentSession.messages), config, memoryLabel)}\n\n`,
-        );
-        if (compressionUsage !== undefined) {
-          totals.prompt_tokens += compressionUsage.prompt_tokens;
-          totals.completion_tokens += compressionUsage.completion_tokens;
-          totals.total_tokens += compressionUsage.total_tokens;
-          requestCount++;
-        }
-      };
-      const windowed = await strategy.prepare(currentSession.messages, onCompression);
+      // Менеджер памяти готовит, что уйдёт в модель (транскрипт остаётся полным).
+      // Доп. вызовы (сжатие/факты — короткая память; «память» — задача+профиль)
+      // печатаются отдельной строкой и идут в итоги.
+      const windowed = await memoryManager.prepare(
+        currentSession.messages,
+        usage => reportExtra(usage, memoryLabel),
+        usage => reportExtra(usage, 'память'),
+      );
       try {
         let answer: string;
         let usage: Usage | undefined;
@@ -859,6 +1418,10 @@ export async function runInteractive(
         output.write(`\n[ошибка] ${describeError(error)}\n\n`);
       }
     }
+    // Консолидация профиля: устойчивые черты пользователя из всей сессии.
+    await memoryManager.consolidate(currentSession.messages, usage =>
+      reportExtra(usage, 'профиль'),
+    );
     // Итоговая сводка за сессию — только если были запросы с usage.
     if (requestCount > 0) {
       output.write(`\n${formatSessionTotals(totals, config)}\n`);
@@ -903,6 +1466,14 @@ export interface ParsedArgs {
   memory: MemoryKind;
   /** Сколько последних реплик держать дословно при summary (`--keep-recent`). */
   keepRecent: number;
+  /** Выключить слоистую память — профиль и задачу (`--no-memory`). */
+  noMemory: boolean;
+  /** Стартовая задача (`--task <текст>`). */
+  task?: string;
+  /** Размер блока профиля в токенах (`--profile-tokens`); иначе эвристика. */
+  profileTokens?: number;
+  /** Размер блока задачи в токенах (`--task-tokens`); иначе эвристика. */
+  taskTokens?: number;
 }
 
 /** Разбирает значение флага как положительное целое или бросает понятную ошибку. */
@@ -980,6 +1551,10 @@ export function parseArgs(args: string[]): ParsedArgs {
   let branchName: string | undefined;
   let memory: MemoryKind = 'window';
   let keepRecent = DEFAULT_KEEP_RECENT;
+  let noMemory = false;
+  let task: string | undefined;
+  let profileTokens: number | undefined;
+  let taskTokens: number | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -1005,6 +1580,10 @@ export function parseArgs(args: string[]): ParsedArgs {
     }
     if (name === '--ephemeral') {
       ephemeral = true;
+      continue;
+    }
+    if (name === '--no-memory') {
+      noMemory = true;
       continue;
     }
     if (name === '--switch') {
@@ -1035,6 +1614,12 @@ export function parseArgs(args: string[]): ParsedArgs {
       keepRecent = parsePositiveInteger(name, value);
     } else if (name === '--branch') {
       branchName = value;
+    } else if (name === '--task') {
+      task = value;
+    } else if (name === '--profile-tokens') {
+      profileTokens = parsePositiveInteger(name, value);
+    } else if (name === '--task-tokens') {
+      taskTokens = parsePositiveInteger(name, value);
     } else if (name === '--json-schema') {
       limits.responseFormat = loadJsonSchema(value);
     } else if (name === '--temperature') {
@@ -1065,6 +1650,10 @@ export function parseArgs(args: string[]): ParsedArgs {
     files,
     memory,
     keepRecent,
+    noMemory,
+    task,
+    profileTokens,
+    taskTokens,
   };
 }
 
@@ -1086,6 +1675,10 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     files,
     memory,
     keepRecent,
+    noMemory,
+    task,
+    profileTokens,
+    taskTokens,
   } = parseArgs(argv.slice(2));
   // Флаг приоритетнее переменной среды; не задан — берём из конфигурации.
   const temperature = parsedTemperature ?? config.temperature;
@@ -1098,9 +1691,18 @@ export async function main(argv: string[], input: Readable, output: Writable): P
   if (fullPrompt) {
     await runOnce(client, config, fullPrompt, limits, disableThinking, temperature, stream, output);
   } else {
-    // --ephemeral — без хранилища; иначе файловое хранилище сессий.
+    // --ephemeral — без хранилищ на диске; иначе файловые хранилища.
     const store = ephemeral ? null : new FileSessionStore(sessionDirectory());
     const session = resolveSession(store, interactiveConfig, limits, switchTo, branchName);
+    // Слоистая память включена по умолчанию; --ephemeral держит её в памяти.
+    const memorySettings: MemorySettings = {
+      enabled: !noMemory,
+      profileStore: ephemeral ? null : new FileProfileStore(profilePath()),
+      taskStore: ephemeral ? null : new FileTaskStore(tasksDirectory()),
+      profileTokens,
+      taskTokens,
+      initialTaskTitle: task,
+    };
     await runInteractive(
       client,
       interactiveConfig,
@@ -1115,6 +1717,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       input,
       output,
       readline.createInterface,
+      memorySettings,
     );
   }
 }

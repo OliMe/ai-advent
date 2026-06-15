@@ -34,17 +34,36 @@ import {
   attachFiles,
   combinePrompt,
   createMemoryStrategy,
+  layerBudgets,
+  MemoryManager,
+  formatTaskList,
+  formatCurrentTask,
+  formatProfile,
+  profilePath,
+  tasksDirectory,
   type MemoryKind,
+  type MemorySettings,
 } from '../index.ts';
-import { ChatCompletionClient, createSession, summarize } from '../../../core/src/index.ts';
+import {
+  ChatCompletionClient,
+  createSession,
+  summarize,
+  summarizeTask,
+  emptyProfile,
+  createTask,
+} from '../../../core/src/index.ts';
 import type {
   AppConfig,
   ChatMessage,
   CompleteOptions,
   CompletionResult,
   StreamDelta,
+  Profile,
   Session,
   SessionStore,
+  Task,
+  TaskStore,
+  TaskSummary,
   Usage,
 } from '../../../core/src/index.ts';
 import {
@@ -121,6 +140,7 @@ function driveInteractive(
   session: Session = makeSession(config),
   memory: MemoryKind = 'window',
   keepRecent = 6,
+  memorySettings?: MemorySettings,
 ): { finished: Promise<void>; text: () => string } {
   const input = new PassThrough();
   let buffer = '';
@@ -151,6 +171,7 @@ function driveInteractive(
     input,
     output,
     readline.createInterface,
+    memorySettings ?? { enabled: false, profileStore: null, taskStore: null },
   );
   return { finished, text: () => buffer };
 }
@@ -1169,6 +1190,21 @@ describe('parseArgs', () => {
     assert.equal(parseArgs(['привет']).branchName, undefined);
   });
 
+  it('флаги слоистой памяти: --no-memory, --task, --profile-tokens, --task-tokens', () => {
+    const a = parseArgs(['--no-memory']);
+    assert.equal(a.noMemory, true);
+    assert.equal(parseArgs(['привет']).noMemory, false);
+
+    assert.equal(parseArgs(['--task', 'Сделать сайт']).task, 'Сделать сайт');
+    assert.equal(parseArgs(['--task=Бот']).task, 'Бот');
+    assert.equal(parseArgs(['привет']).task, undefined);
+
+    assert.equal(parseArgs(['--profile-tokens=300']).profileTokens, 300);
+    assert.equal(parseArgs(['--task-tokens=700']).taskTokens, 700);
+    assert.equal(parseArgs(['привет']).profileTokens, undefined);
+    assert.equal(parseArgs(['привет']).taskTokens, undefined);
+  });
+
   it('--json включает формат json_object', () => {
     const result = parseArgs(['--json', 'дай', 'json']);
     assert.equal(result.prompt, 'дай json');
@@ -1473,6 +1509,521 @@ describe('стратегии памяти (createMemoryStrategy)', () => {
   });
 });
 
+describe('интерактив: команды слоистой памяти', () => {
+  const layered: MemorySettings = { enabled: true, profileStore: null, taskStore: null };
+
+  it('/task задаёт и показывает текущую задачу', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/task Сделать лендинг', '/task', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Задача установлена: Сделать лендинг/);
+    assert.match(text(), /Текущая задача: Сделать лендинг/);
+  });
+
+  it('/tasks, /task switch и /task done', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      [
+        '/task Первая',
+        '/task Вторая',
+        '/tasks',
+        '/task switch Первая',
+        '/task done',
+        '/task done',
+        '/exit',
+      ],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Задачи:/);
+    assert.match(text(), /Переключились на задачу «Первая»/);
+    assert.match(text(), /Задача «Первая» закрыта/);
+    assert.match(text(), /Активной задачи нет/); // второй /task done
+  });
+
+  it('/task switch несуществующей — «не найдена»', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/task switch нет', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Задача не найдена: нет/);
+  });
+
+  it('/profile и /forget на пустом профиле', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/profile', '/forget 1', '/forget abc', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Профиль пуст/);
+    assert.match(text(), /Нет такого пункта профиля/);
+  });
+
+  it('команды памяти при --no-memory сообщают, что она выключена', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      [
+        '/task X',
+        '/tasks',
+        '/profile',
+        '/forget 1',
+        '/task done',
+        '/task switch Y',
+        '/task',
+        '/exit',
+      ],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      { enabled: false, profileStore: null, taskStore: null },
+    );
+    await finished;
+    assert.match(text(), /Слоистая память выключена/);
+  });
+
+  it('стартовая задача (initialTaskTitle) и сохранение задач в хранилище', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const taskMap = new Map<string, Task>();
+    const taskStore: TaskStore = {
+      list: () => [...taskMap.values()].map(summarizeTask),
+      load: id => taskMap.get(id) ?? null,
+      save: task => {
+        taskMap.set(task.id, task);
+      },
+    };
+    const sessionStore = fakeStore();
+    const session = makeSession();
+    const { finished, text } = driveInteractive(
+      client,
+      ['/task Вторая', '/task switch Старт', '/task done', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      sessionStore,
+      session,
+      'window',
+      6,
+      { enabled: true, profileStore: null, taskStore, initialTaskTitle: 'Старт' },
+    );
+    await finished;
+    assert.match(text(), /Задача установлена: Вторая/);
+    assert.match(text(), /Переключились на задачу «Старт»/);
+    assert.match(text(), /Задача «Старт» закрыта/);
+    assert.equal(session.taskId, undefined); // после done задача отвязана
+    assert.ok(sessionStore.saved.length >= 1); // сессия сохранялась при сменах задачи
+  });
+
+  it('обмен: извлечение памяти помечается [память], профиль консолидируется [профиль]', async t => {
+    const client = new ChatCompletionClient(makeConfig());
+    t.mock.method(
+      client,
+      'streamWithUsage',
+      async (
+        _messages: ChatMessage[],
+        _options: CompleteOptions,
+        onDelta: (delta: StreamDelta) => void,
+      ) => {
+        onDelta({ content: 'OK' });
+        return {
+          content: 'OK',
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+        };
+      },
+    );
+    t.mock.method(client, 'completeWithUsage', async (messages: ChatMessage[]) => {
+      const content = messages[0].content;
+      if (content.includes('JSON')) {
+        return {
+          content: '{"task":["цель: сайт"],"user":["кратко"]}',
+          usage: { prompt_tokens: 7, completion_tokens: 5, total_tokens: 12 },
+        };
+      }
+      return {
+        content: '- кратко\n- TypeScript',
+        usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 },
+      };
+    });
+    const { finished, text } = driveInteractive(
+      client,
+      ['Сделай сайт', '/forget 1', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /\[память · вход 7 · выход 5/); // извлечение на ходу
+    assert.match(text(), /Забыто: кратко/); // /forget удалил извлечённое предпочтение
+    assert.match(text(), /\[профиль · вход 4 · выход 3/); // консолидация в конце
+    assert.match(text(), /Итого за сессию:/);
+  });
+});
+
+describe('layerBudgets', () => {
+  it('доли от контекста с потолками; остаток — короткой памяти', () => {
+    const b = layerBudgets(7168, 8192);
+    assert.equal(b.profile, 256); // 8192/32
+    assert.equal(b.task, 512); // 8192/16
+    assert.equal(b.short, 7168 - 256 - 512);
+  });
+
+  it('применяет потолки на большом контексте', () => {
+    const b = layerBudgets(130048, 131072);
+    assert.equal(b.profile, 1536); // потолок
+    assert.equal(b.task, 3072); // потолок
+  });
+
+  it('переопределения важнее эвристики', () => {
+    const b = layerBudgets(7168, 8192, 100, 200);
+    assert.equal(b.profile, 100);
+    assert.equal(b.task, 200);
+  });
+
+  it('ужимает слои, если они > половины бюджета истории', () => {
+    const b = layerBudgets(1024, 8192, 600, 600); // 1200 > 512
+    assert.ok(b.profile + b.task <= 512);
+    assert.ok(b.short >= 512);
+  });
+});
+
+describe('format helpers (задачи и профиль)', () => {
+  it('formatTaskList: пусто и со статусами', () => {
+    assert.match(formatTaskList([]), /Задач пока нет/);
+    const summaries: TaskSummary[] = [
+      { id: 'a', title: 'Сайт', status: 'active', createdAt: 't', updatedAt: 't', detailCount: 3 },
+      { id: 'b', title: 'Бот', status: 'done', createdAt: 't', updatedAt: 't', detailCount: 0 },
+    ];
+    const text = formatTaskList(summaries);
+    assert.match(text, /• Сайт {2}\(a\) {2}фактов: 3/);
+    assert.match(text, /✓ Бот {2}\(b\)/);
+  });
+
+  it('formatCurrentTask: нет задачи, с деталями и без', () => {
+    assert.match(formatCurrentTask(null), /Активной задачи нет/);
+    const task = createTask('Сайт', ['цель: лендинг']);
+    assert.match(formatCurrentTask(task), /Текущая задача: Сайт/);
+    assert.match(formatCurrentTask(task), /- цель: лендинг/);
+    assert.match(formatCurrentTask(createTask('Пусто')), /без деталей/);
+  });
+
+  it('formatProfile: пусто и нумерованно', () => {
+    assert.match(formatProfile([]), /Профиль пуст/);
+    assert.match(formatProfile(['любит кратко', 'TypeScript']), /1\. любит кратко/);
+    assert.match(formatProfile(['любит кратко', 'TypeScript']), /2\. TypeScript/);
+  });
+});
+
+describe('MemoryManager', () => {
+  const sys: ChatMessage = { role: 'system', content: 'СИС' };
+  const budgets = { profile: 256, task: 512, short: 1000 };
+
+  function makeManager(
+    t: TestContext,
+    extractImpl: () => Promise<CompletionResult> | CompletionResult,
+    over: Partial<{
+      enabled: boolean;
+      profileStore: ConstructorParameters<typeof MemoryManager>[0]['profileStore'];
+      taskStore: TaskStore | null;
+    }> = {},
+  ): MemoryManager {
+    const client = clientWith(t, async () => extractImpl());
+    const strategy = createMemoryStrategy('window', budgets.short, 6, client, 5000);
+    return new MemoryManager({
+      enabled: over.enabled ?? true,
+      strategy,
+      budgets,
+      client,
+      requestTimeoutMs: 5000,
+      profile: emptyProfile(),
+      profileStore: over.profileStore ?? null,
+      taskStore: over.taskStore ?? null,
+    });
+  }
+
+  it('prepare: подмешивает директиву, профиль и задачу; применяет извлечение', async t => {
+    const mgr = makeManager(t, () => ({
+      content: '{"task":["цель: сайт"],"user":["краткие ответы"]}',
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+    }));
+    mgr.setTask('Сайт');
+    const usages: (Usage | undefined)[] = [];
+    const result = await mgr.prepare(
+      [sys, { role: 'user', content: 'Привет' }],
+      () => {},
+      u => usages.push(u),
+    );
+
+    assert.match(result[0].content, /СИС/);
+    assert.match(result[0].content, /задач/i); // директива персонализации
+    assert.ok(result.some(m => m.content.includes('Профиль пользователя')));
+    assert.ok(result.some(m => m.content.includes('краткие ответы')));
+    assert.ok(result.some(m => m.content.includes('Текущая задача: Сайт')));
+    assert.ok(result.some(m => m.content.includes('цель: сайт')));
+    assert.equal(usages.length, 1);
+    assert.deepEqual(mgr.profileEntries(), ['краткие ответы']);
+    assert.deepEqual(mgr.currentTask()?.details, ['цель: сайт']);
+  });
+
+  it('prepare: выключенный менеджер — passthrough без блоков и без вызова', async t => {
+    const mgr = makeManager(
+      t,
+      () => {
+        throw new Error('не должно вызываться');
+      },
+      { enabled: false },
+    );
+    const result = await mgr.prepare([sys, { role: 'user', content: 'привет' }]);
+    assert.ok(!result.some(m => m.content.includes('Профиль пользователя')));
+    assert.ok(!result[0].content.includes('задач'));
+  });
+
+  it('prepare: задача без деталей показывается как «без деталей»', async t => {
+    const mgr = makeManager(t, () => ({ content: '{"task":[],"user":[]}', usage: undefined }));
+    mgr.setTask('Пустая');
+    const result = await mgr.prepare([sys, { role: 'user', content: 'привет' }]);
+    assert.ok(result.some(m => m.content.includes('(пока без деталей)')));
+  });
+
+  it('prepare: невалидный JSON извлечения — мягко, без изменений', async t => {
+    const mgr = makeManager(t, () => ({ content: 'не json', usage: undefined }));
+    mgr.setTask('Сайт');
+    await mgr.prepare([sys, { role: 'user', content: 'привет' }]);
+    assert.deepEqual(mgr.currentTask()?.details, []);
+    assert.deepEqual(mgr.profileEntries(), []);
+  });
+
+  it('prepare: сбой вызова извлечения — мягко, повторим позже', async t => {
+    const mgr = makeManager(t, () => {
+      throw new Error('сеть упала');
+    });
+    mgr.setTask('Сайт');
+    const result = await mgr.prepare([sys, { role: 'user', content: 'привет' }]);
+    assert.deepEqual(mgr.currentTask()?.details, []); // ничего не сломалось
+    assert.ok(result.some(m => m.content.includes('Текущая задача: Сайт')));
+  });
+
+  it('prepare: профиль обрезается по бюджету', async t => {
+    const mgr = makeManager(t, () => ({ content: '{"task":[],"user":[]}', usage: undefined }));
+    // Заполним профиль вручную через извлечение крупной строки.
+    const long = 'x'.repeat(2000);
+    const mgr2 = makeManager(t, () => ({
+      content: `{"task":[],"user":["${long}"]}`,
+      usage: undefined,
+    }));
+    await mgr2.prepare([sys, { role: 'user', content: 'привет' }]);
+    const result = await mgr2.prepare([sys, { role: 'user', content: 'ещё' }]);
+    const block = result.find(m => m.content.includes('Профиль пользователя'));
+    assert.ok(block && block.content.includes('…')); // урезано
+    void mgr;
+  });
+
+  it('consolidate: переписывает профиль из строкового списка', async t => {
+    const mgr = makeManager(t, () => ({
+      content: '- любит TypeScript\n- предпочитает краткость\n',
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }));
+    const usages: (Usage | undefined)[] = [];
+    await mgr.consolidate([sys, { role: 'user', content: 'я на TS' }], u => usages.push(u));
+    assert.deepEqual(mgr.profileEntries(), ['любит TypeScript', 'предпочитает краткость']);
+    assert.equal(usages.length, 1);
+  });
+
+  it('consolidate: выключен или пустой диалог — ничего не делает', async t => {
+    const mgr = makeManager(
+      t,
+      () => {
+        throw new Error('не должно вызываться');
+      },
+      { enabled: false },
+    );
+    await mgr.consolidate([sys, { role: 'user', content: 'x' }]);
+    assert.deepEqual(mgr.profileEntries(), []);
+
+    const mgr2 = makeManager(t, () => {
+      throw new Error('не должно вызываться');
+    });
+    await mgr2.consolidate([sys]); // пустой диалог
+    assert.deepEqual(mgr2.profileEntries(), []);
+  });
+
+  it('consolidate: сбой вызова — профиль не меняется', async t => {
+    const mgr = makeManager(t, () => {
+      throw new Error('упало');
+    });
+    await mgr.consolidate([sys, { role: 'user', content: 'x' }]);
+    assert.deepEqual(mgr.profileEntries(), []);
+  });
+
+  it('задачи в памяти: setTask, listTasks, switchTask, closeTask', async t => {
+    const mgr = makeManager(t, () => ({ content: '{}', usage: undefined }));
+    const t1 = mgr.setTask('Первая');
+    const t2 = mgr.setTask('Вторая');
+    assert.equal(mgr.currentTask()?.id, t2.id);
+    assert.equal(mgr.listTasks().length, 2);
+
+    assert.equal(mgr.switchTask(t1.id)?.id, t1.id); // по id
+    assert.equal(mgr.switchTask('Вторая')?.id, t2.id); // по имени
+    assert.equal(mgr.switchTask('нет'), null);
+
+    const closed = mgr.closeTask();
+    assert.equal(closed, 'Вторая');
+    assert.equal(mgr.currentTask(), null);
+    assert.equal(mgr.closeTask(), null); // нет активной
+
+    // Реактивация завершённой задачи.
+    assert.equal(mgr.switchTask(t2.id)?.status, 'active');
+  });
+
+  it('задачи с хранилищем: list/load идут через store; adopt по id', async t => {
+    const stored = createTask('Сохранённая', ['деталь'], new Date(), 'aaa111');
+    const taskStore: TaskStore & { saved: Task[] } = (() => {
+      const map = new Map<string, Task>([[stored.id, stored]]);
+      const saved: Task[] = [];
+      return {
+        saved,
+        list: () => [...map.values()].map(summarizeTask),
+        load: id => map.get(id) ?? null,
+        save: task => {
+          saved.push(task);
+          map.set(task.id, task);
+        },
+      };
+    })();
+    const mgr = makeManager(t, () => ({ content: '{}', usage: undefined }), { taskStore });
+
+    assert.equal(mgr.listTasks().length, 1);
+    mgr.adopt(stored.id);
+    assert.equal(mgr.currentTask()?.title, 'Сохранённая');
+    mgr.adopt(undefined); // сбрасывает активную
+    assert.equal(mgr.currentTask(), null);
+
+    const created = mgr.setTask('Новая');
+    assert.ok(taskStore.saved.some(task => task.id === created.id)); // сохранена в store
+  });
+
+  it('forgetProfile: удаляет пункт по номеру, выход за границы — null', async t => {
+    const mgr = makeManager(t, () => ({
+      content: '{"task":[],"user":["a","b"]}',
+      usage: undefined,
+    }));
+    await mgr.prepare([sys, { role: 'user', content: 'привет' }]);
+    assert.deepEqual(mgr.profileEntries(), ['a', 'b']);
+    assert.equal(mgr.forgetProfile(1), 'a');
+    assert.deepEqual(mgr.profileEntries(), ['b']);
+    assert.equal(mgr.forgetProfile(5), null);
+  });
+
+  it('reset: позволяет извлечь заново после смены ветки', async t => {
+    let calls = 0;
+    const mgr = makeManager(t, () => {
+      calls++;
+      return { content: '{"task":[],"user":[]}', usage: undefined };
+    });
+    await mgr.prepare([sys, { role: 'user', content: 'один' }]);
+    mgr.reset();
+    await mgr.prepare([sys, { role: 'user', content: 'один' }]); // тот же транскрипт
+    assert.equal(calls, 2); // после reset извлечение повторилось
+  });
+
+  it('с хранилищами и непустым профилем: сохранение, ассистентские реплики, switch по имени', async t => {
+    const client = clientWith(t, async (messages: ChatMessage[]) =>
+      messages[0].content.includes('JSON')
+        ? { content: '{"task":["цель"],"user":["новое"]}', usage: undefined }
+        : { content: '- итог', usage: undefined },
+    );
+    const strategy = createMemoryStrategy('window', budgets.short, 6, client, 5000);
+    const taskMap = new Map<string, Task>();
+    const taskSaved: Task[] = [];
+    const taskStore: TaskStore = {
+      list: () => [...taskMap.values()].map(summarizeTask),
+      load: id => taskMap.get(id) ?? null,
+      save: task => {
+        taskSaved.push(task);
+        taskMap.set(task.id, task);
+      },
+    };
+    const profileSaved: Profile[] = [];
+    const startProfile = {
+      version: 1,
+      entries: [{ text: 'старое', updatedAt: 't' }],
+      updatedAt: 't',
+    };
+    const mgr = new MemoryManager({
+      enabled: true,
+      strategy,
+      budgets,
+      client,
+      requestTimeoutMs: 5000,
+      profile: startProfile,
+      profileStore: { load: () => startProfile, save: p => profileSaved.push(p) },
+      taskStore,
+    });
+
+    const created = mgr.setTask('Сайт'); // сохранится в taskStore
+    assert.ok(taskSaved.some(task => task.id === created.id));
+    // newMessages с ответом ассистента + непустой профиль → ветки роли и profileContext.
+    await mgr.prepare([
+      sys,
+      { role: 'user', content: 'привет' },
+      { role: 'assistant', content: 'ответ' },
+      { role: 'user', content: 'ещё' },
+    ]);
+    assert.ok(profileSaved.length >= 1); // явное предпочтение «новое» сохранено
+    assert.equal(mgr.switchTask('Сайт')?.id, created.id); // поиск по имени через store
+
+    await mgr.consolidate([sys, { role: 'user', content: 'я на TS' }]); // store + непустой профиль
+    assert.ok(profileSaved.some(p => p.entries.some(e => e.text === 'итог')));
+    assert.equal(mgr.forgetProfile(1), 'итог'); // забывание сохраняется в store
+  });
+});
+
 describe('sessionDirectory', () => {
   it('берёт каталог из LLM_SESSION_DIR, иначе ~/.llm-cli/sessions', () => {
     const saved = process.env.LLM_SESSION_DIR;
@@ -1481,6 +2032,18 @@ describe('sessionDirectory', () => {
       assert.equal(sessionDirectory(), '/tmp/custom-sessions');
       delete process.env.LLM_SESSION_DIR;
       assert.match(sessionDirectory(), /[/\\]\.llm-cli[/\\]sessions$/);
+    } finally {
+      if (saved === undefined) delete process.env.LLM_SESSION_DIR;
+      else process.env.LLM_SESSION_DIR = saved;
+    }
+  });
+
+  it('profilePath и tasksDirectory лежат рядом с каталогом сессий', () => {
+    const saved = process.env.LLM_SESSION_DIR;
+    try {
+      process.env.LLM_SESSION_DIR = '/tmp/base/sessions';
+      assert.equal(profilePath(), '/tmp/base/profile.json');
+      assert.equal(tasksDirectory(), '/tmp/base/tasks');
     } finally {
       if (saved === undefined) delete process.env.LLM_SESSION_DIR;
       else process.env.LLM_SESSION_DIR = saved;
