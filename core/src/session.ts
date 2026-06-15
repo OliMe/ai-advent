@@ -12,6 +12,8 @@ export interface Session {
   model: string;
   /** Осмысленное имя ветки для удобного переключения (напр. «main»). */
   label?: string;
+  /** id задачи, к которой привязана сессия (если есть). */
+  taskId?: string;
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
