@@ -594,6 +594,10 @@ export class MemoryManager {
   // Индекс задач этого процесса (нужен для in-memory режима без хранилища).
   private readonly tasks = new Map<string, Task>();
   private extractedThrough = 0;
+  // Предложенное (но ещё не подтверждённое) имя новой задачи.
+  private proposal: string | null = null;
+  // Имена предложений, от которых пользователь уже отказался (не предлагаем снова).
+  private readonly declined = new Set<string>();
 
   constructor(options: MemoryManagerOptions) {
     this.enabled = options.enabled;
@@ -620,6 +624,19 @@ export class MemoryManager {
   reset(): void {
     this.strategy.reset();
     this.extractedThrough = 0;
+    this.proposal = null;
+  }
+
+  /** Забирает предложение новой задачи (если есть), очищая его. */
+  takeProposal(): string | null {
+    const proposed = this.proposal;
+    this.proposal = null;
+    return proposed;
+  }
+
+  /** Помечает предложение отклонённым — больше не предлагаем эту задачу. */
+  declineProposal(title: string): void {
+    this.declined.add(title);
   }
 
   /** Сохраняет задачу в хранилище (если есть) и в индекс процесса. */
@@ -632,6 +649,7 @@ export class MemoryManager {
   setTask(title: string): Task {
     const task = createTask(title);
     this.task = task;
+    this.proposal = null; // задача выбрана — снимаем висящее предложение
     this.persistTask(task);
     return task;
   }
@@ -752,11 +770,15 @@ export class MemoryManager {
     const instruction =
       taskContext +
       profileContext +
-      'Проанализируй новые сообщения и верни СТРОГО JSON с двумя полями. ' +
+      'Проанализируй новые сообщения и верни СТРОГО JSON с полями. ' +
       '"task" — обновлённый список фактов текущей задачи (цель, ограничения, решения, ' +
       'прогресс); если активной задачи нет — пустой массив. ' +
       '"user" — НОВЫЕ явные предпочтения пользователя (форма ответа, стек, стиль), ' +
-      'заявленные им прямо; если таких нет — пустой массив. Без пояснений.\n\nСообщения:\n' +
+      'заявленные им прямо; если таких нет — пустой массив. ' +
+      '"isNewTask" — true, если пользователь ставит НОВУЮ задачу/цель, отличную от ' +
+      'текущей (а не уточняет её и не ведёт болтовню); иначе false. ' +
+      '"proposedTitle" — краткое имя этой новой задачи (если isNewTask), иначе "". ' +
+      'Без пояснений.\n\nСообщения:\n' +
       dialogue;
     return this.client.completeWithUsage([{ role: 'user', content: instruction }], {
       signal: AbortSignal.timeout(this.requestTimeoutMs),
@@ -768,13 +790,25 @@ export class MemoryManager {
 
   /** Применяет результат извлечения к задаче и профилю (с сохранением). */
   private applyExtraction(content: string): void {
-    let parsed: { task?: unknown; user?: unknown };
+    let parsed: { task?: unknown; user?: unknown; isNewTask?: unknown; proposedTitle?: unknown };
     try {
       parsed = JSON.parse(content);
     } catch {
       return; // невалидный JSON — пропускаем ход извлечения
     }
     const now = new Date().toISOString();
+    // Авто-определение новой задачи: предлагаем, если уверены, тема отличается от
+    // текущей и пользователь раньше от такого имени не отказывался.
+    const proposedTitle =
+      typeof parsed.proposedTitle === 'string' ? parsed.proposedTitle.trim() : '';
+    if (
+      parsed.isNewTask === true &&
+      proposedTitle.length > 0 &&
+      proposedTitle !== this.task?.title &&
+      !this.declined.has(proposedTitle)
+    ) {
+      this.proposal = proposedTitle;
+    }
     if (this.task !== null && Array.isArray(parsed.task)) {
       this.task.details = parsed.task.filter((x): x is string => typeof x === 'string');
       this.task.updatedAt = now;
@@ -1071,6 +1105,16 @@ export function formatSessionList(summaries: SessionSummary[]): string {
   return `Ветки:\n${lines.join('\n')}\n\n`;
 }
 
+/** Утвердительный ли ответ пользователя (да/yes/…). */
+function isAffirmative(reply: string): boolean {
+  return ['да', 'yes', 'y', 'ага', 'давай', 'ок', 'ok', 'д'].includes(reply);
+}
+
+/** Отрицательный ли ответ пользователя (нет/no/…). */
+function isNegative(reply: string): boolean {
+  return ['нет', 'no', 'n', 'не', 'н'].includes(reply);
+}
+
 /** Перезаписывает системное сообщение сессии (действует с этого момента). */
 function setSystemPrompt(session: Session, text: string): void {
   session.messages[0] = { role: 'system', content: text };
@@ -1102,6 +1146,8 @@ export async function runInteractive(
   // Активная сессия (команды /branch, /switch, /reset могут её сменить).
   // Полный транскрипт храним в currentSession.messages; в модель уходит окно.
   let currentSession = session;
+  // Имя задачи, предложенное авто-определением и ждущее ответа да/нет.
+  let pendingTaskProposal: string | null = null;
   // Бюджет истории зависит от контекста выбранной модели и резерва под ответ.
   const historyBudget = historyBudgetTokens(config.contextTokens, limits.maxTokens);
   // При слоистой памяти часть бюджета уходит профилю и задаче, остаток — короткой.
@@ -1180,6 +1226,24 @@ export async function runInteractive(
       }
       if (!userInput) continue;
       if (userInput === '/exit' || userInput === '/quit') break;
+      // Ответ на предложение авто-определённой задачи (да/нет/иначе — неявный отказ).
+      if (pendingTaskProposal !== null) {
+        const reply = userInput.toLowerCase();
+        const proposed = pendingTaskProposal;
+        pendingTaskProposal = null;
+        if (isAffirmative(reply)) {
+          currentSession.taskId = memoryManager.setTask(proposed).id;
+          store?.save(currentSession);
+          output.write(`Задача установлена: ${proposed}\n\n`);
+          continue;
+        }
+        memoryManager.declineProposal(proposed);
+        if (isNegative(reply)) {
+          output.write('Хорошо, без задачи.\n\n');
+          continue;
+        }
+        // Иначе — неявный отказ: обрабатываем реплику как обычное сообщение.
+      }
       if (userInput === '/help') {
         output.write(helpText());
         continue;
@@ -1411,6 +1475,14 @@ export async function runInteractive(
           totals.completion_tokens += usage.completion_tokens;
           totals.total_tokens += usage.total_tokens;
           requestCount++;
+        }
+        // Авто-определение задачи предложило новую цель — спросим подтверждение.
+        const proposed = memoryManager.takeProposal();
+        if (proposed !== null) {
+          output.write(
+            `Похоже на новую задачу. Сделать задачей сессии «${proposed}»? (да/нет)\n\n`,
+          );
+          pendingTaskProposal = proposed;
         }
       } catch (error) {
         // Откатываем неудачный ход, чтобы история осталась согласованной.

@@ -1704,6 +1704,90 @@ describe('интерактив: команды слоистой памяти', (
     assert.match(text(), /\[профиль · вход 4 · выход 3/); // консолидация в конце
     assert.match(text(), /Итого за сессию:/);
   });
+
+  /** Клиент авто-определения: извлечение предлагает новую задачу «Сбор ТЗ». */
+  function autoTaskClient(t: TestContext): ChatCompletionClient {
+    const client = new ChatCompletionClient(makeConfig());
+    t.mock.method(
+      client,
+      'streamWithUsage',
+      async (
+        _messages: ChatMessage[],
+        _options: CompleteOptions,
+        onDelta: (delta: StreamDelta) => void,
+      ) => {
+        onDelta({ content: 'OK' });
+        return {
+          content: 'OK',
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        };
+      },
+    );
+    t.mock.method(client, 'completeWithUsage', async (messages: ChatMessage[]) =>
+      messages[0].content.includes('JSON')
+        ? {
+            content: '{"task":[],"user":[],"isNewTask":true,"proposedTitle":"Сбор ТЗ"}',
+            usage: undefined,
+          }
+        : { content: '- ничего', usage: undefined },
+    );
+    return client;
+  }
+
+  it('авто-задача: предложение и подтверждение «да» устанавливает задачу', async t => {
+    const { finished, text } = driveInteractive(
+      autoTaskClient(t),
+      ['Собери ТЗ на приложение', 'да', '/task', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(), // со хранилищем: подтверждённая задача сохраняется в сессию
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Сделать задачей сессии «Сбор ТЗ»\?/);
+    assert.match(text(), /Задача установлена: Сбор ТЗ/);
+    assert.match(text(), /Текущая задача: Сбор ТЗ/);
+  });
+
+  it('авто-задача: отказ «нет» не ставит задачу', async t => {
+    const { finished, text } = driveInteractive(
+      autoTaskClient(t),
+      ['Собери ТЗ', 'нет', '/task', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Хорошо, без задачи/);
+    assert.match(text(), /Активной задачи нет/);
+  });
+
+  it('авто-задача: неявный отказ обрабатывает реплику и не предлагает повторно', async t => {
+    const { finished, text } = driveInteractive(
+      autoTaskClient(t),
+      ['Собери ТЗ', 'а что по срокам?', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    // Предложение появилось один раз; вторая реплика обработана как обычная.
+    assert.equal((text().match(/Сделать задачей сессии/g) ?? []).length, 1);
+  });
 });
 
 describe('layerBudgets', () => {
@@ -2021,6 +2105,51 @@ describe('MemoryManager', () => {
     await mgr.consolidate([sys, { role: 'user', content: 'я на TS' }]); // store + непустой профиль
     assert.ok(profileSaved.some(p => p.entries.some(e => e.text === 'итог')));
     assert.equal(mgr.forgetProfile(1), 'итог'); // забывание сохраняется в store
+  });
+
+  it('авто-определение задачи: предложение, очистка, пустое имя, текущая, отказ', async t => {
+    const propose = (title: string) => () => ({
+      content: `{"task":[],"user":[],"isNewTask":true,"proposedTitle":"${title}"}`,
+      usage: undefined as Usage | undefined,
+    });
+
+    const mgr = makeManager(t, propose('Сбор ТЗ'));
+    await mgr.prepare([sys, { role: 'user', content: 'давай ТЗ' }]);
+    assert.equal(mgr.takeProposal(), 'Сбор ТЗ');
+    assert.equal(mgr.takeProposal(), null); // очищено после взятия
+
+    const empty = makeManager(t, () => ({
+      content: '{"isNewTask":true,"proposedTitle":""}',
+      usage: undefined,
+    }));
+    await empty.prepare([sys, { role: 'user', content: 'x' }]);
+    assert.equal(empty.takeProposal(), null); // пустое имя — не предлагаем
+
+    const same = makeManager(t, propose('Сайт'));
+    same.setTask('Сайт');
+    await same.prepare([sys, { role: 'user', content: 'x' }]);
+    assert.equal(same.takeProposal(), null); // совпадает с текущей задачей
+
+    const refused = makeManager(t, propose('Бот'));
+    refused.declineProposal('Бот');
+    await refused.prepare([sys, { role: 'user', content: 'x' }]);
+    assert.equal(refused.takeProposal(), null); // отклонённое имя не предлагаем
+  });
+
+  it('setTask и reset снимают висящее предложение', async t => {
+    const propose = () => ({
+      content: '{"isNewTask":true,"proposedTitle":"A"}',
+      usage: undefined as Usage | undefined,
+    });
+    const m1 = makeManager(t, propose);
+    await m1.prepare([sys, { role: 'user', content: 'x' }]);
+    m1.setTask('B');
+    assert.equal(m1.takeProposal(), null);
+
+    const m2 = makeManager(t, propose);
+    await m2.prepare([sys, { role: 'user', content: 'x' }]);
+    m2.reset();
+    assert.equal(m2.takeProposal(), null);
   });
 });
 
