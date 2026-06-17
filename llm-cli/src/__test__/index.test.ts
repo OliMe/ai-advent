@@ -1595,10 +1595,65 @@ describe('интерактив: команды слоистой памяти', (
       layered,
     );
     await finished;
-    assert.match(text(), /Задача «Черновик» удалена/);
+    assert.match(text(), /Удалено: «Черновик»/);
     assert.match(text(), /Задача не найдена: нет/);
     assert.match(text(), /Активной задачи нет/); // удалили активную — отвязалась
     assert.equal(session.taskId, undefined);
+  });
+
+  it('/task delete принимает несколько id/имён через запятую', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/task Один', '/task Два', '/task delete Один, Два, Нет', '/tasks', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Удалено: «Один», «Два»\. Не найдены: Нет\./);
+    assert.match(text(), /Задач пока нет/); // обе удалены
+  });
+
+  it('/profile forget принимает несколько номеров через запятую', async t => {
+    const client = new ChatCompletionClient(makeConfig());
+    t.mock.method(
+      client,
+      'streamWithUsage',
+      async (
+        _messages: ChatMessage[],
+        _options: CompleteOptions,
+        onDelta: (delta: StreamDelta) => void,
+      ) => {
+        onDelta({ content: 'OK' });
+        return { content: 'OK', usage: undefined };
+      },
+    );
+    t.mock.method(client, 'completeWithUsage', async (messages: ChatMessage[]) =>
+      messages[0].content.includes('JSON')
+        ? { content: '{"task":[],"user":["a","b","c"]}', usage: undefined }
+        : { content: '', usage: undefined },
+    );
+    const { finished, text } = driveInteractive(
+      client,
+      ['привет', '/profile forget 1, 3', '/profile', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Забыто: a; c/); // удалены 1 и 3
+    assert.match(text(), /1\. b/); // остался только b
   });
 
   it('/profile и /profile forget на пустом профиле', async t => {
@@ -1617,7 +1672,7 @@ describe('интерактив: команды слоистой памяти', (
     );
     await finished;
     assert.match(text(), /Профиль пуст/);
-    assert.match(text(), /Нет такого пункта профиля/);
+    assert.match(text(), /Нет таких пунктов профиля/);
   });
 
   it('команды памяти при --no-memory сообщают, что она выключена', async t => {
@@ -2190,16 +2245,18 @@ describe('MemoryManager', () => {
     assert.ok(taskStore.saved.some(task => task.id === created.id)); // сохранена в store
   });
 
-  it('forgetProfile: удаляет пункт по номеру, выход за границы — null', async t => {
+  it('forgetProfile: удаляет несколько пунктов; сдвиг и невалидные не мешают', async t => {
     const mgr = makeManager(t, () => ({
-      content: '{"task":[],"user":["a","b"]}',
+      content: '{"task":[],"user":["a","b","c","d"]}',
       usage: undefined,
     }));
     await mgr.prepare([sys, { role: 'user', content: 'привет' }]);
-    assert.deepEqual(mgr.profileEntries(), ['a', 'b']);
-    assert.equal(mgr.forgetProfile(1), 'a');
-    assert.deepEqual(mgr.profileEntries(), ['b']);
-    assert.equal(mgr.forgetProfile(5), null);
+    assert.deepEqual(mgr.profileEntries(), ['a', 'b', 'c', 'd']);
+    // Удаляем 2 и 4 (b, d) разом — индексы резолвятся до удаления.
+    assert.deepEqual(mgr.forgetProfile([2, 4, 9]), ['b', 'd']); // 9 вне диапазона — игнор
+    assert.deepEqual(mgr.profileEntries(), ['a', 'c']);
+    assert.deepEqual(mgr.forgetProfile([5]), []); // вне диапазона — пусто
+    assert.deepEqual(mgr.forgetProfile([1]), ['a']); // одиночный — тоже массив
   });
 
   it('reset: позволяет извлечь заново после смены ветки', async t => {
@@ -2265,7 +2322,7 @@ describe('MemoryManager', () => {
 
     await mgr.consolidate([sys, { role: 'user', content: 'я на TS' }]); // store + непустой профиль
     assert.ok(profileSaved.some(p => p.entries.some(e => e.text === 'итог')));
-    assert.equal(mgr.forgetProfile(1), 'итог'); // забывание сохраняется в store
+    assert.deepEqual(mgr.forgetProfile([1]), ['итог']); // забывание сохраняется в store
 
     assert.equal(mgr.deleteTask(created.id)?.id, created.id); // удаление идёт в store
     assert.equal(taskStore.load(created.id), null);

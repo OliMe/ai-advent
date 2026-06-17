@@ -742,16 +742,27 @@ export class MemoryManager {
     return task;
   }
 
-  /** Забывает пункт профиля по номеру (1-based); возвращает текст или null. */
-  forgetProfile(oneBasedIndex: number): string | null {
-    const index = oneBasedIndex - 1;
-    if (index < 0 || index >= this.profile.entries.length) {
-      return null;
+  /**
+   * Забывает пункты профиля по номерам (1-based). Резолвит индексы ДО удаления,
+   * чтобы их сдвиг не мешал; невалидные игнорирует. Возвращает забытые тексты
+   * (в порядке возрастания номера).
+   */
+  forgetProfile(oneBasedIndices: number[]): string[] {
+    const drop = new Set<number>();
+    for (const oneBased of oneBasedIndices) {
+      const index = oneBased - 1;
+      if (index >= 0 && index < this.profile.entries.length) {
+        drop.add(index);
+      }
     }
-    const [removed] = this.profile.entries.splice(index, 1);
+    if (drop.size === 0) {
+      return [];
+    }
+    const removed = [...drop].sort((a, b) => a - b).map(index => this.profile.entries[index].text);
+    this.profile.entries = this.profile.entries.filter((_, index) => !drop.has(index));
     this.profile.updatedAt = new Date().toISOString();
     this.profileStore?.save(this.profile);
-    return removed.text;
+    return removed;
   }
 
   /** Системный блок профиля (или null, если пусто/выключено). */
@@ -1171,9 +1182,9 @@ export function helpText(): string {
     '  /tasks              — список задач\n' +
     '  /task switch <id|имя> — переключиться на задачу\n' +
     '  /task done          — закрыть текущую задачу\n' +
-    '  /task delete <id|имя> — удалить задачу\n' +
+    '  /task delete <id|имя,…> — удалить задачу(и)\n' +
     '  /profile            — что известно о вас (профиль)\n' +
-    '  /profile forget <n> — забыть пункт профиля\n' +
+    '  /profile forget <n,…> — забыть пункт(ы) профиля\n' +
     '  /system <текст>     — изменить системный промпт\n' +
     '  /file <путь>        — добавить содержимое файла в контекст\n' +
     '  /temp <число>       — изменить температуру\n' +
@@ -1190,6 +1201,14 @@ export function formatSessionList(summaries: SessionSummary[]): string {
     summary => `  ${summary.label ?? '—'}  (${summary.id})  ${summary.preview || '(пусто)'}`,
   );
   return `Ветки:\n${lines.join('\n')}\n\n`;
+}
+
+/** Разбирает список значений через запятую, обрезая пробелы и пустые. */
+function parseList(raw: string): string[] {
+  return raw
+    .split(',')
+    .map(token => token.trim())
+    .filter(token => token.length > 0);
 }
 
 /** Утвердительный ли ответ пользователя (да/yes/…). */
@@ -1469,19 +1488,29 @@ export async function runInteractive(
         continue;
       }
       if (userInput.startsWith('/task delete ')) {
-        const arg = userInput.slice('/task delete '.length).trim();
         if (!memoryManager.enabled) {
           output.write(MEMORY_OFF_NOTICE);
         } else {
-          const removed = memoryManager.deleteTask(arg);
-          if (removed === null) {
-            output.write(`Задача не найдена: ${arg}\n\n`);
-          } else {
-            if (currentSession.taskId === removed.id) {
-              currentSession.taskId = undefined; // удалили активную — отвязываем сессию
-              store?.save(currentSession);
+          const deleted: Task[] = [];
+          const notFound: string[] = [];
+          for (const token of parseList(userInput.slice('/task delete '.length))) {
+            const removed = memoryManager.deleteTask(token);
+            if (removed === null) {
+              notFound.push(token);
+            } else {
+              deleted.push(removed);
+              if (currentSession.taskId === removed.id) {
+                currentSession.taskId = undefined; // удалили активную — отвязываем сессию
+                store?.save(currentSession);
+              }
             }
-            output.write(`Задача «${removed.title}» удалена.\n\n`);
+          }
+          if (deleted.length === 0) {
+            output.write(`Задача не найдена: ${notFound.join(', ')}\n\n`);
+          } else {
+            const removedNames = deleted.map(task => `«${task.title}»`).join(', ');
+            const tail = notFound.length > 0 ? ` Не найдены: ${notFound.join(', ')}.` : '';
+            output.write(`Удалено: ${removedNames}.${tail}\n\n`);
           }
         }
         continue;
@@ -1509,10 +1538,14 @@ export async function runInteractive(
         if (!memoryManager.enabled) {
           output.write(MEMORY_OFF_NOTICE);
         } else {
-          const index = Number(userInput.slice('/profile forget '.length).trim());
-          const removed = Number.isInteger(index) ? memoryManager.forgetProfile(index) : null;
+          const indices = parseList(userInput.slice('/profile forget '.length))
+            .map(Number)
+            .filter(Number.isInteger);
+          const removed = memoryManager.forgetProfile(indices);
           output.write(
-            removed === null ? 'Нет такого пункта профиля.\n\n' : `Забыто: ${removed}\n\n`,
+            removed.length === 0
+              ? 'Нет таких пунктов профиля.\n\n'
+              : `Забыто: ${removed.join('; ')}\n\n`,
           );
         }
         continue;
