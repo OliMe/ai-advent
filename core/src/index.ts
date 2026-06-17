@@ -6,8 +6,14 @@ export { SESSION_VERSION, sessionId, createSession, sessionPreview, summarize } 
 export type { Session, SessionSummary } from './session.ts';
 export { FileSessionStore } from './session-store.ts';
 export type { SessionStore } from './session-store.ts';
-export { PROFILE_VERSION, emptyProfile, FileProfileStore } from './profile-store.ts';
-export type { Profile, ProfileEntry, ProfileStore } from './profile-store.ts';
+export {
+  PROFILE_VERSION,
+  DEFAULT_PROFILE_NAME,
+  emptyProfile,
+  summarizeProfile,
+  FileProfileStore,
+} from './profile-store.ts';
+export type { Profile, ProfileEntry, ProfileSummary, ProfileStore } from './profile-store.ts';
 export { TASK_VERSION, createTask, summarizeTask, FileTaskStore } from './task-store.ts';
 export type { Task, TaskStatus, TaskSummary, TaskStore } from './task-store.ts';
 export type {

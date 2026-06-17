@@ -3,7 +3,7 @@ import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import * as readline from 'node:readline/promises';
 import { PassThrough, Writable } from 'node:stream';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -39,7 +39,9 @@ import {
   formatTaskList,
   formatCurrentTask,
   formatProfile,
+  formatProfileList,
   profilePath,
+  profilesDirectory,
   tasksDirectory,
   type MemoryKind,
   type MemorySettings,
@@ -49,6 +51,7 @@ import {
   createSession,
   summarize,
   summarizeTask,
+  summarizeProfile,
   emptyProfile,
   createTask,
 } from '../../../core/src/index.ts';
@@ -57,8 +60,10 @@ import type {
   ChatMessage,
   CompleteOptions,
   CompletionResult,
+  ProfileSummary,
   StreamDelta,
   Profile,
+  ProfileStore,
   Session,
   SessionStore,
   Task,
@@ -1204,6 +1209,10 @@ describe('parseArgs', () => {
     assert.equal(parseArgs(['--task-tokens=700']).taskTokens, 700);
     assert.equal(parseArgs(['привет']).profileTokens, undefined);
     assert.equal(parseArgs(['привет']).taskTokens, undefined);
+
+    assert.equal(parseArgs(['--profile', 'работа']).profile, 'работа');
+    assert.equal(parseArgs(['--profile=личное']).profile, 'личное');
+    assert.equal(parseArgs(['привет']).profile, undefined);
   });
 
   it('--json включает формат json_object', () => {
@@ -1671,8 +1680,37 @@ describe('интерактив: команды слоистой памяти', (
       layered,
     );
     await finished;
-    assert.match(text(), /Профиль пуст/);
+    assert.match(text(), /Профиль «default»: пуст/);
     assert.match(text(), /Нет таких пунктов профиля/);
+  });
+
+  it('/profiles и /profile switch: список, создание, переключение, текущий, без имени', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      [
+        '/profiles',
+        '/profile switch работа',
+        '/profile switch работа',
+        '/profile switch default',
+        '/profile switch',
+        '/exit',
+      ],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Профили:/);
+    assert.match(text(), /Создан и активирован профиль «работа»/);
+    assert.match(text(), /Уже на профиле «работа»/);
+    assert.match(text(), /Активный профиль: «default»/);
+    assert.match(text(), /Укажите имя профиля/);
   });
 
   it('команды памяти при --no-memory сообщают, что она выключена', async t => {
@@ -1688,6 +1726,8 @@ describe('интерактив: команды слоистой памяти', (
         '/task switch Y',
         '/task delete Z',
         '/task',
+        '/profiles',
+        '/profile switch Z',
         '/exit',
       ],
       0.7,
@@ -1997,10 +2037,23 @@ describe('format helpers (задачи и профиль)', () => {
     assert.match(formatCurrentTask(createTask('Пусто')), /без деталей/);
   });
 
-  it('formatProfile: пусто и нумерованно', () => {
-    assert.match(formatProfile([]), /Профиль пуст/);
-    assert.match(formatProfile(['любит кратко', 'TypeScript']), /1\. любит кратко/);
-    assert.match(formatProfile(['любит кратко', 'TypeScript']), /2\. TypeScript/);
+  it('formatProfile: пусто и нумерованно, с именем активного', () => {
+    assert.match(formatProfile([], 'default'), /Профиль «default»: пуст/);
+    assert.match(formatProfile(['любит кратко', 'TypeScript'], 'работа'), /Профиль «работа»:/);
+    assert.match(formatProfile(['любит кратко', 'TypeScript'], 'работа'), /1\. любит кратко/);
+    assert.match(formatProfile(['любит кратко', 'TypeScript'], 'работа'), /2\. TypeScript/);
+  });
+
+  it('formatProfileList: помечает активный и добавляет его, если отсутствует', () => {
+    const summaries: ProfileSummary[] = [
+      { name: 'работа', entryCount: 3, updatedAt: 't' },
+      { name: 'личное', entryCount: 1, updatedAt: 't' },
+    ];
+    const text = formatProfileList(summaries, 'работа');
+    assert.match(text, /\* работа {2}\(пунктов: 3\)/);
+    assert.match(text, / {2}личное {2}\(пунктов: 1\)/);
+    // Активный, которого нет в списке (ещё пуст), всё равно показан.
+    assert.match(formatProfileList([], 'новый'), /\* новый {2}\(пунктов: 0\)/);
   });
 });
 
@@ -2292,10 +2345,18 @@ describe('MemoryManager', () => {
       },
     };
     const profileSaved: Profile[] = [];
-    const startProfile = {
+    const startProfile: Profile = {
       version: 1,
+      name: 'default',
       entries: [{ text: 'старое', updatedAt: 't' }],
       updatedAt: 't',
+    };
+    const profileStore: ProfileStore = {
+      list: () => [summarizeProfile(startProfile)],
+      load: () => startProfile,
+      save: p => profileSaved.push(p),
+      activeName: () => 'default',
+      setActive: () => {},
     };
     const mgr = new MemoryManager({
       enabled: true,
@@ -2304,7 +2365,7 @@ describe('MemoryManager', () => {
       client,
       requestTimeoutMs: 5000,
       profile: startProfile,
-      profileStore: { load: () => startProfile, save: p => profileSaved.push(p) },
+      profileStore,
       taskStore,
     });
 
@@ -2326,6 +2387,55 @@ describe('MemoryManager', () => {
 
     assert.equal(mgr.deleteTask(created.id)?.id, created.id); // удаление идёт в store
     assert.equal(taskStore.load(created.id), null);
+  });
+
+  it('профили в памяти: switchProfile создаёт/переключает, listProfiles, currentProfileName', async t => {
+    const mgr = makeManager(t, () => ({ content: '{}', usage: undefined })); // store=null → in-memory
+    assert.equal(mgr.currentProfileName(), 'default');
+    assert.equal(mgr.switchProfile('работа'), true); // новый → создан
+    assert.equal(mgr.currentProfileName(), 'работа');
+    assert.deepEqual(
+      mgr
+        .listProfiles()
+        .map(p => p.name)
+        .sort(),
+      ['default', 'работа'],
+    );
+    assert.equal(mgr.switchProfile('default'), false); // существующий
+    assert.equal(mgr.currentProfileName(), 'default');
+  });
+
+  it('профили с хранилищем: switch грузит/создаёт через store и пишет активный', async t => {
+    const map = new Map<string, Profile>();
+    let active = 'default';
+    const profileStore: ProfileStore = {
+      list: () => [...map.values()].map(summarizeProfile),
+      load: name => map.get(name) ?? emptyProfile(name),
+      save: p => {
+        map.set(p.name, p);
+      },
+      activeName: () => active,
+      setActive: name => {
+        active = name;
+      },
+    };
+    const client = clientWith(t, async () => ({ content: '{}', usage: undefined }));
+    const mgr = new MemoryManager({
+      enabled: true,
+      strategy: createMemoryStrategy('window', budgets.short, 6, client, 5000),
+      budgets,
+      client,
+      requestTimeoutMs: 5000,
+      profile: emptyProfile('default'),
+      profileStore,
+      taskStore: null,
+    });
+
+    assert.equal(mgr.switchProfile('работа'), true); // создан через store
+    assert.equal(active, 'работа'); // активный записан в указатель
+    assert.ok(map.has('работа'));
+    assert.ok(mgr.listProfiles().some(p => p.name === 'работа')); // список идёт через store
+    assert.equal(mgr.switchProfile('работа'), false); // уже существует
   });
 
   it('авто-определение задачи: предложение, очистка, пустое имя, текущая, отказ', async t => {
@@ -2388,12 +2498,13 @@ describe('sessionDirectory', () => {
     }
   });
 
-  it('profilePath и tasksDirectory лежат рядом с каталогом сессий', () => {
+  it('profilePath, tasksDirectory и profilesDirectory лежат рядом с каталогом сессий', () => {
     const saved = process.env.LLM_SESSION_DIR;
     try {
       process.env.LLM_SESSION_DIR = '/tmp/base/sessions';
       assert.equal(profilePath(), '/tmp/base/profile.json');
       assert.equal(tasksDirectory(), '/tmp/base/tasks');
+      assert.equal(profilesDirectory(), '/tmp/base/profiles');
     } finally {
       if (saved === undefined) delete process.env.LLM_SESSION_DIR;
       else process.env.LLM_SESSION_DIR = saved;
@@ -2648,6 +2759,19 @@ describe('main', () => {
 
     assert.match(output.text(), /Чат с моделью/);
     assert.match(output.text(), /До встречи!/);
+  });
+
+  it('--profile фиксирует активный профиль в хранилище', async () => {
+    const input = new PassThrough();
+    const output = makeCollector();
+
+    const finished = main(['node', 'cli.ts', '--profile', 'работа'], input, output.stream);
+    input.write('/exit\n');
+    await finished;
+
+    assert.match(output.text(), /До встречи!/);
+    const active = readFileSync(join(workDir, 'profiles', '.active'), 'utf8');
+    assert.equal(active, 'работа'); // указатель активного профиля сохранён
   });
 });
 

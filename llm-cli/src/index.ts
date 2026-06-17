@@ -13,6 +13,8 @@ import {
   createTask,
   emptyProfile,
   summarizeTask,
+  summarizeProfile,
+  DEFAULT_PROFILE_NAME,
 } from '../../core/src/index.ts';
 import type {
   AppConfig,
@@ -21,6 +23,7 @@ import type {
   GenerationLimits,
   Profile,
   ProfileStore,
+  ProfileSummary,
   ResponseFormat,
   Session,
   SessionStore,
@@ -96,6 +99,11 @@ export function profilePath(): string {
 /** Каталог хранения задач. */
 export function tasksDirectory(): string {
   return join(memoryBaseDir(), 'tasks');
+}
+
+/** Каталог хранения профилей (персон). */
+export function profilesDirectory(): string {
+  return join(memoryBaseDir(), 'profiles');
 }
 
 /**
@@ -602,10 +610,12 @@ export class MemoryManager {
   private readonly requestTimeoutMs: number;
   private readonly profileStore: ProfileStore | null;
   private readonly taskStore: TaskStore | null;
+  // Активный профиль (персона); его имя — profile.name.
   private profile: Profile;
   private task: Task | null = null;
-  // Индекс задач этого процесса (нужен для in-memory режима без хранилища).
+  // Индексы этого процесса (нужны для in-memory режима без хранилища).
   private readonly tasks = new Map<string, Task>();
+  private readonly profiles = new Map<string, Profile>();
   private extractedThrough = 0;
   // Предложенное (но ещё не подтверждённое) имя новой задачи.
   private proposal: string | null = null;
@@ -621,6 +631,55 @@ export class MemoryManager {
     this.profile = options.profile;
     this.profileStore = options.profileStore;
     this.taskStore = options.taskStore;
+    this.profiles.set(this.profile.name, this.profile); // in-memory кэш активного
+  }
+
+  /** Имя активного профиля (персоны). */
+  currentProfileName(): string {
+    return this.profile.name;
+  }
+
+  /** Сохраняет активный профиль (в хранилище или в индекс процесса). */
+  private persistProfile(): void {
+    if (this.profileStore !== null) {
+      this.profileStore.save(this.profile);
+    } else {
+      this.profiles.set(this.profile.name, this.profile);
+    }
+  }
+
+  /** Список профилей (из хранилища или из памяти процесса), свежие первыми. */
+  listProfiles(): ProfileSummary[] {
+    if (this.profileStore !== null) {
+      return this.profileStore.list();
+    }
+    return [...this.profiles.values()]
+      .map(summarizeProfile)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+
+  /** Есть ли профиль с таким именем. */
+  private profileExists(name: string): boolean {
+    return this.profileStore !== null
+      ? this.profileStore.list().some(summary => summary.name === name)
+      : this.profiles.has(name);
+  }
+
+  /**
+   * Делает активным профиль с именем `name`, создавая пустой, если его нет.
+   * Возвращает true, если профиль был создан. Активный профиль персистится глобально.
+   */
+  switchProfile(name: string): boolean {
+    const created = !this.profileExists(name);
+    this.profile =
+      this.profileStore !== null
+        ? this.profileStore.load(name)
+        : (this.profiles.get(name) ?? emptyProfile(name));
+    if (created) {
+      this.persistProfile(); // создаём пустой, чтобы попал в список и активировался
+    }
+    this.profileStore?.setActive(name);
+    return created;
   }
 
   /** Текущая активная задача (или null). */
@@ -761,7 +820,7 @@ export class MemoryManager {
     const removed = [...drop].sort((a, b) => a - b).map(index => this.profile.entries[index].text);
     this.profile.entries = this.profile.entries.filter((_, index) => !drop.has(index));
     this.profile.updatedAt = new Date().toISOString();
-    this.profileStore?.save(this.profile);
+    this.persistProfile();
     return removed;
   }
 
@@ -873,7 +932,7 @@ export class MemoryManager {
       }
       if (profileAdded.length > 0) {
         this.profile.updatedAt = now;
-        this.profileStore?.save(this.profile);
+        this.persistProfile();
       }
     }
     return { taskUpdated, profileAdded };
@@ -989,7 +1048,7 @@ export class MemoryManager {
         .map(text => ({ text, updatedAt: now }));
       if (entries.length > 0) {
         this.profile = { ...this.profile, entries, updatedAt: now };
-        this.profileStore?.save(this.profile);
+        this.persistProfile();
       }
       onExtraction?.(result.usage);
       return {
@@ -1134,6 +1193,8 @@ export interface MemorySettings {
   taskTokens?: number;
   /** Стартовая задача (из флага --task). */
   initialTaskTitle?: string;
+  /** Имя активного профиля на старте (из --profile или указателя хранилища). */
+  profileName?: string;
 }
 
 /** Форматирует список задач для команды /tasks. */
@@ -1161,12 +1222,27 @@ export function formatCurrentTask(task: Task | null): string {
 }
 
 /** Форматирует профиль пользователя (нумерованно) для команды /profile. */
-export function formatProfile(entries: string[]): string {
+export function formatProfile(entries: string[], activeName: string): string {
+  const header = `Профиль «${activeName}»`;
   if (entries.length === 0) {
-    return 'Профиль пуст — пока ничего не знаю о ваших предпочтениях.\n\n';
+    return `${header}: пуст — пока ничего не знаю о ваших предпочтениях.\n\n`;
   }
   const lines = entries.map((entry, index) => `  ${index + 1}. ${entry}`);
-  return `Профиль пользователя:\n${lines.join('\n')}\n\n`;
+  return `${header}:\n${lines.join('\n')}\n\n`;
+}
+
+/** Форматирует список профилей (с пометкой активного) для команды /profiles. */
+export function formatProfileList(summaries: ProfileSummary[], activeName: string): string {
+  // Активный профиль показываем всегда, даже если он ещё пуст и не сохранён.
+  const names = summaries.map(summary => summary.name);
+  const rows = names.includes(activeName)
+    ? summaries
+    : [{ name: activeName, entryCount: 0, updatedAt: '' }, ...summaries];
+  const lines = rows.map(summary => {
+    const mark = summary.name === activeName ? '*' : ' ';
+    return ` ${mark} ${summary.name}  (пунктов: ${summary.entryCount})`;
+  });
+  return `Профили:\n${lines.join('\n')}\n\n`;
 }
 
 /** Текст справки по интерактивным командам. */
@@ -1183,7 +1259,9 @@ export function helpText(): string {
     '  /task switch <id|имя> — переключиться на задачу\n' +
     '  /task done          — закрыть текущую задачу\n' +
     '  /task delete <id|имя,…> — удалить задачу(и)\n' +
-    '  /profile            — что известно о вас (профиль)\n' +
+    '  /profile            — что известно о вас (активный профиль)\n' +
+    '  /profiles           — список профилей (персон)\n' +
+    '  /profile switch <имя> — переключить/создать профиль\n' +
     '  /profile forget <n,…> — забыть пункт(ы) профиля\n' +
     '  /system <текст>     — изменить системный промпт\n' +
     '  /file <путь>        — добавить содержимое файла в контекст\n' +
@@ -1271,6 +1349,8 @@ export async function runInteractive(
     client,
     config.requestTimeoutMs,
   );
+  // Активный профиль (персона): из --profile/указателя, иначе default.
+  const activeProfileName = memorySettings.profileName ?? DEFAULT_PROFILE_NAME;
   // Менеджер слоистой памяти поверх короткой стратегии.
   const memoryManager = new MemoryManager({
     enabled: memorySettings.enabled,
@@ -1278,7 +1358,8 @@ export async function runInteractive(
     budgets,
     client,
     requestTimeoutMs: config.requestTimeoutMs,
-    profile: memorySettings.profileStore?.load() ?? emptyProfile(),
+    profile:
+      memorySettings.profileStore?.load(activeProfileName) ?? emptyProfile(activeProfileName),
     profileStore: memorySettings.profileStore,
     taskStore: memorySettings.taskStore,
   });
@@ -1534,6 +1615,32 @@ export async function runInteractive(
         );
         continue;
       }
+      if (userInput === '/profiles') {
+        output.write(
+          memoryManager.enabled
+            ? formatProfileList(memoryManager.listProfiles(), memoryManager.currentProfileName())
+            : MEMORY_OFF_NOTICE,
+        );
+        continue;
+      }
+      if (userInput === '/profile switch' || userInput.startsWith('/profile switch ')) {
+        const name = userInput.slice('/profile switch'.length).trim();
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else if (!name) {
+          output.write('Укажите имя профиля: /profile switch <имя>\n\n');
+        } else if (name === memoryManager.currentProfileName()) {
+          output.write(`Уже на профиле «${name}».\n\n`);
+        } else {
+          const created = memoryManager.switchProfile(name);
+          output.write(
+            created
+              ? `Создан и активирован профиль «${name}».\n\n`
+              : `Активный профиль: «${name}».\n\n`,
+          );
+        }
+        continue;
+      }
       if (userInput.startsWith('/profile forget ')) {
         if (!memoryManager.enabled) {
           output.write(MEMORY_OFF_NOTICE);
@@ -1552,7 +1659,9 @@ export async function runInteractive(
       }
       if (userInput === '/profile') {
         output.write(
-          memoryManager.enabled ? formatProfile(memoryManager.profileEntries()) : MEMORY_OFF_NOTICE,
+          memoryManager.enabled
+            ? formatProfile(memoryManager.profileEntries(), memoryManager.currentProfileName())
+            : MEMORY_OFF_NOTICE,
         );
         continue;
       }
@@ -1701,6 +1810,8 @@ export interface ParsedArgs {
   noMemory: boolean;
   /** Стартовая задача (`--task <текст>`). */
   task?: string;
+  /** Активный профиль (персона) при старте (`--profile <имя>`). */
+  profile?: string;
   /** Размер блока профиля в токенах (`--profile-tokens`); иначе эвристика. */
   profileTokens?: number;
   /** Размер блока задачи в токенах (`--task-tokens`); иначе эвристика. */
@@ -1784,6 +1895,7 @@ export function parseArgs(args: string[]): ParsedArgs {
   let keepRecent = DEFAULT_KEEP_RECENT;
   let noMemory = false;
   let task: string | undefined;
+  let profile: string | undefined;
   let profileTokens: number | undefined;
   let taskTokens: number | undefined;
 
@@ -1847,6 +1959,8 @@ export function parseArgs(args: string[]): ParsedArgs {
       branchName = value;
     } else if (name === '--task') {
       task = value;
+    } else if (name === '--profile') {
+      profile = value;
     } else if (name === '--profile-tokens') {
       profileTokens = parsePositiveInteger(name, value);
     } else if (name === '--task-tokens') {
@@ -1883,6 +1997,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     keepRecent,
     noMemory,
     task,
+    profile,
     profileTokens,
     taskTokens,
   };
@@ -1908,6 +2023,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     keepRecent,
     noMemory,
     task,
+    profile,
     profileTokens,
     taskTokens,
   } = parseArgs(argv.slice(2));
@@ -1925,14 +2041,24 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     // --ephemeral — без хранилищ на диске; иначе файловые хранилища.
     const store = ephemeral ? null : new FileSessionStore(sessionDirectory());
     const session = resolveSession(store, interactiveConfig, limits, switchTo, branchName);
+    // Профили (персоны): директорное хранилище + разовая миграция старого profile.json.
+    const profileStore = ephemeral ? null : new FileProfileStore(profilesDirectory());
+    profileStore?.migrateLegacy(profilePath());
+    // Активный профиль: из --profile (и фиксируем его как активный), иначе — указатель.
+    let profileName = profileStore?.activeName() ?? DEFAULT_PROFILE_NAME;
+    if (profile !== undefined) {
+      profileName = profile;
+      profileStore?.setActive(profile);
+    }
     // Слоистая память включена по умолчанию; --ephemeral держит её в памяти.
     const memorySettings: MemorySettings = {
       enabled: !noMemory,
-      profileStore: ephemeral ? null : new FileProfileStore(profilePath()),
+      profileStore,
       taskStore: ephemeral ? null : new FileTaskStore(tasksDirectory()),
       profileTokens,
       taskTokens,
       initialTaskTitle: task,
+      profileName,
     };
     await runInteractive(
       client,
