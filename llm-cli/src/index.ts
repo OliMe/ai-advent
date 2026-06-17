@@ -682,6 +682,46 @@ export class MemoryManager {
     return created;
   }
 
+  /** Удаляет профиль из хранилища и индекса процесса. */
+  private removeProfile(name: string): void {
+    this.profiles.delete(name);
+    this.profileStore?.delete(name);
+  }
+
+  /**
+   * Удаляет профиль по имени. Если удалили активный — переключаемся на «default».
+   * Возвращает true, если профиль существовал и был удалён.
+   */
+  deleteProfile(name: string): boolean {
+    if (!this.profileExists(name)) {
+      return false;
+    }
+    this.removeProfile(name);
+    if (this.profile.name === name) {
+      this.switchProfile(DEFAULT_PROFILE_NAME); // активный удалён — на default
+    }
+    return true;
+  }
+
+  /**
+   * Переименовывает активный профиль. 'same' — имя не изменилось, 'taken' — имя
+   * занято другим профилем, 'ok' — переименовано (старый файл удаляется).
+   */
+  renameProfile(newName: string): 'ok' | 'same' | 'taken' {
+    const oldName = this.profile.name;
+    if (newName === oldName) {
+      return 'same';
+    }
+    if (this.profileExists(newName)) {
+      return 'taken';
+    }
+    this.profile = { ...this.profile, name: newName, updatedAt: new Date().toISOString() };
+    this.persistProfile(); // сохраняем под новым именем
+    this.removeProfile(oldName); // убираем старый
+    this.profileStore?.setActive(newName);
+    return 'ok';
+  }
+
   /** Текущая активная задача (или null). */
   currentTask(): Task | null {
     return this.task;
@@ -1262,6 +1302,8 @@ export function helpText(): string {
     '  /profile            — что известно о вас (активный профиль)\n' +
     '  /profiles           — список профилей (персон)\n' +
     '  /profile switch <имя> — переключить/создать профиль\n' +
+    '  /profile rename <имя> — переименовать активный профиль\n' +
+    '  /profile delete <имя,…> — удалить профиль(и)\n' +
     '  /profile forget <n,…> — забыть пункт(ы) профиля\n' +
     '  /system <текст>     — изменить системный промпт\n' +
     '  /file <путь>        — добавить содержимое файла в контекст\n' +
@@ -1637,6 +1679,45 @@ export async function runInteractive(
             created
               ? `Создан и активирован профиль «${name}».\n\n`
               : `Активный профиль: «${name}».\n\n`,
+          );
+        }
+        continue;
+      }
+      if (userInput.startsWith('/profile delete ')) {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const deleted: string[] = [];
+          const notFound: string[] = [];
+          for (const profileName of parseList(userInput.slice('/profile delete '.length))) {
+            (memoryManager.deleteProfile(profileName) ? deleted : notFound).push(profileName);
+          }
+          if (deleted.length === 0) {
+            output.write(`Профиль не найден: ${notFound.join(', ')}\n\n`);
+          } else {
+            const removedNames = deleted.map(profileName => `«${profileName}»`).join(', ');
+            const tail = notFound.length > 0 ? ` Не найдены: ${notFound.join(', ')}.` : '';
+            output.write(
+              `Удалено: ${removedNames}.${tail} Активный: «${memoryManager.currentProfileName()}».\n\n`,
+            );
+          }
+        }
+        continue;
+      }
+      if (userInput === '/profile rename' || userInput.startsWith('/profile rename ')) {
+        const newName = userInput.slice('/profile rename'.length).trim();
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else if (!newName) {
+          output.write('Укажите новое имя: /profile rename <новое имя>\n\n');
+        } else {
+          const result = memoryManager.renameProfile(newName);
+          output.write(
+            result === 'taken'
+              ? `Профиль «${newName}» уже существует.\n\n`
+              : result === 'same'
+                ? `Профиль уже называется «${newName}».\n\n`
+                : `Профиль переименован в «${newName}».\n\n`,
           );
         }
         continue;

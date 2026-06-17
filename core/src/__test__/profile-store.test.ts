@@ -98,6 +98,18 @@ describe('FileProfileStore', () => {
     assert.deepEqual(store.list(), []);
   });
 
+  it('delete удаляет профиль; повторное удаление не падает', () => {
+    store.save({ ...emptyProfile('temp'), entries: [{ text: 'x', updatedAt: 't' }] });
+    assert.deepEqual(
+      store.list().map(s => s.name),
+      ['temp'],
+    );
+    store.delete('temp');
+    assert.deepEqual(store.list(), []);
+    store.delete('temp'); // нет файла — молча
+    store.delete('никогда-не-было'); // тоже молча
+  });
+
   it('activeName по умолчанию default; setActive сохраняет и читается', () => {
     assert.equal(store.activeName(), DEFAULT_PROFILE_NAME); // указателя нет
     store.setActive('работа');

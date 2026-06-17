@@ -39,6 +39,8 @@ export interface ProfileStore {
   load(name: string): Profile;
   /** Сохраняет профиль (файл по его имени). */
   save(profile: Profile): void;
+  /** Удаляет профиль по имени (молча, если его нет). */
+  delete(name: string): void;
   /** Имя активного профиля (по умолчанию «default»). */
   activeName(): string;
   /** Задаёт активный профиль. */
@@ -110,6 +112,10 @@ export class FileProfileStore implements ProfileStore {
     const temporaryPath = `${this.pathFor(profile.name)}.${randomBytes(4).toString('hex')}.tmp`;
     writeFileSync(temporaryPath, JSON.stringify(profile, null, 2), { mode: 0o600 });
     renameSync(temporaryPath, this.pathFor(profile.name));
+  }
+
+  delete(name: string): void {
+    rmSync(this.pathFor(name), { force: true }); // force — не падаем, если файла нет
   }
 
   list(): ProfileSummary[] {

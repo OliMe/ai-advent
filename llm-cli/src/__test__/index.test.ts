@@ -1713,6 +1713,73 @@ describe('интерактив: команды слоистой памяти', (
     assert.match(text(), /Укажите имя профиля/);
   });
 
+  it('/profile rename и /profile delete', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      [
+        '/profile switch работа',
+        '/profile rename job',
+        '/profile rename job',
+        '/profile switch второй',
+        '/profile rename job',
+        '/profile delete job, нет',
+        '/profile rename',
+        '/exit',
+      ],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Профиль переименован в «job»/);
+    assert.match(text(), /Профиль уже называется «job»/);
+    assert.match(text(), /Профиль «job» уже существует/);
+    assert.match(text(), /Удалено: «job»\. Не найдены: нет\./);
+    assert.match(text(), /Укажите новое имя/);
+  });
+
+  it('/profile delete существующего (без ненайденных)', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/profile switch temp', '/profile switch base', '/profile delete temp', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Удалено: «temp»\. Активный: «base»\./);
+  });
+
+  it('/profile delete несуществующего — «не найден»', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      ['/profile delete нет', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Профиль не найден: нет/);
+  });
+
   it('команды памяти при --no-memory сообщают, что она выключена', async t => {
     const client = clientWithStream(t, () => 'X');
     const { finished, text } = driveInteractive(
@@ -1728,6 +1795,8 @@ describe('интерактив: команды слоистой памяти', (
         '/task',
         '/profiles',
         '/profile switch Z',
+        '/profile rename Z',
+        '/profile delete Z',
         '/exit',
       ],
       0.7,
@@ -2355,6 +2424,7 @@ describe('MemoryManager', () => {
       list: () => [summarizeProfile(startProfile)],
       load: () => startProfile,
       save: p => profileSaved.push(p),
+      delete: () => {},
       activeName: () => 'default',
       setActive: () => {},
     };
@@ -2405,6 +2475,21 @@ describe('MemoryManager', () => {
     assert.equal(mgr.currentProfileName(), 'default');
   });
 
+  it('профили в памяти: renameProfile и deleteProfile', async t => {
+    const mgr = makeManager(t, () => ({ content: '{}', usage: undefined }));
+    mgr.switchProfile('работа'); // активный работа; default тоже есть
+    assert.equal(mgr.renameProfile('job'), 'ok');
+    assert.equal(mgr.currentProfileName(), 'job');
+    assert.ok(!mgr.listProfiles().some(p => p.name === 'работа')); // старое имя ушло
+    assert.equal(mgr.renameProfile('job'), 'same'); // имя не изменилось
+    assert.equal(mgr.renameProfile('default'), 'taken'); // занято
+
+    assert.equal(mgr.deleteProfile('нет'), false); // нет такого
+    assert.equal(mgr.deleteProfile('job'), true); // удаляем активный
+    assert.equal(mgr.currentProfileName(), 'default'); // → переключение на default
+    assert.ok(!mgr.listProfiles().some(p => p.name === 'job'));
+  });
+
   it('профили с хранилищем: switch грузит/создаёт через store и пишет активный', async t => {
     const map = new Map<string, Profile>();
     let active = 'default';
@@ -2413,6 +2498,9 @@ describe('MemoryManager', () => {
       load: name => map.get(name) ?? emptyProfile(name),
       save: p => {
         map.set(p.name, p);
+      },
+      delete: name => {
+        map.delete(name);
       },
       activeName: () => active,
       setActive: name => {
@@ -2436,6 +2524,13 @@ describe('MemoryManager', () => {
     assert.ok(map.has('работа'));
     assert.ok(mgr.listProfiles().some(p => p.name === 'работа')); // список идёт через store
     assert.equal(mgr.switchProfile('работа'), false); // уже существует
+
+    assert.equal(mgr.renameProfile('job'), 'ok'); // переименование через store
+    assert.ok(map.has('job') && !map.has('работа'));
+    assert.equal(active, 'job');
+    assert.equal(mgr.deleteProfile('job'), true); // удаление активного через store
+    assert.ok(!map.has('job'));
+    assert.equal(mgr.currentProfileName(), 'default'); // → default
   });
 
   it('авто-определение задачи: предложение, очистка, пустое имя, текущая, отказ', async t => {
