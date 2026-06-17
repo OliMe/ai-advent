@@ -1173,7 +1173,7 @@ export function helpText(): string {
     '  /task done          — закрыть текущую задачу\n' +
     '  /task delete <id|имя> — удалить задачу\n' +
     '  /profile            — что известно о вас (профиль)\n' +
-    '  /forget <n>         — забыть пункт профиля\n' +
+    '  /profile forget <n> — забыть пункт профиля\n' +
     '  /system <текст>     — изменить системный промпт\n' +
     '  /file <путь>        — добавить содержимое файла в контекст\n' +
     '  /temp <число>       — изменить температуру\n' +
@@ -1505,22 +1505,22 @@ export async function runInteractive(
         );
         continue;
       }
-      if (userInput === '/profile') {
-        output.write(
-          memoryManager.enabled ? formatProfile(memoryManager.profileEntries()) : MEMORY_OFF_NOTICE,
-        );
-        continue;
-      }
-      if (userInput.startsWith('/forget ')) {
+      if (userInput.startsWith('/profile forget ')) {
         if (!memoryManager.enabled) {
           output.write(MEMORY_OFF_NOTICE);
         } else {
-          const index = Number(userInput.slice('/forget '.length).trim());
+          const index = Number(userInput.slice('/profile forget '.length).trim());
           const removed = Number.isInteger(index) ? memoryManager.forgetProfile(index) : null;
           output.write(
             removed === null ? 'Нет такого пункта профиля.\n\n' : `Забыто: ${removed}\n\n`,
           );
         }
+        continue;
+      }
+      if (userInput === '/profile') {
+        output.write(
+          memoryManager.enabled ? formatProfile(memoryManager.profileEntries()) : MEMORY_OFF_NOTICE,
+        );
         continue;
       }
 

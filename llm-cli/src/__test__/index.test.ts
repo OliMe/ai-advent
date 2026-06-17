@@ -1601,11 +1601,11 @@ describe('интерактив: команды слоистой памяти', (
     assert.equal(session.taskId, undefined);
   });
 
-  it('/profile и /forget на пустом профиле', async t => {
+  it('/profile и /profile forget на пустом профиле', async t => {
     const client = clientWithStream(t, () => 'X');
     const { finished, text } = driveInteractive(
       client,
-      ['/profile', '/forget 1', '/forget abc', '/exit'],
+      ['/profile', '/profile forget 1', '/profile forget abc', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -1628,7 +1628,7 @@ describe('интерактив: команды слоистой памяти', (
         '/task X',
         '/tasks',
         '/profile',
-        '/forget 1',
+        '/profile forget 1',
         '/task done',
         '/task switch Y',
         '/task delete Z',
@@ -1715,7 +1715,7 @@ describe('интерактив: команды слоистой памяти', (
     });
     const { finished, text } = driveInteractive(
       client,
-      ['Сделай сайт', '/forget 1', '/exit'],
+      ['Сделай сайт', '/profile forget 1', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -1728,7 +1728,7 @@ describe('интерактив: команды слоистой памяти', (
     await finished;
     assert.match(text(), /\[память\] профиль ← «кратко»/); // явно: что и куда записано
     assert.match(text(), /\[память · вход 7 · выход 5/); // строка стоимости извлечения
-    assert.match(text(), /Забыто: кратко/); // /forget удалил извлечённое предпочтение
+    assert.match(text(), /Забыто: кратко/); // /profile forget удалил извлечённое предпочтение
     assert.match(text(), /\[профиль\] консолидировано/); // явная пометка консолидации
     assert.match(text(), /\[профиль · вход 4 · выход 3/); // строка стоимости консолидации
     assert.match(text(), /Итого за сессию:/);
