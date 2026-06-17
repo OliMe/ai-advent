@@ -2024,6 +2024,41 @@ describe('MemoryManager', () => {
     assert.deepEqual(mgr.profileEntries(), []);
   });
 
+  it('consolidate: профиль строится только из реплик пользователя', async t => {
+    let seen = '';
+    const client = clientWith(t, async (messages: ChatMessage[]) => {
+      seen = messages[0].content;
+      return { content: '- любит краткость', usage: undefined };
+    });
+    const strategy = createMemoryStrategy('window', budgets.short, 6, client, 5000);
+    const mgr = new MemoryManager({
+      enabled: true,
+      strategy,
+      budgets,
+      client,
+      requestTimeoutMs: 5000,
+      profile: emptyProfile(),
+      profileStore: null,
+      taskStore: null,
+    });
+    await mgr.consolidate([
+      sys,
+      { role: 'user', content: 'я предпочитаю краткость' },
+      { role: 'assistant', content: 'рекомендую NestJS и Prisma' },
+    ]);
+    assert.match(seen, /краткость/);
+    assert.doesNotMatch(seen, /NestJS/); // предложения ассистента в профиль не идут
+    assert.deepEqual(mgr.profileEntries(), ['любит краткость']);
+  });
+
+  it('consolidate: без реплик пользователя ничего не делает', async t => {
+    const mgr = makeManager(t, () => {
+      throw new Error('не должно вызываться');
+    });
+    await mgr.consolidate([sys, { role: 'assistant', content: 'use NestJS' }]);
+    assert.deepEqual(mgr.profileEntries(), []);
+  });
+
   it('задачи в памяти: setTask, listTasks, switchTask, closeTask', async t => {
     const mgr = makeManager(t, () => ({ content: '{}', usage: undefined }));
     const t1 = mgr.setTask('Первая');
