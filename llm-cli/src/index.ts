@@ -715,6 +715,20 @@ export class MemoryManager {
     return title;
   }
 
+  /** Удаляет задачу по id или имени; возвращает удалённую задачу или null. */
+  deleteTask(idOrName: string): Task | null {
+    const task = this.findTask(idOrName);
+    if (task === null) {
+      return null;
+    }
+    this.tasks.delete(task.id);
+    this.taskStore?.delete(task.id);
+    if (this.task?.id === task.id) {
+      this.task = null; // удалили активную — снимаем
+    }
+    return task;
+  }
+
   /** Забывает пункт профиля по номеру (1-based); возвращает текст или null. */
   forgetProfile(oneBasedIndex: number): string | null {
     const index = oneBasedIndex - 1;
@@ -1113,6 +1127,7 @@ export function helpText(): string {
     '  /tasks              — список задач\n' +
     '  /task switch <id|имя> — переключиться на задачу\n' +
     '  /task done          — закрыть текущую задачу\n' +
+    '  /task delete <id|имя> — удалить задачу\n' +
     '  /profile            — что известно о вас (профиль)\n' +
     '  /forget <n>         — забыть пункт профиля\n' +
     '  /system <текст>     — изменить системный промпт\n' +
@@ -1386,6 +1401,24 @@ export async function runInteractive(
             currentSession.taskId = task.id;
             store?.save(currentSession);
             output.write(`Переключились на задачу «${task.title}».\n\n`);
+          }
+        }
+        continue;
+      }
+      if (userInput.startsWith('/task delete ')) {
+        const arg = userInput.slice('/task delete '.length).trim();
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const removed = memoryManager.deleteTask(arg);
+          if (removed === null) {
+            output.write(`Задача не найдена: ${arg}\n\n`);
+          } else {
+            if (currentSession.taskId === removed.id) {
+              currentSession.taskId = undefined; // удалили активную — отвязываем сессию
+              store?.save(currentSession);
+            }
+            output.write(`Задача «${removed.title}» удалена.\n\n`);
           }
         }
         continue;

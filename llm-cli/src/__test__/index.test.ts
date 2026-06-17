@@ -1579,6 +1579,28 @@ describe('интерактив: команды слоистой памяти', (
     assert.match(text(), /Задача не найдена: нет/);
   });
 
+  it('/task delete удаляет задачу и снимает её с сессии', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    const { finished, text } = driveInteractive(
+      client,
+      ['/task Черновик', '/task delete Черновик', '/task delete нет', '/task', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Задача «Черновик» удалена/);
+    assert.match(text(), /Задача не найдена: нет/);
+    assert.match(text(), /Активной задачи нет/); // удалили активную — отвязалась
+    assert.equal(session.taskId, undefined);
+  });
+
   it('/profile и /forget на пустом профиле', async t => {
     const client = clientWithStream(t, () => 'X');
     const { finished, text } = driveInteractive(
@@ -1609,6 +1631,7 @@ describe('интерактив: команды слоистой памяти', (
         '/forget 1',
         '/task done',
         '/task switch Y',
+        '/task delete Z',
         '/task',
         '/exit',
       ],
@@ -1633,6 +1656,9 @@ describe('интерактив: команды слоистой памяти', (
       load: id => taskMap.get(id) ?? null,
       save: task => {
         taskMap.set(task.id, task);
+      },
+      delete: id => {
+        taskMap.delete(id);
       },
     };
     const sessionStore = fakeStore();
@@ -2079,6 +2105,21 @@ describe('MemoryManager', () => {
     assert.equal(mgr.switchTask(t2.id)?.status, 'active');
   });
 
+  it('deleteTask: удаляет по имени/id, снимает активную, null если не найдена', async t => {
+    const mgr = makeManager(t, () => ({ content: '{}', usage: undefined }));
+    const first = mgr.setTask('Первая');
+    const second = mgr.setTask('Вторая'); // активная
+
+    assert.equal(mgr.deleteTask('нет'), null);
+    assert.equal(mgr.deleteTask('Первая')?.id, first.id); // по имени
+    assert.equal(mgr.listTasks().length, 1);
+    assert.equal(mgr.currentTask()?.id, second.id); // активная не тронута
+
+    assert.equal(mgr.deleteTask(second.id)?.id, second.id); // удаляем активную по id
+    assert.equal(mgr.currentTask(), null); // активная снята
+    assert.equal(mgr.listTasks().length, 0);
+  });
+
   it('задачи с хранилищем: list/load идут через store; adopt по id', async t => {
     const stored = createTask('Сохранённая', ['деталь'], new Date(), 'aaa111');
     const taskStore: TaskStore & { saved: Task[] } = (() => {
@@ -2091,6 +2132,9 @@ describe('MemoryManager', () => {
         save: task => {
           saved.push(task);
           map.set(task.id, task);
+        },
+        delete: id => {
+          map.delete(id);
         },
       };
     })();
@@ -2146,6 +2190,9 @@ describe('MemoryManager', () => {
         taskSaved.push(task);
         taskMap.set(task.id, task);
       },
+      delete: id => {
+        taskMap.delete(id);
+      },
     };
     const profileSaved: Profile[] = [];
     const startProfile = {
@@ -2179,6 +2226,9 @@ describe('MemoryManager', () => {
     await mgr.consolidate([sys, { role: 'user', content: 'я на TS' }]); // store + непустой профиль
     assert.ok(profileSaved.some(p => p.entries.some(e => e.text === 'итог')));
     assert.equal(mgr.forgetProfile(1), 'итог'); // забывание сохраняется в store
+
+    assert.equal(mgr.deleteTask(created.id)?.id, created.id); // удаление идёт в store
+    assert.equal(taskStore.load(created.id), null);
   });
 
   it('авто-определение задачи: предложение, очистка, пустое имя, текущая, отказ', async t => {

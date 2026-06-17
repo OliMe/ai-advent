@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { sessionId } from './session.ts';
@@ -40,6 +40,8 @@ export interface TaskStore {
   load(id: string): Task | null;
   /** Сохраняет задачу (перезаписывает существующую с тем же id). */
   save(task: Task): void;
+  /** Удаляет задачу по id (молча, если её нет). */
+  delete(id: string): void;
 }
 
 /** Случайный суффикс id (6 hex-символов). */
@@ -125,6 +127,10 @@ export class FileTaskStore implements TaskStore {
     const temporaryPath = `${this.pathFor(task.id)}.${randomBytes(4).toString('hex')}.tmp`;
     writeFileSync(temporaryPath, JSON.stringify(task, null, 2), { mode: 0o600 });
     renameSync(temporaryPath, this.pathFor(task.id));
+  }
+
+  delete(id: string): void {
+    rmSync(this.pathFor(id), { force: true }); // force — не падаем, если файла нет
   }
 
   list(): TaskSummary[] {

@@ -101,6 +101,18 @@ describe('FileTaskStore', () => {
     );
   });
 
+  it('delete удаляет задачу; повторное удаление не падает', () => {
+    const task = makeTask('20260610T100000-a', '2026-06-10T10:00:00.000Z');
+    store.save(task);
+    assert.notEqual(store.load(task.id), null);
+
+    store.delete(task.id);
+    assert.equal(store.load(task.id), null);
+    assert.deepEqual(store.list(), []);
+    store.delete(task.id); // нет файла — молча
+    store.delete('никогда-не-существовал'); // тоже молча
+  });
+
   it('load терпим к не-задачам в JSON (null, число, объект без полей)', () => {
     mkdirSync(tasksDir, { recursive: true });
     writeFileSync(join(tasksDir, 'n.json'), 'null');
