@@ -1726,10 +1726,50 @@ describe('интерактив: команды слоистой памяти', (
       layered,
     );
     await finished;
-    assert.match(text(), /\[память · вход 7 · выход 5/); // извлечение на ходу
+    assert.match(text(), /\[память\] профиль ← «кратко»/); // явно: что и куда записано
+    assert.match(text(), /\[память · вход 7 · выход 5/); // строка стоимости извлечения
     assert.match(text(), /Забыто: кратко/); // /forget удалил извлечённое предпочтение
-    assert.match(text(), /\[профиль · вход 4 · выход 3/); // консолидация в конце
+    assert.match(text(), /\[профиль\] консолидировано/); // явная пометка консолидации
+    assert.match(text(), /\[профиль · вход 4 · выход 3/); // строка стоимости консолидации
     assert.match(text(), /Итого за сессию:/);
+  });
+
+  it('обмен с активной задачей: лог показывает запись в задачу', async t => {
+    const client = new ChatCompletionClient(makeConfig());
+    t.mock.method(
+      client,
+      'streamWithUsage',
+      async (
+        _messages: ChatMessage[],
+        _options: CompleteOptions,
+        onDelta: (delta: StreamDelta) => void,
+      ) => {
+        onDelta({ content: 'OK' });
+        return {
+          content: 'OK',
+          usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+        };
+      },
+    );
+    t.mock.method(client, 'completeWithUsage', async (messages: ChatMessage[]) =>
+      messages[0].content.includes('JSON')
+        ? { content: '{"task":["цель A","цель B"],"user":[]}', usage: undefined }
+        : { content: '', usage: undefined },
+    );
+    const { finished, text } = driveInteractive(
+      client,
+      ['/task Сайт', 'добавь две цели', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /\[память\] задача «Сайт» ← 2 факт\(ов\)/);
   });
 
   /** Клиент авто-определения: извлечение предлагает новую задачу «Сбор ТЗ». */

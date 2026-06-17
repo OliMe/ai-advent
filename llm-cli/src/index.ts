@@ -574,6 +574,19 @@ export interface MemoryManagerOptions {
   taskStore: TaskStore | null;
 }
 
+/** Отчёт о записи в память — что и в какой слой записано на этом шаге. */
+export interface MemoryWriteReport {
+  usage: Usage | undefined;
+  /** Имя задачи, если её факты обновлены (иначе null). */
+  taskTitle: string | null;
+  /** Сколько фактов в задаче после обновления. */
+  taskFactCount: number;
+  /** Какие пункты добавлены в профиль на этом шаге. */
+  profileAdded: string[];
+  /** Число пунктов после консолидации профиля (иначе null — это не консолидация). */
+  consolidated: number | null;
+}
+
 /**
  * Менеджер слоистой памяти: поверх короткой стратегии подмешивает в запрос
  * долговременный профиль пользователя и текущую задачу, обновляет их по ходу
@@ -803,13 +816,16 @@ export class MemoryManager {
     });
   }
 
-  /** Применяет результат извлечения к задаче и профилю (с сохранением). */
-  private applyExtraction(content: string): void {
+  /**
+   * Применяет результат извлечения к задаче и профилю (с сохранением). Возвращает,
+   * что именно записано: обновлена ли задача и какие пункты добавлены в профиль.
+   */
+  private applyExtraction(content: string): { taskUpdated: boolean; profileAdded: string[] } {
     let parsed: { task?: unknown; user?: unknown; isNewTask?: unknown; proposedTitle?: unknown };
     try {
       parsed = JSON.parse(content);
     } catch {
-      return; // невалидный JSON — пропускаем ход извлечения
+      return { taskUpdated: false, profileAdded: [] }; // невалидный JSON — пропускаем ход
     }
     const now = new Date().toISOString();
     // Авто-определение новой задачи: предлагаем, если уверены, тема отличается от
@@ -824,22 +840,29 @@ export class MemoryManager {
     ) {
       this.proposal = proposedTitle;
     }
+    let taskUpdated = false;
     if (this.task !== null && Array.isArray(parsed.task)) {
       this.task.details = parsed.task.filter((x): x is string => typeof x === 'string');
       this.task.updatedAt = now;
       this.persistTask(this.task);
+      taskUpdated = true;
     }
+    const profileAdded: string[] = [];
     if (Array.isArray(parsed.user)) {
       const known = new Set(this.profile.entries.map(entry => entry.text));
       for (const trait of parsed.user) {
         if (typeof trait === 'string' && trait.trim() && !known.has(trait.trim())) {
           this.profile.entries.push({ text: trait.trim(), updatedAt: now });
           known.add(trait.trim());
+          profileAdded.push(trait.trim());
         }
       }
-      this.profile.updatedAt = now;
-      this.profileStore?.save(this.profile);
+      if (profileAdded.length > 0) {
+        this.profile.updatedAt = now;
+        this.profileStore?.save(this.profile);
+      }
     }
+    return { taskUpdated, profileAdded };
   }
 
   /**
@@ -850,22 +873,30 @@ export class MemoryManager {
   async observe(
     messages: ChatMessage[],
     onExtraction?: (usage: Usage | undefined) => void,
-  ): Promise<void> {
+  ): Promise<MemoryWriteReport | null> {
     if (!this.enabled) {
-      return;
+      return null;
     }
     const conversation = messages.slice(1);
     const newMessages = conversation.slice(this.extractedThrough);
     if (newMessages.length === 0) {
-      return;
+      return null;
     }
     try {
       const result = await this.extract(newMessages);
-      this.applyExtraction(result.content);
+      const applied = this.applyExtraction(result.content);
       this.extractedThrough = conversation.length;
       onExtraction?.(result.usage);
+      return {
+        usage: result.usage,
+        taskTitle: applied.taskUpdated && this.task !== null ? this.task.title : null,
+        taskFactCount: this.task !== null ? this.task.details.length : 0,
+        profileAdded: applied.profileAdded,
+        consolidated: null,
+      };
     } catch {
       // Извлечение не удалось — оставляем прежнюю память, повторим в следующий ход.
+      return null;
     }
   }
 
@@ -907,13 +938,13 @@ export class MemoryManager {
   async consolidate(
     messages: ChatMessage[],
     onExtraction?: (usage: Usage | undefined) => void,
-  ): Promise<void> {
+  ): Promise<MemoryWriteReport | null> {
     const conversation = messages.slice(1);
     // Профиль строим ТОЛЬКО из реплик пользователя — чтобы не впитать предложения
     // и допущения модели как «предпочтения пользователя».
     const userMessages = conversation.filter(message => message.role === 'user');
     if (!this.enabled || userMessages.length === 0) {
-      return;
+      return null;
     }
     const dialogue = userMessages.map(message => `Пользователь: ${message.content}`).join('\n');
     const known =
@@ -945,8 +976,16 @@ export class MemoryManager {
         this.profileStore?.save(this.profile);
       }
       onExtraction?.(result.usage);
+      return {
+        usage: result.usage,
+        taskTitle: null,
+        taskFactCount: 0,
+        profileAdded: [],
+        consolidated: entries.length,
+      };
     } catch {
       // Консолидация не удалась — профиль остаётся прежним.
+      return null;
     }
   }
 }
@@ -1229,7 +1268,7 @@ export async function runInteractive(
   // Суммарные токены за всю сессию — для итоговой сводки при выходе.
   const totals: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   let requestCount = 0;
-  // Печатает строку доп. вызова (сжатие/факты/память/профиль) и копит в итоги.
+  // Печатает строку доп. вызова (сжатие/факты короткой памяти) и копит в итоги.
   const reportExtra = (usage: Usage | undefined, label: string): void => {
     output.write(
       `${formatUsageStats(usage, historyTokens(currentSession.messages), config, label)}\n\n`,
@@ -1240,6 +1279,25 @@ export async function runInteractive(
       totals.total_tokens += usage.total_tokens;
       requestCount++;
     }
+  };
+  // Явно показывает, ЧТО и в какой слой записано (с отступом от предыдущей строки),
+  // затем строку стоимости вызова; копит токены в итоги.
+  const printMemoryWrite = (report: MemoryWriteReport): void => {
+    output.write('\n'); // отступ от реплики/ответа
+    if (report.consolidated !== null) {
+      output.write(`[профиль] консолидировано из ваших реплик: ${report.consolidated} пункт(ов)\n`);
+      reportExtra(report.usage, 'профиль');
+      return;
+    }
+    const parts: string[] = [];
+    if (report.taskTitle !== null) {
+      parts.push(`задача «${report.taskTitle}» ← ${report.taskFactCount} факт(ов)`);
+    }
+    if (report.profileAdded.length > 0) {
+      parts.push(`профиль ← ${report.profileAdded.map(entry => `«${entry}»`).join(', ')}`);
+    }
+    output.write(`[память] ${parts.length > 0 ? parts.join('; ') : 'без изменений'}\n`);
+    reportExtra(report.usage, 'память');
   };
 
   // Ctrl+C (SIGINT) и закрытие ввода (Ctrl+D / EOF) прерывают ожидание строки:
@@ -1465,7 +1523,10 @@ export async function runInteractive(
       // Сначала наблюдаем (извлечение памяти + детект новой задачи), затем — если
       // предложена новая задача — спрашиваем подтверждение ДО ответа модели, чтобы
       // подтверждённая задача уже попала в контекст этого ответа.
-      await memoryManager.observe(currentSession.messages, usage => reportExtra(usage, 'память'));
+      const writeReport = await memoryManager.observe(currentSession.messages);
+      if (writeReport !== null) {
+        printMemoryWrite(writeReport);
+      }
       const proposed = memoryManager.takeProposal();
       if (proposed !== null) {
         let reply: string;
@@ -1550,9 +1611,10 @@ export async function runInteractive(
       }
     }
     // Консолидация профиля: устойчивые черты пользователя из всей сессии.
-    await memoryManager.consolidate(currentSession.messages, usage =>
-      reportExtra(usage, 'профиль'),
-    );
+    const consolidationReport = await memoryManager.consolidate(currentSession.messages);
+    if (consolidationReport !== null) {
+      printMemoryWrite(consolidationReport);
+    }
     // Итоговая сводка за сессию — только если были запросы с usage.
     if (requestCount > 0) {
       output.write(`\n${formatSessionTotals(totals, config)}\n`);
