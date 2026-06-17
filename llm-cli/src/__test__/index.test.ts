@@ -149,7 +149,8 @@ function driveInteractive(
     write(chunk, _encoding, callback) {
       const text = chunk.toString();
       buffer += text;
-      if (text.includes('Вы: ') && next < lines.length) {
+      // Подаём следующую строку на приглашение «Вы: » и на запрос подтверждения «(да/нет)».
+      if ((text.includes('Вы: ') || text.includes('(да/нет)')) && next < lines.length) {
         const line = lines[next++];
         // setImmediate — чтобы question успел повесить слушатель строки.
         setImmediate(() => input.write(line + '\n'));
@@ -1771,10 +1772,10 @@ describe('интерактив: команды слоистой памяти', (
     assert.match(text(), /Активной задачи нет/);
   });
 
-  it('авто-задача: неявный отказ обрабатывает реплику и не предлагает повторно', async t => {
+  it('авто-задача: неявный ответ (не да/нет) — задача не ставится, отвечаем на вопрос', async t => {
     const { finished, text } = driveInteractive(
       autoTaskClient(t),
-      ['Собери ТЗ', 'а что по срокам?', '/exit'],
+      ['Собери ТЗ', 'не знаю пока', '/task', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -1785,8 +1786,46 @@ describe('интерактив: команды слоистой памяти', (
       layered,
     );
     await finished;
-    // Предложение появилось один раз; вторая реплика обработана как обычная.
-    assert.equal((text().match(/Сделать задачей сессии/g) ?? []).length, 1);
+    assert.match(text(), /Сделать задачей сессии «Сбор ТЗ»\?/); // спросили до ответа
+    assert.match(text(), /Активной задачи нет/); // неявный ответ — задача не установлена
+  });
+
+  it('авто-задача: прерывание ввода на подтверждении завершает чат', async t => {
+    const client = autoTaskClient(t);
+    const input = new PassThrough();
+    let buffer = '';
+    let asked = false;
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        const text = chunk.toString();
+        buffer += text;
+        if (text.includes('Вы: ') && !asked) {
+          asked = true;
+          setImmediate(() => input.write('Собери ТЗ\n'));
+        } else if (text.includes('(да/нет)')) {
+          setImmediate(() => input.end()); // EOF на подтверждении → штатный выход
+        }
+        callback();
+      },
+    });
+    await runInteractive(
+      client,
+      makeConfig(),
+      {},
+      false,
+      0.7,
+      true,
+      'window',
+      6,
+      makeSession(),
+      null,
+      input,
+      output,
+      readline.createInterface,
+      layered,
+    );
+    assert.match(buffer, /Сделать задачей сессии «Сбор ТЗ»\?/);
+    assert.match(buffer, /До встречи!/);
   });
 });
 

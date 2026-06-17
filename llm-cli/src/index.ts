@@ -828,26 +828,40 @@ export class MemoryManager {
   }
 
   /**
-   * Готовит сообщения для запроса: извлекает память из новых реплик, прогоняет
-   * короткую стратегию и подмешивает блоки профиля и задачи + директиву.
+   * Наблюдает за новыми репликами: извлекает факты задачи и явные предпочтения,
+   * детектит новую задачу (предложение можно забрать через takeProposal). Делается
+   * ДО ответа модели — чтобы подтверждённая задача попала в контекст этого же хода.
    */
-  async prepare(
+  async observe(
     messages: ChatMessage[],
-    onCompression?: (usage: Usage | undefined) => void,
     onExtraction?: (usage: Usage | undefined) => void,
-  ): Promise<ChatMessage[]> {
+  ): Promise<void> {
+    if (!this.enabled) {
+      return;
+    }
     const conversation = messages.slice(1);
     const newMessages = conversation.slice(this.extractedThrough);
-    if (this.enabled && newMessages.length > 0) {
-      try {
-        const result = await this.extract(newMessages);
-        this.applyExtraction(result.content);
-        this.extractedThrough = conversation.length;
-        onExtraction?.(result.usage);
-      } catch {
-        // Извлечение не удалось — оставляем прежнюю память, повторим в следующий ход.
-      }
+    if (newMessages.length === 0) {
+      return;
     }
+    try {
+      const result = await this.extract(newMessages);
+      this.applyExtraction(result.content);
+      this.extractedThrough = conversation.length;
+      onExtraction?.(result.usage);
+    } catch {
+      // Извлечение не удалось — оставляем прежнюю память, повторим в следующий ход.
+    }
+  }
+
+  /**
+   * Собирает сообщения для запроса: прогоняет короткую стратегию и подмешивает
+   * блоки профиля и задачи + директиву (без обращения к модели за памятью).
+   */
+  async build(
+    messages: ChatMessage[],
+    onCompression?: (usage: Usage | undefined) => void,
+  ): Promise<ChatMessage[]> {
     const shortened = await this.strategy.prepare(messages, onCompression);
     if (!this.enabled) {
       return shortened;
@@ -862,6 +876,16 @@ export class MemoryManager {
     const task = this.taskBlock();
     if (task) blocks.push(task);
     return [system, ...blocks, ...shortened.slice(1)];
+  }
+
+  /** Наблюдение + сборка одним вызовом (наблюдение раньше сборки). */
+  async prepare(
+    messages: ChatMessage[],
+    onCompression?: (usage: Usage | undefined) => void,
+    onExtraction?: (usage: Usage | undefined) => void,
+  ): Promise<ChatMessage[]> {
+    await this.observe(messages, onExtraction);
+    return this.build(messages, onCompression);
   }
 
   /** Консолидирует устойчивые черты пользователя в профиль (в конце сессии). */
@@ -1146,8 +1170,6 @@ export async function runInteractive(
   // Активная сессия (команды /branch, /switch, /reset могут её сменить).
   // Полный транскрипт храним в currentSession.messages; в модель уходит окно.
   let currentSession = session;
-  // Имя задачи, предложенное авто-определением и ждущее ответа да/нет.
-  let pendingTaskProposal: string | null = null;
   // Бюджет истории зависит от контекста выбранной модели и резерва под ответ.
   const historyBudget = historyBudgetTokens(config.contextTokens, limits.maxTokens);
   // При слоистой памяти часть бюджета уходит профилю и задаче, остаток — короткой.
@@ -1226,24 +1248,6 @@ export async function runInteractive(
       }
       if (!userInput) continue;
       if (userInput === '/exit' || userInput === '/quit') break;
-      // Ответ на предложение авто-определённой задачи (да/нет/иначе — неявный отказ).
-      if (pendingTaskProposal !== null) {
-        const reply = userInput.toLowerCase();
-        const proposed = pendingTaskProposal;
-        pendingTaskProposal = null;
-        if (isAffirmative(reply)) {
-          currentSession.taskId = memoryManager.setTask(proposed).id;
-          store?.save(currentSession);
-          output.write(`Задача установлена: ${proposed}\n\n`);
-          continue;
-        }
-        memoryManager.declineProposal(proposed);
-        if (isNegative(reply)) {
-          output.write('Хорошо, без задачи.\n\n');
-          continue;
-        }
-        // Иначе — неявный отказ: обрабатываем реплику как обычное сообщение.
-      }
       if (userInput === '/help') {
         output.write(helpText());
         continue;
@@ -1421,13 +1425,39 @@ export async function runInteractive(
       }
 
       currentSession.messages.push({ role: 'user', content: userInput });
-      // Менеджер памяти готовит, что уйдёт в модель (транскрипт остаётся полным).
-      // Доп. вызовы (сжатие/факты — короткая память; «память» — задача+профиль)
-      // печатаются отдельной строкой и идут в итоги.
-      const windowed = await memoryManager.prepare(
-        currentSession.messages,
-        usage => reportExtra(usage, memoryLabel),
-        usage => reportExtra(usage, 'память'),
+      // Сначала наблюдаем (извлечение памяти + детект новой задачи), затем — если
+      // предложена новая задача — спрашиваем подтверждение ДО ответа модели, чтобы
+      // подтверждённая задача уже попала в контекст этого ответа.
+      await memoryManager.observe(currentSession.messages, usage => reportExtra(usage, 'память'));
+      const proposed = memoryManager.takeProposal();
+      if (proposed !== null) {
+        let reply: string;
+        try {
+          reply = (
+            await readlineInterface.question(
+              `Похоже на новую задачу. Сделать задачей сессии «${proposed}»? (да/нет) `,
+              { signal: abortController.signal },
+            )
+          )
+            .trim()
+            .toLowerCase();
+        } catch {
+          break; // подтверждение прервано (Ctrl+C / EOF) — выходим
+        }
+        if (isAffirmative(reply)) {
+          currentSession.taskId = memoryManager.setTask(proposed).id;
+          store?.save(currentSession);
+          output.write(`Задача установлена: ${proposed}\n\n`);
+        } else {
+          memoryManager.declineProposal(proposed);
+          if (isNegative(reply)) {
+            output.write('Хорошо, без задачи.\n\n');
+          }
+        }
+      }
+      // Сборка контекста (короткая память + профиль + задача) и ответ.
+      const windowed = await memoryManager.build(currentSession.messages, usage =>
+        reportExtra(usage, memoryLabel),
       );
       try {
         let answer: string;
@@ -1475,14 +1505,6 @@ export async function runInteractive(
           totals.completion_tokens += usage.completion_tokens;
           totals.total_tokens += usage.total_tokens;
           requestCount++;
-        }
-        // Авто-определение задачи предложило новую цель — спросим подтверждение.
-        const proposed = memoryManager.takeProposal();
-        if (proposed !== null) {
-          output.write(
-            `Похоже на новую задачу. Сделать задачей сессии «${proposed}»? (да/нет)\n\n`,
-          );
-          pendingTaskProposal = proposed;
         }
       } catch (error) {
         // Откатываем неудачный ход, чтобы история осталась согласованной.
