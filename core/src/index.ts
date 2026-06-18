@@ -35,6 +35,8 @@ export { TaskMemory } from './memory-task.ts';
 export { ProfileMemory } from './memory-profile.ts';
 export { MemoryManager, layerBudgets } from './memory-manager.ts';
 export type { LayerBudgets, MemoryManagerOptions, MemoryWriteReport } from './memory-manager.ts';
+export { Conversation } from './conversation.ts';
+export type { ConversationConfig } from './conversation.ts';
 export type {
   Role,
   ChatMessage,
