@@ -1,9 +1,14 @@
 import { describe, it } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { Conversation, createRun } from '../../../core/src/index.ts';
-import type { RunStore, RunSummary, Stage, TaskRun } from '../../../core/src/index.ts';
-import { RunController, makeConversationFactory, type ConversationFactory } from '../run-flow.ts';
+import { Conversation, createRun, createTask } from '../../../core/src/index.ts';
+import type { RunStore, RunSummary, Stage, Task, TaskRun } from '../../../core/src/index.ts';
+import {
+  RunController,
+  makeConversationFactory,
+  type ConversationFactory,
+  type RunTaskBridge,
+} from '../run-flow.ts';
 import { clientWith, makeCollector } from './helpers.ts';
 import { makeConfig } from '../../../core/src/__test__/helpers.ts';
 
@@ -32,16 +37,18 @@ function content(over: Partial<StageContent> = {}): StageContent {
   };
 }
 
-/** Фабрика диалогов: ответ зависит от персоны системного промпта; hook ловит этап. */
-function factory(
-  t: TestContext,
-  by: StageContent,
-  hook?: (stage: Stage) => void,
-): ConversationFactory {
+interface FactoryHooks {
+  onStage?: (stage: Stage) => void;
+  onPrompt?: (stage: Stage, prompt: string) => void;
+}
+
+/** Фабрика диалогов: ответ зависит от персоны системного промпта; ловит этап/промпт. */
+function factory(t: TestContext, by: StageContent, hooks: FactoryHooks = {}): ConversationFactory {
   return (systemPrompt, limits) => {
     const stage = stageOf(systemPrompt);
-    const client = clientWith(t, async () => {
-      hook?.(stage);
+    const client = clientWith(t, async messages => {
+      hooks.onStage?.(stage);
+      hooks.onPrompt?.(stage, messages.at(-1)?.content ?? '');
       return { content: by[stage](), usage: undefined };
     });
     return new Conversation(client, {
@@ -84,6 +91,28 @@ function answers(queue: string[]): (prompt: string) => Promise<string> {
   return async () => queue[index++] ?? 'да';
 }
 
+/** Мост-заглушка к задаче + журналы вызовов. */
+function fakeBridge(opts: { task?: Task | null; context?: string } = {}) {
+  const task = 'task' in opts ? (opts.task ?? null) : createTask('Задача');
+  const completed: string[] = [];
+  const adopted: string[] = [];
+  const created: string[] = [];
+  const bridge: RunTaskBridge = {
+    current: () => task,
+    resolveOrCreate: arg => {
+      created.push(arg);
+      return createTask(arg);
+    },
+    adopt: id => void adopted.push(id),
+    memoryContext: () => opts.context ?? '',
+    complete: summary => {
+      completed.push(summary);
+      return task !== null;
+    },
+  };
+  return { bridge, completed, adopted, created };
+}
+
 describe('makeConversationFactory', () => {
   it('строит диалог с системным промптом первым сообщением', t => {
     const make = makeConversationFactory(
@@ -98,35 +127,72 @@ describe('makeConversationFactory', () => {
 });
 
 describe('RunController', () => {
-  it('start без описания подсказывает синтаксис', async t => {
+  it('start без аргумента и без текущей задачи подсказывает', async t => {
     const out = makeCollector();
     const controller = new RunController({
       store: null,
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge({ task: null }).bridge,
     });
     await controller.start('');
-    assert.match(out.text(), /Укажите описание задачи/);
+    assert.match(out.text(), /Нет текущей задачи/);
   });
 
-  it('happy path: проходит этапы и завершается по подтверждению', async t => {
+  it('happy path: исполняет задачу и пишет итог обратно в память', async t => {
     const out = makeCollector();
     const store = fakeStore();
+    const { bridge, completed } = fakeBridge();
     const controller = new RunController({
       store,
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers(['да']),
+      taskBridge: bridge,
     });
     await controller.start('Задача');
     const text = out.text();
     assert.match(text, /Запущена задача «Задача»/);
     assert.match(text, /планирование…/);
-    assert.match(text, /выполнено: готово/);
     assert.match(text, /проверка пройдена/);
-    assert.match(text, /✓ Задача «Задача» завершена и подтверждена/);
+    assert.match(text, /✓ Задача «Задача» завершена и подтверждена\. Итог записан в память задачи/);
+    assert.deepEqual(completed, ['итог']); // итог отдан мосту
     assert.ok(store.saved.some(run => run.status === 'completed'));
+    assert.ok(store.saved.some(run => run.taskId !== undefined)); // прогон связан с задачей
+  });
+
+  it('start с описанием создаёт/находит задачу через мост', async t => {
+    const out = makeCollector();
+    const { bridge, created } = fakeBridge();
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content()),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: bridge,
+    });
+    await controller.start('собрать лендинг');
+    assert.deepEqual(created, ['собрать лендинг']);
+    assert.match(out.text(), /Запущена задача «собрать лендинг»/);
+  });
+
+  it('подаёт память задачи в промпт планирования', async t => {
+    const out = makeCollector();
+    let planPrompt = '';
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content(), {
+        onPrompt: (stage, prompt) => {
+          if (stage === 'planning') planPrompt = prompt;
+        },
+      }),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge({ context: 'Контекст задачи:\n- бюджет 100к' }).bridge,
+    });
+    await controller.start('Задача');
+    assert.match(planPrompt, /бюджет 100к/);
   });
 
   it('провал проверки → авто-возврат в выполнение, затем успех', async t => {
@@ -140,6 +206,7 @@ describe('RunController', () => {
       ),
       output: out.stream,
       ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
     });
     await controller.start('Задача');
     const text = out.text();
@@ -154,6 +221,7 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
     });
     await controller.start('Задача');
     assert.match(out.text(), /завершена и подтверждена/);
@@ -166,6 +234,7 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers(['доделай как следует', 'да']),
+      taskBridge: fakeBridge().bridge,
     });
     await controller.start('Задача');
     const text = out.text();
@@ -180,24 +249,46 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers(['нет', 'да']),
+      taskBridge: fakeBridge().bridge,
     });
     await controller.start('Задача');
     assert.match(out.text(), /попытка 1/);
   });
 
-  it('провал проверки исчерпал ретраи → пауза с пояснением', async t => {
-    const run = createRun('Задача', { maxRetries: 0, idSuffix: 'x' });
+  it('провал проверки исчерпал ретраи → пауза (continue связывает задачу)', async t => {
+    const run = createRun('Задача', { maxRetries: 0, idSuffix: 'x', taskId: 't1' });
     const out = makeCollector();
+    const { bridge, adopted } = fakeBridge();
     const controller = new RunController({
       store: fakeStore([run]),
       makeConversation: factory(t, content({ verification: () => FAIL })),
       output: out.stream,
       ask: answers([]),
+      taskBridge: bridge,
     });
     await controller.continue(run.id);
     const text = out.text();
+    assert.deepEqual(adopted, ['t1']); // задача прогона стала текущей
     assert.match(text, /Продолжаем «Задача» с этапа «планирование»/);
     assert.match(text, /Лимит авто-возвратов \(0\) исчерпан/);
+  });
+
+  it('завершение прогона без задачи в памяти — без записи итога', async t => {
+    const orphan = createRun('Осиротевшая', { idSuffix: 'o' }); // без taskId
+    const out = makeCollector();
+    const { bridge, adopted } = fakeBridge({ task: null });
+    const controller = new RunController({
+      store: fakeStore([orphan]),
+      makeConversation: factory(t, content()),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: bridge,
+    });
+    await controller.continue(orphan.id);
+    const text = out.text();
+    assert.deepEqual(adopted, []); // нет taskId — adopt не вызывался
+    assert.match(text, /завершена и подтверждена\.\n/); // без «Итог записан»
+    assert.doesNotMatch(text, /Итог записан/);
   });
 
   it('Ctrl+C (requestPause) ставит на паузу на границе этапа', async t => {
@@ -205,17 +296,19 @@ describe('RunController', () => {
     let controller: RunController;
     controller = new RunController({
       store: fakeStore(),
-      makeConversation: factory(t, content(), stage => {
-        if (stage === 'planning') controller.requestPause();
+      makeConversation: factory(t, content(), {
+        onStage: stage => {
+          if (stage === 'planning') controller.requestPause();
+        },
       }),
       output: out.stream,
       ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
     });
     assert.equal(controller.isRunning(), false);
     await controller.start('Задача');
-    const text = out.text();
-    assert.match(text, /Пауза на этапе «выполнение»/);
-    assert.equal(controller.isRunning(), false); // снят флаг после остановки
+    assert.match(out.text(), /Пауза на этапе «выполнение»/);
+    assert.equal(controller.isRunning(), false);
   });
 
   it('requestPause вне прогона — безопасный no-op', t => {
@@ -224,8 +317,9 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: makeCollector().stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
-    controller.requestPause(); // pause === null, ничего не происходит
+    controller.requestPause();
     assert.equal(controller.isRunning(), false);
   });
 
@@ -241,6 +335,7 @@ describe('RunController', () => {
       }),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
     await controller.start('Задача');
     assert.match(out.text(), /\[ошибка\] сбой провайдера/);
@@ -253,6 +348,7 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
     await controller.continue('');
     assert.match(out.text(), /Нет активного прогона/);
@@ -265,6 +361,7 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
     await controller.continue('нет-такого');
     assert.match(out.text(), /Прогон не найден: нет-такого/);
@@ -279,6 +376,7 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
     await controller.continue(done.id);
     await controller.continue(cancelled.id);
@@ -296,8 +394,9 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
-    controller.status(); // активного нет
+    controller.status();
     controller.status(run.id);
     controller.status('нет-такого');
     const text = out.text();
@@ -314,6 +413,7 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out1.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     }).list();
     assert.match(out1.text(), /Прогонов задач пока нет/);
 
@@ -324,9 +424,9 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out2.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     }).list();
     assert.match(out2.text(), /Прогоны задач:/);
-    assert.match(out2.text(), /Задача/);
 
     const out3 = makeCollector();
     new RunController({
@@ -334,6 +434,7 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out3.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     }).list();
     assert.match(out3.text(), /Хранилище прогонов отключено/);
   });
@@ -346,12 +447,13 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
     controller.edit('правка'); // активного нет
 
-    const paused = createRun('Задача', { idSuffix: 'e' });
+    const paused = createRun('Задача', { idSuffix: 'e' }); // без taskId → adopt-ветка false
     store.save(paused);
-    await controller.continue(paused.id); // happy path → completed (active = paused, status completed)
+    await controller.continue(paused.id); // happy path → completed
     controller.edit('правка'); // не на паузе (completed)
 
     const toPause = createRun('Вторая', { maxRetries: 0, idSuffix: 'p' });
@@ -361,6 +463,7 @@ describe('RunController', () => {
       makeConversation: factory(t, content({ verification: () => FAIL })),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
     await failing.continue(toPause.id); // → paused
     failing.edit(''); // пустой текст
@@ -381,6 +484,7 @@ describe('RunController', () => {
       makeConversation: factory(t, content()),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
     controller.abort(); // активного нет
 
@@ -391,8 +495,9 @@ describe('RunController', () => {
       makeConversation: factory(t, content({ verification: () => FAIL })),
       output: out.stream,
       ask: answers([]),
+      taskBridge: fakeBridge().bridge,
     });
-    await failing.continue(run.id); // → paused, становится активным
+    await failing.continue(run.id); // → paused, активный
     failing.abort();
 
     const text = out.text();

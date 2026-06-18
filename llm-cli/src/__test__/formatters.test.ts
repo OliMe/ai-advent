@@ -10,6 +10,7 @@ import {
   formatArtifact,
   formatRunStatus,
   formatRunList,
+  formatRunContext,
   stageLabel,
   statusLabel,
   newSession,
@@ -178,6 +179,15 @@ describe('форматирование прогонов задач', () => {
     const partialText = formatRunStatus(partial);
     assert.match(partialText, /Выполнение: черновик\n/);
     assert.match(partialText, /Проверка: есть замечания/);
+  });
+
+  it('formatRunContext: детали и/или профиль, иначе пусто', () => {
+    assert.equal(formatRunContext([], []), '');
+    assert.match(formatRunContext(['бюджет 100к'], []), /Контекст задачи:\n- бюджет 100к/);
+    assert.match(formatRunContext([], ['любит кратко']), /О пользователе:\n- любит кратко/);
+    const both = formatRunContext(['цель X'], ['пишет на TS']);
+    assert.match(both, /Контекст задачи:\n- цель X/);
+    assert.match(both, /О пользователе:\n- пишет на TS/);
   });
 
   it('formatRunList: пусто и со сводками', () => {

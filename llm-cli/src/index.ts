@@ -34,6 +34,7 @@ export * from './session-flow.ts';
 export * from './args.ts';
 export * from './replies.ts';
 export * from './run-flow.ts';
+export * from './run-task-bridge.ts';
 export * from './interactive.ts';
 
 /** Точка входа: выбирает режим работы по аргументам командной строки. */

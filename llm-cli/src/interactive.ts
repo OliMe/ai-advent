@@ -30,6 +30,7 @@ import type {
 import { askModel, streamAnswer } from './chat.ts';
 import { newSession, branchNameTaken, resolveBranch } from './session-flow.ts';
 import { makeConversationFactory, RunController } from './run-flow.ts';
+import { MemoryRunBridge } from './run-task-bridge.ts';
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import {
   helpText,
@@ -173,11 +174,17 @@ export async function runInteractive(
   };
 
   // Драйвер прогонов задач (пайплайн): свои диалоги-агенты, своё хранилище.
+  // Мост связывает прогон с задачей сессии — память задачи идёт в этапы, итог обратно.
   const runController = new RunController({
     store: runStore,
     makeConversation: makeConversationFactory(client, config, disableThinking, temperature),
     output,
     ask: prompt => readlineInterface.question(prompt),
+    taskBridge: new MemoryRunBridge({
+      memory: memoryManager,
+      session: () => currentSession,
+      saveSession: session => store?.save(session),
+    }),
   });
 
   // Реестр интерактивных команд: первая подходящая по `matches` выполняет `run`.
@@ -406,10 +413,9 @@ export async function runInteractive(
     },
     { matches: input => input === '/run abort', run: () => runController.abort() },
     {
-      matches: input => input.startsWith('/run '),
-      run: input => runController.start(input.slice('/run '.length).trim()),
+      matches: input => input === '/run' || input.startsWith('/run '),
+      run: input => runController.start(input.slice('/run'.length).trim()),
     },
-    { matches: input => input === '/run', run: () => runController.status() },
     {
       matches: input => input === '/profiles',
       run: () =>

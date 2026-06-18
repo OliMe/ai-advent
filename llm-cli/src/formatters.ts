@@ -87,7 +87,7 @@ export function helpText(): string {
     '  /profile rename <имя> — переименовать активный профиль\n' +
     '  /profile delete <имя,…> — удалить профиль(и)\n' +
     '  /profile forget <n,…> — забыть пункт(ы) профиля\n' +
-    '  /run <описание>     — запустить задачу по этапам (план→выполнение→проверка→завершение)\n' +
+    '  /run [id|описание]  — исполнить задачу по этапам (текущую/по id/новую) с памятью задачи\n' +
     '  /runs               — список прогонов задач\n' +
     '  /run status [id]    — статус текущего/указанного прогона\n' +
     '  /run continue [id]  — продолжить приостановленный прогон\n' +
@@ -176,6 +176,18 @@ export function formatRunStatus(run: TaskRun): string {
     lines.push(`  Завершение: ${completion.summary}`);
   }
   return `${lines.join('\n')}\n\n`;
+}
+
+/** Контекст памяти для агентов пайплайна: детали задачи + активный профиль. */
+export function formatRunContext(details: string[], profile: string[]): string {
+  const parts: string[] = [];
+  if (details.length > 0) {
+    parts.push(`Контекст задачи:\n${details.map(detail => `- ${detail}`).join('\n')}`);
+  }
+  if (profile.length > 0) {
+    parts.push(`О пользователе:\n${profile.map(entry => `- ${entry}`).join('\n')}`);
+  }
+  return parts.join('\n\n');
 }
 
 /** Список прогонов задач для команды /runs. */

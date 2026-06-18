@@ -5,6 +5,7 @@ import type {
   ChatCompletionClient,
   GenerationLimits,
   RunStore,
+  Task,
   TaskRun,
 } from '../../core/src/index.ts';
 import {
@@ -38,6 +39,23 @@ export function makeConversationFactory(
     });
 }
 
+/**
+ * Мост к памяти задач: связывает прогон с задачей сессии. Реализация (MemoryRunBridge)
+ * живёт поверх MemoryManager; здесь — только контракт, нужный драйверу.
+ */
+export interface RunTaskBridge {
+  /** Текущая задача сессии (или null). */
+  current(): Task | null;
+  /** Находит задачу по id/имени, иначе создаёт новую; делает её текущей. */
+  resolveOrCreate(arg: string): Task;
+  /** Делает задачу текущей (при продолжении прогона по её id). */
+  adopt(taskId: string): void;
+  /** Контекст памяти текущей задачи (детали + профиль) для агентов пайплайна. */
+  memoryContext(): string;
+  /** Пишет итог в память текущей задачи и помечает её done; true — задача найдена. */
+  complete(summary: string): boolean;
+}
+
 /** Зависимости драйвера прогонов. */
 export interface RunControllerDeps {
   /** Хранилище прогонов; null — в памяти (--ephemeral), без файлов и продолжения. */
@@ -46,6 +64,8 @@ export interface RunControllerDeps {
   output: Writable;
   /** Запрос строки у пользователя (обёртка над readline) — для подтверждения завершения. */
   ask: (prompt: string) => Promise<string>;
+  /** Связь прогона с задачей сессии (память на вход, итог на выход). */
+  taskBridge: RunTaskBridge;
 }
 
 /**
@@ -78,16 +98,25 @@ export class RunController {
     this.deps.output.write(`${text}\n\n`);
   }
 
-  /** Запускает новую задачу по пайплайну. */
-  async start(title: string): Promise<void> {
-    if (!title) {
-      this.write('Укажите описание задачи: /run <описание>');
-      return;
+  /**
+   * Запускает прогон задачи: без аргумента — текущей задачи сессии; с аргументом —
+   * существующей (по id/имени) или новой (по описанию). Прогон привязывается к задаче.
+   */
+  async start(arg: string): Promise<void> {
+    let task: Task | null;
+    if (arg) {
+      task = this.deps.taskBridge.resolveOrCreate(arg);
+    } else {
+      task = this.deps.taskBridge.current();
+      if (task === null) {
+        this.write('Нет текущей задачи. Задайте /task <описание> или /run <описание>.');
+        return;
+      }
     }
-    const run = createRun(title);
+    const run = createRun(task.title, { taskId: task.id });
     this.deps.store?.save(run);
     this.active = run;
-    this.write(`Запущена задача «${title}» (${run.id}).`);
+    this.write(`Запущена задача «${task.title}» (${run.id}).`);
     await this.drive(run);
   }
 
@@ -113,6 +142,10 @@ export class RunController {
     if (run.status === 'cancelled') {
       this.write('Прогон отменён, продолжение невозможно.');
       return;
+    }
+    // Возобновляем задачу прогона как текущую — её память пойдёт в этапы.
+    if (run.taskId !== undefined) {
+      this.deps.taskBridge.adopt(run.taskId);
     }
     this.write(`Продолжаем «${run.title}» с этапа «${stageLabel(run.stage)}».`);
     await this.drive(run);
@@ -182,6 +215,7 @@ export class RunController {
         store: this.deps.store,
         makeConversation: this.deps.makeConversation,
         signal: this.pause.signal,
+        memoryContext: this.deps.taskBridge.memoryContext(),
         hooks: {
           onStageStart: stage => this.write(`▸ ${stageLabel(stage)}…`),
           onArtifact: (stage, artifacts) => this.write(formatArtifact(stage, artifacts)),
@@ -205,7 +239,17 @@ export class RunController {
           },
         },
       });
-      this.report(result);
+      if (result.status === 'completed') {
+        // Итог прогона возвращаем в память задачи; задача помечается выполненной.
+        // На статусе completed артефакт завершения гарантированно есть (его ставит оркестратор).
+        const recorded = this.deps.taskBridge.complete(result.artifacts.completion!.summary);
+        this.write(
+          `✓ Задача «${run.title}» завершена и подтверждена.` +
+            (recorded ? ' Итог записан в память задачи, задача помечена выполненной.' : ''),
+        );
+      } else {
+        this.reportPaused(result);
+      }
     } catch (error) {
       this.write(`[ошибка] ${describeError(error)}`);
     } finally {
@@ -213,13 +257,8 @@ export class RunController {
     }
   }
 
-  /** Печатает итог прогона после остановки пайплайна. */
-  private report(run: TaskRun): void {
-    if (run.status === 'completed') {
-      this.write(`✓ Задача «${run.title}» завершена и подтверждена.`);
-      return;
-    }
-    // status === 'paused' (единственный другой исход выхода из пайплайна здесь).
+  /** Печатает пояснение к паузе прогона (исчерпание ретраев или пользовательская пауза). */
+  private reportPaused(run: TaskRun): void {
     if (run.retries >= run.maxRetries) {
       this.write(
         `⏸ Лимит авто-возвратов (${run.maxRetries}) исчерпан на этапе «${stageLabel(run.stage)}». ` +

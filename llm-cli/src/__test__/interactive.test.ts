@@ -1130,7 +1130,7 @@ describe('runInteractive — команды прогонов задач (/run)',
     });
   }
 
-  it('маршрутизирует команды /run без активного прогона', async t => {
+  it('маршрутизирует команды /run без активного прогона и без задачи', async t => {
     const client = stageClient(t);
     const { finished, text } = driveInteractive(client, [
       '/runs',
@@ -1144,17 +1144,21 @@ describe('runInteractive — команды прогонов задач (/run)',
     await finished;
     const out = text();
     assert.match(out, /Хранилище прогонов отключено/); // /runs при store=null
-    assert.match(out, /Нет активного прогона/); // /run status и /run
-    assert.match(out, /Нет активного прогона. Запустить: \/run/); // /run continue
+    assert.match(out, /Нет активного прогона/); // /run status, /run continue, /run edit, /run abort
+    assert.match(out, /Нет текущей задачи/); // /run без аргумента и без текущей задачи
   });
 
   it('проходит весь пайплайн по /run и завершает по подтверждению', async t => {
     const client = stageClient(t);
-    const { finished, text } = driveInteractive(client, [
-      '/run собери TODO-приложение',
-      'да',
-      '/exit',
-    ]);
+    // С хранилищем сессий: мост синхронизирует session.taskId через store.save.
+    const { finished, text } = driveInteractive(
+      client,
+      ['/run собери TODO-приложение', 'да', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+    );
     await finished;
     const out = text();
     assert.match(out, /Запущена задача «собери TODO-приложение»/);
