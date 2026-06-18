@@ -18,6 +18,7 @@ import type {
   ChatCompletionClient,
   GenerationLimits,
   ProfileStore,
+  RunStore,
   Session,
   SessionStore,
   Task,
@@ -28,6 +29,8 @@ import type {
 } from '../../core/src/index.ts';
 import { askModel, streamAnswer } from './chat.ts';
 import { newSession, branchNameTaken, resolveBranch } from './session-flow.ts';
+import { makeConversationFactory, RunController } from './run-flow.ts';
+import { parseList, isAffirmative, isNegative } from './replies.ts';
 import {
   helpText,
   formatSessionList,
@@ -61,24 +64,6 @@ export interface MemorySettings {
   profileName?: string;
 }
 
-/** Разбирает список значений через запятую, обрезая пробелы и пустые. */
-function parseList(raw: string): string[] {
-  return raw
-    .split(',')
-    .map(token => token.trim())
-    .filter(token => token.length > 0);
-}
-
-/** Утвердительный ли ответ пользователя (да/yes/…). */
-function isAffirmative(reply: string): boolean {
-  return ['да', 'yes', 'y', 'ага', 'давай', 'ок', 'ok', 'д'].includes(reply);
-}
-
-/** Отрицательный ли ответ пользователя (нет/no/…). */
-function isNegative(reply: string): boolean {
-  return ['нет', 'no', 'n', 'не', 'н'].includes(reply);
-}
-
 /** Перезаписывает системное сообщение сессии (действует с этого момента). */
 function setSystemPrompt(session: Session, text: string): void {
   session.messages[0] = { role: 'system', content: text };
@@ -105,6 +90,8 @@ export async function runInteractive(
   createInterface: typeof readline.createInterface,
   // Слоистая память (профиль + задача); по умолчанию выключена.
   memorySettings: MemorySettings = { enabled: false, profileStore: null, taskStore: null },
+  // Хранилище прогонов задач (пайплайн); null — в памяти (--ephemeral).
+  runStore: RunStore | null = null,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
   // Активная сессия (команды /branch, /switch, /reset могут её сменить).
@@ -185,9 +172,21 @@ export async function runInteractive(
     reportExtra(report.usage, 'память');
   };
 
+  // Драйвер прогонов задач (пайплайн): свои диалоги-агенты, своё хранилище.
+  const runController = new RunController({
+    store: runStore,
+    makeConversation: makeConversationFactory(client, config, disableThinking, temperature),
+    output,
+    ask: prompt => readlineInterface.question(prompt),
+  });
+
   // Реестр интерактивных команд: первая подходящая по `matches` выполняет `run`.
   // Порядок важен (точные перед префиксными, напр. «/task done» до «/task »).
-  const commands: { matches: (input: string) => boolean; run: (input: string) => void }[] = [
+  // `run` может быть асинхронной (прогон пайплайна) — вызывающий цикл её ожидает.
+  const commands: {
+    matches: (input: string) => boolean;
+    run: (input: string) => void | Promise<void>;
+  }[] = [
     { matches: input => input === '/help', run: () => output.write(helpText()) },
     {
       matches: input => input === '/reset',
@@ -392,6 +391,25 @@ export async function runInteractive(
             : MEMORY_OFF_NOTICE,
         ),
     },
+    { matches: input => input === '/runs', run: () => runController.list() },
+    {
+      matches: input => input === '/run status' || input.startsWith('/run status '),
+      run: input => runController.status(input.slice('/run status'.length).trim() || undefined),
+    },
+    {
+      matches: input => input === '/run continue' || input.startsWith('/run continue '),
+      run: input => runController.continue(input.slice('/run continue'.length).trim()),
+    },
+    {
+      matches: input => input.startsWith('/run edit '),
+      run: input => runController.edit(input.slice('/run edit '.length).trim()),
+    },
+    { matches: input => input === '/run abort', run: () => runController.abort() },
+    {
+      matches: input => input.startsWith('/run '),
+      run: input => runController.start(input.slice('/run '.length).trim()),
+    },
+    { matches: input => input === '/run', run: () => runController.status() },
     {
       matches: input => input === '/profiles',
       run: () =>
@@ -494,9 +512,16 @@ export async function runInteractive(
   ];
 
   // Ctrl+C (SIGINT) и закрытие ввода (Ctrl+D / EOF) прерывают ожидание строки:
-  // abort заставляет question отклониться, и цикл штатно завершается.
+  // abort заставляет question отклониться, и цикл штатно завершается. Но если идёт
+  // прогон пайплайна — Ctrl+C ставит его на паузу (на границе этапа), а не выходит.
   const abortController = new AbortController();
-  const requestStop = () => abortController.abort();
+  const requestStop = () => {
+    if (runController.isRunning()) {
+      runController.requestPause();
+    } else {
+      abortController.abort();
+    }
+  };
   readlineInterface.on('SIGINT', requestStop);
   readlineInterface.on('close', requestStop);
 
@@ -520,7 +545,7 @@ export async function runInteractive(
       if (userInput === '/exit' || userInput === '/quit') break;
       const command = commands.find(entry => entry.matches(userInput));
       if (command !== undefined) {
-        command.run(userInput);
+        await command.run(userInput);
         continue;
       }
 

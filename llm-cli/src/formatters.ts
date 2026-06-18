@@ -1,7 +1,20 @@
-import type { ProfileSummary, SessionSummary, Task, TaskSummary } from '../../core/src/index.ts';
+import type {
+  ProfileSummary,
+  RunStatus,
+  RunSummary,
+  SessionSummary,
+  Stage,
+  StageArtifacts,
+  Task,
+  TaskRun,
+  TaskSummary,
+} from '../../core/src/index.ts';
 
 /** Сообщение, когда сессионные команды вызваны при отключённом хранилище. */
 export const EPHEMERAL_NOTICE = 'Хранилище сессий отключено (--ephemeral).\n\n';
+
+/** Сообщение, когда команды прогонов вызваны при отключённом хранилище. */
+export const RUNS_EPHEMERAL_NOTICE = 'Хранилище прогонов отключено (--ephemeral).\n\n';
 
 /** Сообщение, когда команды памяти вызваны при выключенной слоистой памяти. */
 export const MEMORY_OFF_NOTICE = 'Слоистая память выключена (--no-memory).\n\n';
@@ -74,11 +87,107 @@ export function helpText(): string {
     '  /profile rename <имя> — переименовать активный профиль\n' +
     '  /profile delete <имя,…> — удалить профиль(и)\n' +
     '  /profile forget <n,…> — забыть пункт(ы) профиля\n' +
+    '  /run <описание>     — запустить задачу по этапам (план→выполнение→проверка→завершение)\n' +
+    '  /runs               — список прогонов задач\n' +
+    '  /run status [id]    — статус текущего/указанного прогона\n' +
+    '  /run continue [id]  — продолжить приостановленный прогон\n' +
+    '  /run edit <правка>  — внести правку перед продолжением\n' +
+    '  /run abort          — завершить задачу досрочно\n' +
     '  /system <текст>     — изменить системный промпт\n' +
     '  /file <путь>        — добавить содержимое файла в контекст\n' +
     '  /temp <число>       — изменить температуру\n' +
     '  /exit, /quit        — выход\n\n'
   );
+}
+
+/** Человекочитаемые названия этапов пайплайна. */
+const STAGE_LABELS: Record<Stage, string> = {
+  planning: 'планирование',
+  execution: 'выполнение',
+  verification: 'проверка',
+  completion: 'завершение',
+};
+
+/** Название этапа по-русски. */
+export function stageLabel(stage: Stage): string {
+  return STAGE_LABELS[stage];
+}
+
+/** Человекочитаемые названия статусов прогона. */
+const STATUS_LABELS: Record<RunStatus, string> = {
+  running: 'идёт',
+  paused: 'на паузе',
+  completed: 'завершено',
+  cancelled: 'отменено',
+};
+
+/** Название статуса прогона по-русски. */
+export function statusLabel(status: RunStatus): string {
+  return STATUS_LABELS[status];
+}
+
+/** Короткая строка об артефакте этапа (для печати по ходу пайплайна). */
+export function formatArtifact(stage: Stage, artifacts: StageArtifacts): string {
+  switch (stage) {
+    case 'planning': {
+      const planning = artifacts.planning!;
+      return `  план: ${planning.steps.length} шаг(ов), ${planning.criteria.length} критери(ев) приёмки`;
+    }
+    case 'execution': {
+      const execution = artifacts.execution!;
+      const files = execution.files.length > 0 ? ` → ${execution.files.join(', ')}` : '';
+      return `  выполнено: ${execution.summary}${files}`;
+    }
+    case 'verification': {
+      const verification = artifacts.verification!;
+      return verification.passed
+        ? '  проверка пройдена ✓'
+        : `  не пройдено: ${verification.issues.join('; ') || verification.text}`;
+    }
+    case 'completion':
+      return `  итог: ${artifacts.completion!.summary}`;
+  }
+}
+
+/** Подробный статус прогона для команды /run status. */
+export function formatRunStatus(run: TaskRun): string {
+  const lines = [
+    `Задача: ${run.title}  (${run.id})`,
+    `Этап: ${stageLabel(run.stage)} · статус: ${statusLabel(run.status)} · ` +
+      `возвраты: ${run.retries}/${run.maxRetries}`,
+  ];
+  if (run.correction !== undefined) {
+    lines.push(`Правка к учёту: ${run.correction}`);
+  }
+  const { planning, execution, verification, completion } = run.artifacts;
+  if (planning !== undefined) {
+    lines.push(
+      `  Планирование: ${planning.steps.length} шаг(ов), ${planning.criteria.length} критери(ев)`,
+    );
+  }
+  if (execution !== undefined) {
+    const files = execution.files.length > 0 ? ` (${execution.files.join(', ')})` : '';
+    lines.push(`  Выполнение: ${execution.summary}${files}`);
+  }
+  if (verification !== undefined) {
+    lines.push(`  Проверка: ${verification.passed ? 'пройдена' : 'есть замечания'}`);
+  }
+  if (completion !== undefined) {
+    lines.push(`  Завершение: ${completion.summary}`);
+  }
+  return `${lines.join('\n')}\n\n`;
+}
+
+/** Список прогонов задач для команды /runs. */
+export function formatRunList(summaries: RunSummary[]): string {
+  if (summaries.length === 0) {
+    return 'Прогонов задач пока нет.\n\n';
+  }
+  const lines = summaries.map(
+    summary =>
+      `  ${summary.title}  (${summary.id})  ${stageLabel(summary.stage)} · ${statusLabel(summary.status)}`,
+  );
+  return `Прогоны задач:\n${lines.join('\n')}\n\n`;
 }
 
 /** Форматирует список веток (сессий) для команды /sessions. */

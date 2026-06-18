@@ -25,3 +25,8 @@ export function tasksDirectory(): string {
 export function profilesDirectory(): string {
   return join(memoryBaseDir(), 'profiles');
 }
+
+/** Каталог хранения прогонов задач (пайплайн). */
+export function runsDirectory(): string {
+  return join(memoryBaseDir(), 'runs');
+}

@@ -6,13 +6,20 @@ import {
   FileSessionStore,
   FileProfileStore,
   FileTaskStore,
+  FileRunStore,
   DEFAULT_PROFILE_NAME,
 } from '../../core/src/index.ts';
 import { parseArgs } from './args.ts';
 import { attachFiles, combinePrompt } from './files.ts';
 import { runOnce } from './chat.ts';
 import { resolveSession } from './session-flow.ts';
-import { sessionDirectory, profilesDirectory, profilePath, tasksDirectory } from './paths.ts';
+import {
+  sessionDirectory,
+  profilesDirectory,
+  profilePath,
+  tasksDirectory,
+  runsDirectory,
+} from './paths.ts';
 import { runInteractive, type MemorySettings } from './interactive.ts';
 
 // Публичный API пакета собран из модулей (barrel) — тесты импортируют отсюда.
@@ -25,6 +32,8 @@ export * from './chat.ts';
 export * from './formatters.ts';
 export * from './session-flow.ts';
 export * from './args.ts';
+export * from './replies.ts';
+export * from './run-flow.ts';
 export * from './interactive.ts';
 
 /** Точка входа: выбирает режим работы по аргументам командной строки. */
@@ -84,6 +93,8 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       initialTaskTitle: task,
       profileName,
     };
+    // Хранилище прогонов задач (пайплайн); --ephemeral держит прогон только в памяти.
+    const runStore = ephemeral ? null : new FileRunStore(runsDirectory());
     await runInteractive(
       client,
       interactiveConfig,
@@ -99,6 +110,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       output,
       readline.createInterface,
       memorySettings,
+      runStore,
     );
   }
 }

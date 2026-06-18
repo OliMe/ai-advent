@@ -1111,3 +1111,97 @@ describe('интерактив: команды слоистой памяти', (
     assert.match(buffer, /До встречи!/);
   });
 });
+
+describe('runInteractive — команды прогонов задач (/run)', () => {
+  const PLAN = JSON.stringify({ steps: ['шаг'], criteria: ['критерий'], text: 'план' });
+  const EXEC = JSON.stringify({ summary: 'готово', log: [], text: 'результат' });
+  const PASS = JSON.stringify({ passed: true, issues: [], text: 'ок' });
+  const DONE = JSON.stringify({ summary: 'итог', text: 'резюме' });
+
+  /** Клиент, отвечающий по персоне системного промпта (для агентов пайплайна). */
+  function stageClient(t: TestContext, onStage?: (persona: string) => void): ChatCompletionClient {
+    return clientWith(t, async messages => {
+      const persona = messages[0]?.content ?? '';
+      onStage?.(persona);
+      if (persona.includes('планировщик')) return { content: PLAN, usage: undefined };
+      if (persona.includes('исполнитель')) return { content: EXEC, usage: undefined };
+      if (persona.includes('проверяющий')) return { content: PASS, usage: undefined };
+      return { content: DONE, usage: undefined };
+    });
+  }
+
+  it('маршрутизирует команды /run без активного прогона', async t => {
+    const client = stageClient(t);
+    const { finished, text } = driveInteractive(client, [
+      '/runs',
+      '/run status',
+      '/run continue',
+      '/run edit правка',
+      '/run abort',
+      '/run',
+      '/exit',
+    ]);
+    await finished;
+    const out = text();
+    assert.match(out, /Хранилище прогонов отключено/); // /runs при store=null
+    assert.match(out, /Нет активного прогона/); // /run status и /run
+    assert.match(out, /Нет активного прогона. Запустить: \/run/); // /run continue
+  });
+
+  it('проходит весь пайплайн по /run и завершает по подтверждению', async t => {
+    const client = stageClient(t);
+    const { finished, text } = driveInteractive(client, [
+      '/run собери TODO-приложение',
+      'да',
+      '/exit',
+    ]);
+    await finished;
+    const out = text();
+    assert.match(out, /Запущена задача «собери TODO-приложение»/);
+    assert.match(out, /планирование…/);
+    assert.match(out, /проверка пройдена/);
+    assert.match(out, /✓ Задача .* завершена и подтверждена/);
+  });
+
+  it('Ctrl+C во время прогона ставит его на паузу, а не выходит', async t => {
+    let captured: readline.Interface | undefined;
+    const client = stageClient(t, persona => {
+      if (persona.includes('планировщик')) captured?.emit('SIGINT');
+    });
+    const input = new PassThrough();
+    const lines = ['/run сделай задачу', '/exit'];
+    let next = 0;
+    let buffer = '';
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        const chunkText = chunk.toString();
+        buffer += chunkText;
+        if (chunkText.includes('Вы: ') && next < lines.length) {
+          const line = lines[next++];
+          setImmediate(() => input.write(line + '\n'));
+        }
+        callback();
+      },
+    });
+    await runInteractive(
+      client,
+      makeConfig(),
+      {},
+      false,
+      0.7,
+      true,
+      'window',
+      6,
+      makeSession(),
+      null,
+      input,
+      output,
+      () => {
+        captured = readline.createInterface({ input, output });
+        return captured;
+      },
+    );
+    assert.match(buffer, /Пауза на этапе «выполнение»/);
+    assert.match(buffer, /До встречи!/);
+  });
+});

@@ -85,8 +85,14 @@ export function driveInteractive(
     write(chunk, _encoding, callback) {
       const text = chunk.toString();
       buffer += text;
-      // Подаём следующую строку на приглашение «Вы: » и на запрос подтверждения «(да/нет)».
-      if ((text.includes('Вы: ') || text.includes('(да/нет)')) && next < lines.length) {
+      // Подаём следующую строку на приглашение «Вы: », подтверждение задачи «(да/нет)»
+      // и на подтверждение завершения прогона пайплайна.
+      if (
+        (text.includes('Вы: ') ||
+          text.includes('(да/нет)') ||
+          text.includes('Подтвердить завершение?')) &&
+        next < lines.length
+      ) {
         const line = lines[next++];
         // setImmediate — чтобы question успел повесить слушатель строки.
         setImmediate(() => input.write(line + '\n'));
