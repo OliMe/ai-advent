@@ -180,6 +180,314 @@ export async function runInteractive(
     reportExtra(report.usage, 'память');
   };
 
+  // Реестр интерактивных команд: первая подходящая по `matches` выполняет `run`.
+  // Порядок важен (точные перед префиксными, напр. «/task done» до «/task »).
+  const commands: { matches: (input: string) => boolean; run: (input: string) => void }[] = [
+    { matches: input => input === '/help', run: () => output.write(helpText()) },
+    {
+      matches: input => input === '/reset',
+      run: () => {
+        currentSession = newSession(config, limits);
+        memoryManager.reset();
+        memoryManager.adopt(currentSession.taskId); // новая ветка без задачи
+        output.write('Начата новая сессия.\n\n');
+      },
+    },
+    {
+      matches: input => input === '/sessions',
+      run: () => output.write(store === null ? EPHEMERAL_NOTICE : formatSessionList(store.list())),
+    },
+    {
+      matches: input => input === '/branch' || input.startsWith('/branch '),
+      run: input => {
+        const name = input.slice('/branch'.length).trim();
+        if (store === null) {
+          output.write(EPHEMERAL_NOTICE);
+        } else if (!name) {
+          output.write('Укажите имя ветки: /branch <имя>\n\n');
+        } else if (name === currentSession.label || branchNameTaken(store, name)) {
+          output.write(`Ветка «${name}» уже существует.\n\n`);
+        } else {
+          // Checkpoint: сохраняем текущую ветку и ответвляемся от неё в новую.
+          const parentTaskId = currentSession.taskId;
+          currentSession.updatedAt = new Date().toISOString();
+          store.save(currentSession);
+          currentSession = createSession(
+            currentSession.model,
+            [...currentSession.messages],
+            undefined,
+            undefined,
+            name,
+          );
+          currentSession.taskId = parentTaskId; // ветка наследует задачу
+          store.save(currentSession);
+          memoryManager.reset();
+          memoryManager.adopt(currentSession.taskId);
+          output.write(`Создана ветка «${name}» от текущего места, переключились на неё.\n\n`);
+        }
+      },
+    },
+    {
+      matches: input => input === '/switch' || input.startsWith('/switch '),
+      run: input => {
+        const arg = input.slice('/switch'.length).trim();
+        if (store === null) {
+          output.write(EPHEMERAL_NOTICE);
+        } else if (!arg) {
+          output.write('Укажите имя или id ветки: /switch <имя|id>\n\n');
+        } else if (arg === currentSession.label || arg === currentSession.id) {
+          output.write(`Уже в ветке «${arg}».\n\n`);
+        } else {
+          const target = resolveBranch(store, arg);
+          if (target === null) {
+            output.write(`Ветка не найдена: ${arg}\n\n`);
+          } else {
+            currentSession.updatedAt = new Date().toISOString();
+            store.save(currentSession);
+            currentSession = target;
+            memoryManager.reset();
+            memoryManager.adopt(currentSession.taskId);
+            output.write(`Переключились на ветку «${target.label ?? target.id}».\n\n`);
+          }
+        }
+      },
+    },
+    {
+      matches: input => input.startsWith('/system '),
+      run: input => {
+        // input уже обрезан, поэтому после '/system ' гарантированно есть текст.
+        setSystemPrompt(currentSession, input.slice('/system '.length).trim());
+        store?.save(currentSession);
+        output.write('Системный промпт обновлён.\n\n');
+      },
+    },
+    {
+      matches: input => input.startsWith('/file '),
+      run: input => {
+        const path = input.slice('/file '.length).trim();
+        let content: string;
+        try {
+          content = readFileContent(path);
+        } catch (error) {
+          output.write(`${describeError(error)}\n\n`);
+          return;
+        }
+        // Содержимое файла кладём в историю как контекст; модель не дёргаем —
+        // ответит на следующий вопрос пользователя уже с файлом в контексте.
+        const attachment = formatAttachment(path, content);
+        currentSession.messages.push({ role: 'user', content: attachment });
+        output.write(
+          `Файл «${path}» добавлен в контекст (~${estimateTokens(attachment)} токенов).\n\n`,
+        );
+      },
+    },
+    {
+      matches: input => input.startsWith('/temp '),
+      run: input => {
+        const parsed = validTemperature(input.slice('/temp '.length).trim());
+        if (parsed === null) {
+          output.write('Некорректная температура — нужно неотрицательное число.\n\n');
+        } else {
+          temperature = parsed;
+          output.write(`Температура установлена: ${temperature}\n\n`);
+        }
+      },
+    },
+    {
+      matches: input => input === '/tasks',
+      run: () =>
+        output.write(
+          memoryManager.enabled ? formatTaskList(memoryManager.listTasks()) : MEMORY_OFF_NOTICE,
+        ),
+    },
+    {
+      matches: input => input === '/task done',
+      run: () => {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const closed = memoryManager.closeTask();
+          if (closed === null) {
+            output.write('Активной задачи нет.\n\n');
+          } else {
+            currentSession.taskId = undefined;
+            store?.save(currentSession);
+            output.write(`Задача «${closed}» закрыта.\n\n`);
+          }
+        }
+      },
+    },
+    {
+      matches: input => input.startsWith('/task switch '),
+      run: input => {
+        const arg = input.slice('/task switch '.length).trim();
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const task = memoryManager.switchTask(arg);
+          if (task === null) {
+            output.write(`Задача не найдена: ${arg}\n\n`);
+          } else {
+            currentSession.taskId = task.id;
+            store?.save(currentSession);
+            output.write(`Переключились на задачу «${task.title}».\n\n`);
+          }
+        }
+      },
+    },
+    {
+      matches: input => input.startsWith('/task delete '),
+      run: input => {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const deleted: Task[] = [];
+          const notFound: string[] = [];
+          for (const token of parseList(input.slice('/task delete '.length))) {
+            const removed = memoryManager.deleteTask(token);
+            if (removed === null) {
+              notFound.push(token);
+            } else {
+              deleted.push(removed);
+              if (currentSession.taskId === removed.id) {
+                currentSession.taskId = undefined; // удалили активную — отвязываем сессию
+                store?.save(currentSession);
+              }
+            }
+          }
+          if (deleted.length === 0) {
+            output.write(`Задача не найдена: ${notFound.join(', ')}\n\n`);
+          } else {
+            const removedNames = deleted.map(task => `«${task.title}»`).join(', ');
+            const tail = notFound.length > 0 ? ` Не найдены: ${notFound.join(', ')}.` : '';
+            output.write(`Удалено: ${removedNames}.${tail}\n\n`);
+          }
+        }
+      },
+    },
+    {
+      matches: input => input.startsWith('/task '),
+      run: input => {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const task = memoryManager.setTask(input.slice('/task '.length).trim());
+          currentSession.taskId = task.id;
+          store?.save(currentSession);
+          output.write(`Задача установлена: ${task.title}\n\n`);
+        }
+      },
+    },
+    {
+      matches: input => input === '/task',
+      run: () =>
+        output.write(
+          memoryManager.enabled
+            ? formatCurrentTask(memoryManager.currentTask())
+            : MEMORY_OFF_NOTICE,
+        ),
+    },
+    {
+      matches: input => input === '/profiles',
+      run: () =>
+        output.write(
+          memoryManager.enabled
+            ? formatProfileList(memoryManager.listProfiles(), memoryManager.currentProfileName())
+            : MEMORY_OFF_NOTICE,
+        ),
+    },
+    {
+      matches: input => input === '/profile switch' || input.startsWith('/profile switch '),
+      run: input => {
+        const name = input.slice('/profile switch'.length).trim();
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else if (!name) {
+          output.write('Укажите имя профиля: /profile switch <имя>\n\n');
+        } else if (name === memoryManager.currentProfileName()) {
+          output.write(`Уже на профиле «${name}».\n\n`);
+        } else {
+          const created = memoryManager.switchProfile(name);
+          output.write(
+            created
+              ? `Создан и активирован профиль «${name}».\n\n`
+              : `Активный профиль: «${name}».\n\n`,
+          );
+        }
+      },
+    },
+    {
+      matches: input => input.startsWith('/profile delete '),
+      run: input => {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const deleted: string[] = [];
+          const notFound: string[] = [];
+          for (const profileName of parseList(input.slice('/profile delete '.length))) {
+            (memoryManager.deleteProfile(profileName) ? deleted : notFound).push(profileName);
+          }
+          if (deleted.length === 0) {
+            output.write(`Профиль не найден: ${notFound.join(', ')}\n\n`);
+          } else {
+            const removedNames = deleted.map(profileName => `«${profileName}»`).join(', ');
+            const tail = notFound.length > 0 ? ` Не найдены: ${notFound.join(', ')}.` : '';
+            output.write(
+              `Удалено: ${removedNames}.${tail} Активный: «${memoryManager.currentProfileName()}».\n\n`,
+            );
+          }
+        }
+      },
+    },
+    {
+      matches: input => input === '/profile rename' || input.startsWith('/profile rename '),
+      run: input => {
+        const newName = input.slice('/profile rename'.length).trim();
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else if (!newName) {
+          output.write('Укажите новое имя: /profile rename <новое имя>\n\n');
+        } else {
+          const result = memoryManager.renameProfile(newName);
+          output.write(
+            result === 'taken'
+              ? `Профиль «${newName}» уже существует.\n\n`
+              : result === 'same'
+                ? `Профиль уже называется «${newName}».\n\n`
+                : `Профиль переименован в «${newName}».\n\n`,
+          );
+        }
+      },
+    },
+    {
+      matches: input => input.startsWith('/profile forget '),
+      run: input => {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const indices = parseList(input.slice('/profile forget '.length))
+            .map(Number)
+            .filter(Number.isInteger);
+          const removed = memoryManager.forgetProfile(indices);
+          output.write(
+            removed.length === 0
+              ? 'Нет таких пунктов профиля.\n\n'
+              : `Забыто: ${removed.join('; ')}\n\n`,
+          );
+        }
+      },
+    },
+    {
+      matches: input => input === '/profile',
+      run: () =>
+        output.write(
+          memoryManager.enabled
+            ? formatProfile(memoryManager.profileEntries(), memoryManager.currentProfileName())
+            : MEMORY_OFF_NOTICE,
+        ),
+    },
+  ];
+
   // Ctrl+C (SIGINT) и закрытие ввода (Ctrl+D / EOF) прерывают ожидание строки:
   // abort заставляет question отклониться, и цикл штатно завершается.
   const abortController = new AbortController();
@@ -205,278 +513,9 @@ export async function runInteractive(
       }
       if (!userInput) continue;
       if (userInput === '/exit' || userInput === '/quit') break;
-      if (userInput === '/help') {
-        output.write(helpText());
-        continue;
-      }
-      if (userInput === '/reset') {
-        currentSession = newSession(config, limits);
-        memoryManager.reset();
-        memoryManager.adopt(currentSession.taskId); // новая ветка без задачи
-        output.write('Начата новая сессия.\n\n');
-        continue;
-      }
-      if (userInput === '/sessions') {
-        output.write(store === null ? EPHEMERAL_NOTICE : formatSessionList(store.list()));
-        continue;
-      }
-      if (userInput === '/branch' || userInput.startsWith('/branch ')) {
-        const name = userInput.slice('/branch'.length).trim();
-        if (store === null) {
-          output.write(EPHEMERAL_NOTICE);
-        } else if (!name) {
-          output.write('Укажите имя ветки: /branch <имя>\n\n');
-        } else if (name === currentSession.label || branchNameTaken(store, name)) {
-          output.write(`Ветка «${name}» уже существует.\n\n`);
-        } else {
-          // Checkpoint: сохраняем текущую ветку и ответвляемся от неё в новую.
-          const parentTaskId = currentSession.taskId;
-          currentSession.updatedAt = new Date().toISOString();
-          store.save(currentSession);
-          currentSession = createSession(
-            currentSession.model,
-            [...currentSession.messages],
-            undefined,
-            undefined,
-            name,
-          );
-          currentSession.taskId = parentTaskId; // ветка наследует задачу
-          store.save(currentSession);
-          memoryManager.reset();
-          memoryManager.adopt(currentSession.taskId);
-          output.write(`Создана ветка «${name}» от текущего места, переключились на неё.\n\n`);
-        }
-        continue;
-      }
-      if (userInput === '/switch' || userInput.startsWith('/switch ')) {
-        const arg = userInput.slice('/switch'.length).trim();
-        if (store === null) {
-          output.write(EPHEMERAL_NOTICE);
-        } else if (!arg) {
-          output.write('Укажите имя или id ветки: /switch <имя|id>\n\n');
-        } else if (arg === currentSession.label || arg === currentSession.id) {
-          output.write(`Уже в ветке «${arg}».\n\n`);
-        } else {
-          const target = resolveBranch(store, arg);
-          if (target === null) {
-            output.write(`Ветка не найдена: ${arg}\n\n`);
-          } else {
-            currentSession.updatedAt = new Date().toISOString();
-            store.save(currentSession);
-            currentSession = target;
-            memoryManager.reset();
-            memoryManager.adopt(currentSession.taskId);
-            output.write(`Переключились на ветку «${target.label ?? target.id}».\n\n`);
-          }
-        }
-        continue;
-      }
-      if (userInput.startsWith('/system ')) {
-        // userInput уже обрезан, поэтому после '/system ' гарантированно есть текст.
-        setSystemPrompt(currentSession, userInput.slice('/system '.length).trim());
-        store?.save(currentSession);
-        output.write('Системный промпт обновлён.\n\n');
-        continue;
-      }
-      if (userInput.startsWith('/file ')) {
-        const path = userInput.slice('/file '.length).trim();
-        let content: string;
-        try {
-          content = readFileContent(path);
-        } catch (error) {
-          output.write(`${describeError(error)}\n\n`);
-          continue;
-        }
-        // Содержимое файла кладём в историю как контекст; модель не дёргаем —
-        // ответит на следующий вопрос пользователя уже с файлом в контексте.
-        const attachment = formatAttachment(path, content);
-        currentSession.messages.push({ role: 'user', content: attachment });
-        output.write(
-          `Файл «${path}» добавлен в контекст (~${estimateTokens(attachment)} токенов).\n\n`,
-        );
-        continue;
-      }
-      if (userInput.startsWith('/temp ')) {
-        const parsed = validTemperature(userInput.slice('/temp '.length).trim());
-        if (parsed === null) {
-          output.write('Некорректная температура — нужно неотрицательное число.\n\n');
-        } else {
-          temperature = parsed;
-          output.write(`Температура установлена: ${temperature}\n\n`);
-        }
-        continue;
-      }
-      if (userInput === '/tasks') {
-        output.write(
-          memoryManager.enabled ? formatTaskList(memoryManager.listTasks()) : MEMORY_OFF_NOTICE,
-        );
-        continue;
-      }
-      if (userInput === '/task done') {
-        if (!memoryManager.enabled) {
-          output.write(MEMORY_OFF_NOTICE);
-        } else {
-          const closed = memoryManager.closeTask();
-          if (closed === null) {
-            output.write('Активной задачи нет.\n\n');
-          } else {
-            currentSession.taskId = undefined;
-            store?.save(currentSession);
-            output.write(`Задача «${closed}» закрыта.\n\n`);
-          }
-        }
-        continue;
-      }
-      if (userInput.startsWith('/task switch ')) {
-        const arg = userInput.slice('/task switch '.length).trim();
-        if (!memoryManager.enabled) {
-          output.write(MEMORY_OFF_NOTICE);
-        } else {
-          const task = memoryManager.switchTask(arg);
-          if (task === null) {
-            output.write(`Задача не найдена: ${arg}\n\n`);
-          } else {
-            currentSession.taskId = task.id;
-            store?.save(currentSession);
-            output.write(`Переключились на задачу «${task.title}».\n\n`);
-          }
-        }
-        continue;
-      }
-      if (userInput.startsWith('/task delete ')) {
-        if (!memoryManager.enabled) {
-          output.write(MEMORY_OFF_NOTICE);
-        } else {
-          const deleted: Task[] = [];
-          const notFound: string[] = [];
-          for (const token of parseList(userInput.slice('/task delete '.length))) {
-            const removed = memoryManager.deleteTask(token);
-            if (removed === null) {
-              notFound.push(token);
-            } else {
-              deleted.push(removed);
-              if (currentSession.taskId === removed.id) {
-                currentSession.taskId = undefined; // удалили активную — отвязываем сессию
-                store?.save(currentSession);
-              }
-            }
-          }
-          if (deleted.length === 0) {
-            output.write(`Задача не найдена: ${notFound.join(', ')}\n\n`);
-          } else {
-            const removedNames = deleted.map(task => `«${task.title}»`).join(', ');
-            const tail = notFound.length > 0 ? ` Не найдены: ${notFound.join(', ')}.` : '';
-            output.write(`Удалено: ${removedNames}.${tail}\n\n`);
-          }
-        }
-        continue;
-      }
-      if (userInput.startsWith('/task ')) {
-        if (!memoryManager.enabled) {
-          output.write(MEMORY_OFF_NOTICE);
-        } else {
-          const task = memoryManager.setTask(userInput.slice('/task '.length).trim());
-          currentSession.taskId = task.id;
-          store?.save(currentSession);
-          output.write(`Задача установлена: ${task.title}\n\n`);
-        }
-        continue;
-      }
-      if (userInput === '/task') {
-        output.write(
-          memoryManager.enabled
-            ? formatCurrentTask(memoryManager.currentTask())
-            : MEMORY_OFF_NOTICE,
-        );
-        continue;
-      }
-      if (userInput === '/profiles') {
-        output.write(
-          memoryManager.enabled
-            ? formatProfileList(memoryManager.listProfiles(), memoryManager.currentProfileName())
-            : MEMORY_OFF_NOTICE,
-        );
-        continue;
-      }
-      if (userInput === '/profile switch' || userInput.startsWith('/profile switch ')) {
-        const name = userInput.slice('/profile switch'.length).trim();
-        if (!memoryManager.enabled) {
-          output.write(MEMORY_OFF_NOTICE);
-        } else if (!name) {
-          output.write('Укажите имя профиля: /profile switch <имя>\n\n');
-        } else if (name === memoryManager.currentProfileName()) {
-          output.write(`Уже на профиле «${name}».\n\n`);
-        } else {
-          const created = memoryManager.switchProfile(name);
-          output.write(
-            created
-              ? `Создан и активирован профиль «${name}».\n\n`
-              : `Активный профиль: «${name}».\n\n`,
-          );
-        }
-        continue;
-      }
-      if (userInput.startsWith('/profile delete ')) {
-        if (!memoryManager.enabled) {
-          output.write(MEMORY_OFF_NOTICE);
-        } else {
-          const deleted: string[] = [];
-          const notFound: string[] = [];
-          for (const profileName of parseList(userInput.slice('/profile delete '.length))) {
-            (memoryManager.deleteProfile(profileName) ? deleted : notFound).push(profileName);
-          }
-          if (deleted.length === 0) {
-            output.write(`Профиль не найден: ${notFound.join(', ')}\n\n`);
-          } else {
-            const removedNames = deleted.map(profileName => `«${profileName}»`).join(', ');
-            const tail = notFound.length > 0 ? ` Не найдены: ${notFound.join(', ')}.` : '';
-            output.write(
-              `Удалено: ${removedNames}.${tail} Активный: «${memoryManager.currentProfileName()}».\n\n`,
-            );
-          }
-        }
-        continue;
-      }
-      if (userInput === '/profile rename' || userInput.startsWith('/profile rename ')) {
-        const newName = userInput.slice('/profile rename'.length).trim();
-        if (!memoryManager.enabled) {
-          output.write(MEMORY_OFF_NOTICE);
-        } else if (!newName) {
-          output.write('Укажите новое имя: /profile rename <новое имя>\n\n');
-        } else {
-          const result = memoryManager.renameProfile(newName);
-          output.write(
-            result === 'taken'
-              ? `Профиль «${newName}» уже существует.\n\n`
-              : result === 'same'
-                ? `Профиль уже называется «${newName}».\n\n`
-                : `Профиль переименован в «${newName}».\n\n`,
-          );
-        }
-        continue;
-      }
-      if (userInput.startsWith('/profile forget ')) {
-        if (!memoryManager.enabled) {
-          output.write(MEMORY_OFF_NOTICE);
-        } else {
-          const indices = parseList(userInput.slice('/profile forget '.length))
-            .map(Number)
-            .filter(Number.isInteger);
-          const removed = memoryManager.forgetProfile(indices);
-          output.write(
-            removed.length === 0
-              ? 'Нет таких пунктов профиля.\n\n'
-              : `Забыто: ${removed.join('; ')}\n\n`,
-          );
-        }
-        continue;
-      }
-      if (userInput === '/profile') {
-        output.write(
-          memoryManager.enabled
-            ? formatProfile(memoryManager.profileEntries(), memoryManager.currentProfileName())
-            : MEMORY_OFF_NOTICE,
-        );
+      const command = commands.find(entry => entry.matches(userInput));
+      if (command !== undefined) {
+        command.run(userInput);
         continue;
       }
 
