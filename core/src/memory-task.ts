@@ -1,5 +1,6 @@
-import { createTask, summarizeTask } from '../../core/src/index.ts';
-import type { ChatMessage, Task, TaskStore, TaskSummary } from '../../core/src/index.ts';
+import { createTask, summarizeTask } from './task-store.ts';
+import type { Task, TaskStore, TaskSummary } from './task-store.ts';
+import type { ChatMessage } from './types.ts';
 import { capToBudget } from './tokens.ts';
 
 /**

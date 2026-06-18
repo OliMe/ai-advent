@@ -1,15 +1,7 @@
-import type {
-  ChatCompletionClient,
-  ChatMessage,
-  CompletionResult,
-  Profile,
-  ProfileStore,
-  ProfileSummary,
-  Task,
-  TaskStore,
-  TaskSummary,
-  Usage,
-} from '../../core/src/index.ts';
+import type { ChatCompletionClient, CompletionResult } from './chat-completion-client.ts';
+import type { ChatMessage, Usage } from './types.ts';
+import type { Profile, ProfileStore, ProfileSummary } from './profile-store.ts';
+import type { Task, TaskStore, TaskSummary } from './task-store.ts';
 import type { MemoryStrategy } from './memory-strategy.ts';
 import { MIN_HISTORY_BUDGET_TOKENS } from './tokens.ts';
 import { TaskMemory } from './memory-task.ts';

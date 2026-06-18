@@ -9,8 +9,8 @@ import {
   historyBudgetTokens,
   trimHistoryToBudget,
 } from '../index.ts';
-import { makeConfig } from '../../../core/src/__test__/helpers.ts';
-import type { ChatMessage, Usage } from '../../../core/src/index.ts';
+import { makeConfig } from './helpers.ts';
+import type { ChatMessage, Usage } from '../index.ts';
 
 describe('estimateTokens', () => {
   it('оценивает число токенов как ceil(длина / 3)', () => {

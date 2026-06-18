@@ -1,4 +1,8 @@
+import type { TestContext } from 'node:test';
+import { ChatCompletionClient } from '../chat-completion-client.ts';
+import type { CompleteOptions, CompletionResult, StreamDelta } from '../chat-completion-client.ts';
 import type { AppConfig } from '../config.ts';
+import type { ChatMessage } from '../types.ts';
 
 /** Строит конфиг приложения с разумными значениями по умолчанию для тестов. */
 export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -43,4 +47,44 @@ export function streamResponse(chunks: string[]): Response {
     status: 200,
     headers: { 'content-type': 'text/event-stream' },
   });
+}
+
+/** Клиент с подменённым completeWithUsage (используется в не-стрим режиме). */
+export function clientWith(
+  t: TestContext,
+  impl: (
+    messages: ChatMessage[],
+    options: CompleteOptions,
+  ) => Promise<CompletionResult> | CompletionResult,
+): ChatCompletionClient {
+  const client = new ChatCompletionClient(makeConfig());
+  t.mock.method(client, 'completeWithUsage', impl);
+  return client;
+}
+
+/**
+ * Клиент с подменённым streamWithUsage: impl(messages, options) даёт полный текст
+ * ответа, который отдаётся одной content-дельтой; capture видит опции запроса.
+ */
+export function clientWithStream(
+  t: TestContext,
+  impl: (messages: ChatMessage[], options: CompleteOptions) => Promise<string> | string,
+  capture?: (messages: ChatMessage[], options: CompleteOptions) => void,
+): ChatCompletionClient {
+  const client = new ChatCompletionClient(makeConfig());
+  t.mock.method(
+    client,
+    'streamWithUsage',
+    async (
+      messages: ChatMessage[],
+      options: CompleteOptions,
+      onDelta: (delta: StreamDelta) => void,
+    ) => {
+      capture?.(messages, options);
+      const content = await impl(messages, options);
+      onDelta({ content });
+      return { content, usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } };
+    },
+  );
+  return client;
 }

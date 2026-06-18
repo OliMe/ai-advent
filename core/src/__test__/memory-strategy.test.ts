@@ -2,9 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryStrategy, trimHistoryToBudget } from '../index.ts';
 import { clientWith } from './helpers.ts';
-import { ChatCompletionClient } from '../../../core/src/index.ts';
-import { makeConfig } from '../../../core/src/__test__/helpers.ts';
-import type { ChatMessage, Usage } from '../../../core/src/index.ts';
+import { ChatCompletionClient } from '../index.ts';
+import { makeConfig } from './helpers.ts';
+import type { ChatMessage, Usage } from '../index.ts';
 
 describe('стратегии памяти (createMemoryStrategy)', () => {
   const sys: ChatMessage = { role: 'system', content: 'СИС' };

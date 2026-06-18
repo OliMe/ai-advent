@@ -3,12 +3,7 @@ import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { layerBudgets, MemoryManager, createMemoryStrategy } from '../index.ts';
 import { clientWith } from './helpers.ts';
-import {
-  createTask,
-  emptyProfile,
-  summarizeProfile,
-  summarizeTask,
-} from '../../../core/src/index.ts';
+import { createTask, emptyProfile, summarizeProfile, summarizeTask } from '../index.ts';
 import type {
   ChatMessage,
   CompletionResult,
@@ -17,7 +12,7 @@ import type {
   Task,
   TaskStore,
   Usage,
-} from '../../../core/src/index.ts';
+} from '../index.ts';
 
 describe('layerBudgets', () => {
   it('доли от контекста с потолками; остаток — короткой памяти', () => {

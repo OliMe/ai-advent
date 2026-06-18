@@ -16,17 +16,14 @@ import { sessionDirectory, profilesDirectory, profilePath, tasksDirectory } from
 import { runInteractive, type MemorySettings } from './interactive.ts';
 
 // Публичный API пакета собран из модулей (barrel) — тесты импортируют отсюда.
-export * from './tokens.ts';
+// Движок памяти переехал в core; реэкспортируем его (и прочий core) сюда же.
+export * from '../../core/src/index.ts';
 export * from './paths.ts';
 export * from './errors.ts';
 export * from './files.ts';
 export * from './chat.ts';
 export * from './formatters.ts';
 export * from './session-flow.ts';
-export * from './memory-strategy.ts';
-export * from './memory-task.ts';
-export * from './memory-profile.ts';
-export * from './memory-manager.ts';
 export * from './args.ts';
 export * from './interactive.ts';
 

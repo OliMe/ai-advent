@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs';
-import type { GenerationLimits, ResponseFormat } from '../../core/src/index.ts';
-import type { MemoryKind } from './memory-strategy.ts';
+import type { GenerationLimits, ResponseFormat, MemoryKind } from '../../core/src/index.ts';
 
 /** Сколько последних реплик стратегия summary держит дословно по умолчанию. */
 export const DEFAULT_KEEP_RECENT = 6;

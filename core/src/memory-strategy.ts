@@ -1,9 +1,5 @@
-import type {
-  ChatCompletionClient,
-  ChatMessage,
-  CompletionResult,
-  Usage,
-} from '../../core/src/index.ts';
+import type { ChatCompletionClient, CompletionResult } from './chat-completion-client.ts';
+import type { ChatMessage, Usage } from './types.ts';
 import { historyTokens, trimHistoryToBudget } from './tokens.ts';
 
 /** Стратегия управления памятью диалога: окно, сжатие или блок фактов. */

@@ -1,6 +1,18 @@
 import * as readline from 'node:readline/promises';
 import type { Readable, Writable } from 'node:stream';
-import { createSession, emptyProfile, DEFAULT_PROFILE_NAME } from '../../core/src/index.ts';
+import {
+  createSession,
+  emptyProfile,
+  DEFAULT_PROFILE_NAME,
+  historyTokens,
+  historyBudgetTokens,
+  formatUsageStats,
+  formatSessionTotals,
+  estimateTokens,
+  createMemoryStrategy,
+  MemoryManager,
+  layerBudgets,
+} from '../../core/src/index.ts';
 import type {
   AppConfig,
   ChatCompletionClient,
@@ -11,16 +23,9 @@ import type {
   Task,
   TaskStore,
   Usage,
+  MemoryKind,
+  MemoryWriteReport,
 } from '../../core/src/index.ts';
-import {
-  historyTokens,
-  historyBudgetTokens,
-  formatUsageStats,
-  formatSessionTotals,
-  estimateTokens,
-} from './tokens.ts';
-import { createMemoryStrategy, type MemoryKind } from './memory-strategy.ts';
-import { MemoryManager, layerBudgets, type MemoryWriteReport } from './memory-manager.ts';
 import { askModel, streamAnswer } from './chat.ts';
 import { newSession, branchNameTaken, resolveBranch } from './session-flow.ts';
 import {

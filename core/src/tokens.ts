@@ -1,4 +1,5 @@
-import type { AppConfig, ChatMessage, Usage } from '../../core/src/index.ts';
+import type { AppConfig } from './config.ts';
+import type { ChatMessage, Usage } from './types.ts';
 
 /** Сколько символов считаем за один токен в грубой оценке (провайдер-агностично). */
 export const CHARS_PER_TOKEN = 3;

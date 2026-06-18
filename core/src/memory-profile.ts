@@ -1,5 +1,6 @@
-import { emptyProfile, summarizeProfile, DEFAULT_PROFILE_NAME } from '../../core/src/index.ts';
-import type { ChatMessage, Profile, ProfileStore, ProfileSummary } from '../../core/src/index.ts';
+import { emptyProfile, summarizeProfile, DEFAULT_PROFILE_NAME } from './profile-store.ts';
+import type { Profile, ProfileStore, ProfileSummary } from './profile-store.ts';
+import type { ChatMessage } from './types.ts';
 import { capToBudget } from './tokens.ts';
 
 /**
