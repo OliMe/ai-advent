@@ -24,6 +24,8 @@ export * from './chat.ts';
 export * from './formatters.ts';
 export * from './session-flow.ts';
 export * from './memory-strategy.ts';
+export * from './memory-task.ts';
+export * from './memory-profile.ts';
 export * from './memory-manager.ts';
 export * from './args.ts';
 export * from './interactive.ts';

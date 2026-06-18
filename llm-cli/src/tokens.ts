@@ -18,6 +18,14 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
+/** Обрезает текст до бюджета токенов (грубо, по символам), добавляя многоточие. */
+export function capToBudget(text: string, budgetTokens: number): string {
+  if (estimateTokens(text) <= budgetTokens) {
+    return text;
+  }
+  return text.slice(0, Math.max(0, budgetTokens * CHARS_PER_TOKEN - 1)) + '…';
+}
+
 /** Оценка токенов одного сообщения: содержимое плюс накладные расходы. */
 function messageTokens(message: ChatMessage): number {
   return estimateTokens(message.content) + MESSAGE_OVERHEAD_TOKENS;

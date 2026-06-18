@@ -1,10 +1,3 @@
-import {
-  createTask,
-  emptyProfile,
-  summarizeProfile,
-  summarizeTask,
-  DEFAULT_PROFILE_NAME,
-} from '../../core/src/index.ts';
 import type {
   ChatCompletionClient,
   ChatMessage,
@@ -18,7 +11,9 @@ import type {
   Usage,
 } from '../../core/src/index.ts';
 import type { MemoryStrategy } from './memory-strategy.ts';
-import { CHARS_PER_TOKEN, MIN_HISTORY_BUDGET_TOKENS, estimateTokens } from './tokens.ts';
+import { MIN_HISTORY_BUDGET_TOKENS } from './tokens.ts';
+import { TaskMemory } from './memory-task.ts';
+import { ProfileMemory } from './memory-profile.ts';
 
 /** Ограничивает число диапазоном [min, max]. */
 function clampTokens(value: number, min: number, max: number): number {
@@ -61,14 +56,6 @@ const PERSONALIZATION_DIRECTIVE =
   'контекст, стек и предпочтения, держись задачи. Избегай общих вступлений и оговорок, ' +
   'если пользователь их не просит. Профиль — это дефолты; свежая реплика пользователя важнее.';
 
-/** Обрезает текст до бюджета токенов (грубо, по символам), добавляя многоточие. */
-function capToBudget(text: string, budgetTokens: number): string {
-  if (estimateTokens(text) <= budgetTokens) {
-    return text;
-  }
-  return text.slice(0, Math.max(0, budgetTokens * CHARS_PER_TOKEN - 1)) + '…';
-}
-
 /** Параметры менеджера слоистой памяти. */
 export interface MemoryManagerOptions {
   /** Включена ли слоистая память (--no-memory выключает). */
@@ -99,11 +86,10 @@ export interface MemoryWriteReport {
 }
 
 /**
- * Менеджер слоистой памяти: поверх короткой стратегии подмешивает в запрос
- * долговременный профиль пользователя и текущую задачу, обновляет их по ходу
- * диалога (извлечение фактов задачи + явные предпочтения) и консолидирует
- * профиль в конце сессии. Делает ответы персонализированными и нацеленными на
- * задачу. Хранилища = null — всё держим в памяти, на диск не пишем (--ephemeral).
+ * Менеджер слоистой памяти: оркестрирует короткую стратегию и два слоя —
+ * задачный ({@link TaskMemory}) и долговременный профиль ({@link ProfileMemory}).
+ * Подмешивает их блоки + директиву в запрос, извлекает память по ходу диалога и
+ * консолидирует профиль в конце сессии. Хранилища = null — всё в памяти (--ephemeral).
  */
 export class MemoryManager {
   readonly enabled: boolean;
@@ -111,14 +97,8 @@ export class MemoryManager {
   private readonly budgets: LayerBudgets;
   private readonly client: ChatCompletionClient;
   private readonly requestTimeoutMs: number;
-  private readonly profileStore: ProfileStore | null;
-  private readonly taskStore: TaskStore | null;
-  // Активный профиль (персона); его имя — profile.name.
-  private profile: Profile;
-  private task: Task | null = null;
-  // Индексы этого процесса (нужны для in-memory режима без хранилища).
-  private readonly tasks = new Map<string, Task>();
-  private readonly profiles = new Map<string, Profile>();
+  private readonly tasks: TaskMemory;
+  private readonly profiles: ProfileMemory;
   private extractedThrough = 0;
   // Предложенное (но ещё не подтверждённое) имя новой задачи.
   private proposal: string | null = null;
@@ -131,108 +111,55 @@ export class MemoryManager {
     this.budgets = options.budgets;
     this.client = options.client;
     this.requestTimeoutMs = options.requestTimeoutMs;
-    this.profile = options.profile;
-    this.profileStore = options.profileStore;
-    this.taskStore = options.taskStore;
-    this.profiles.set(this.profile.name, this.profile); // in-memory кэш активного
+    this.tasks = new TaskMemory(options.taskStore);
+    this.profiles = new ProfileMemory(options.profile, options.profileStore);
   }
 
-  /** Имя активного профиля (персоны). */
+  // --- Профиль (делегирование в ProfileMemory) ---
   currentProfileName(): string {
-    return this.profile.name;
+    return this.profiles.currentName();
   }
-
-  /** Сохраняет активный профиль (в хранилище или в индекс процесса). */
-  private persistProfile(): void {
-    if (this.profileStore !== null) {
-      this.profileStore.save(this.profile);
-    } else {
-      this.profiles.set(this.profile.name, this.profile);
-    }
-  }
-
-  /** Список профилей (из хранилища или из памяти процесса), свежие первыми. */
-  listProfiles(): ProfileSummary[] {
-    if (this.profileStore !== null) {
-      return this.profileStore.list();
-    }
-    return [...this.profiles.values()]
-      .map(summarizeProfile)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }
-
-  /** Есть ли профиль с таким именем. */
-  private profileExists(name: string): boolean {
-    return this.profileStore !== null
-      ? this.profileStore.list().some(summary => summary.name === name)
-      : this.profiles.has(name);
-  }
-
-  /**
-   * Делает активным профиль с именем `name`, создавая пустой, если его нет.
-   * Возвращает true, если профиль был создан. Активный профиль персистится глобально.
-   */
-  switchProfile(name: string): boolean {
-    const created = !this.profileExists(name);
-    this.profile =
-      this.profileStore !== null
-        ? this.profileStore.load(name)
-        : (this.profiles.get(name) ?? emptyProfile(name));
-    if (created) {
-      this.persistProfile(); // создаём пустой, чтобы попал в список и активировался
-    }
-    this.profileStore?.setActive(name);
-    return created;
-  }
-
-  /** Удаляет профиль из хранилища и индекса процесса. */
-  private removeProfile(name: string): void {
-    this.profiles.delete(name);
-    this.profileStore?.delete(name);
-  }
-
-  /**
-   * Удаляет профиль по имени. Если удалили активный — переключаемся на «default».
-   * Возвращает true, если профиль существовал и был удалён.
-   */
-  deleteProfile(name: string): boolean {
-    if (!this.profileExists(name)) {
-      return false;
-    }
-    this.removeProfile(name);
-    if (this.profile.name === name) {
-      this.switchProfile(DEFAULT_PROFILE_NAME); // активный удалён — на default
-    }
-    return true;
-  }
-
-  /**
-   * Переименовывает активный профиль. 'same' — имя не изменилось, 'taken' — имя
-   * занято другим профилем, 'ok' — переименовано (старый файл удаляется).
-   */
-  renameProfile(newName: string): 'ok' | 'same' | 'taken' {
-    const oldName = this.profile.name;
-    if (newName === oldName) {
-      return 'same';
-    }
-    if (this.profileExists(newName)) {
-      return 'taken';
-    }
-    this.profile = { ...this.profile, name: newName, updatedAt: new Date().toISOString() };
-    this.persistProfile(); // сохраняем под новым именем
-    this.removeProfile(oldName); // убираем старый
-    this.profileStore?.setActive(newName);
-    return 'ok';
-  }
-
-  /** Текущая активная задача (или null). */
-  currentTask(): Task | null {
-    return this.task;
-  }
-
-  /** Пункты профиля пользователя. */
   profileEntries(): string[] {
-    return this.profile.entries.map(entry => entry.text);
+    return this.profiles.entries();
+  }
+  listProfiles(): ProfileSummary[] {
+    return this.profiles.list();
+  }
+  switchProfile(name: string): boolean {
+    return this.profiles.switch(name);
+  }
+  deleteProfile(name: string): boolean {
+    return this.profiles.delete(name);
+  }
+  renameProfile(newName: string): 'ok' | 'same' | 'taken' {
+    return this.profiles.rename(newName);
+  }
+  forgetProfile(oneBasedIndices: number[]): string[] {
+    return this.profiles.forget(oneBasedIndices);
+  }
+
+  // --- Задача (делегирование в TaskMemory) ---
+  currentTask(): Task | null {
+    return this.tasks.current();
+  }
+  setTask(title: string): Task {
+    this.proposal = null; // задача выбрана — снимаем висящее предложение
+    return this.tasks.set(title);
+  }
+  listTasks(): TaskSummary[] {
+    return this.tasks.list();
+  }
+  switchTask(idOrName: string): Task | null {
+    return this.tasks.switch(idOrName);
+  }
+  adopt(taskId: string | undefined): void {
+    this.tasks.adopt(taskId);
+  }
+  closeTask(): string | null {
+    return this.tasks.close();
+  }
+  deleteTask(idOrName: string): Task | null {
+    return this.tasks.delete(idOrName);
   }
 
   /** Сбрасывает состояние короткой памяти при смене ветки/сессии. */
@@ -254,159 +181,19 @@ export class MemoryManager {
     this.declined.add(title);
   }
 
-  /** Сохраняет задачу в хранилище (если есть) и в индекс процесса. */
-  private persistTask(task: Task): void {
-    this.tasks.set(task.id, task);
-    this.taskStore?.save(task);
-  }
-
-  /** Создаёт новую активную задачу и делает её текущей. */
-  setTask(title: string): Task {
-    const task = createTask(title);
-    this.task = task;
-    this.proposal = null; // задача выбрана — снимаем висящее предложение
-    this.persistTask(task);
-    return task;
-  }
-
-  /** Список задач (из хранилища или из памяти процесса), свежие первыми. */
-  listTasks(): TaskSummary[] {
-    if (this.taskStore !== null) {
-      return this.taskStore.list();
-    }
-    return [...this.tasks.values()]
-      .map(summarizeTask)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  }
-
-  /** Загружает задачу по id из хранилища или индекса процесса. */
-  private loadById(id: string): Task | null {
-    return this.taskStore?.load(id) ?? this.tasks.get(id) ?? null;
-  }
-
-  /** Находит задачу по id или имени (id приоритетнее). */
-  private findTask(idOrName: string): Task | null {
-    const direct = this.loadById(idOrName);
-    if (direct !== null) {
-      return direct;
-    }
-    const match = this.listTasks().find(summary => summary.title === idOrName);
-    return match ? this.loadById(match.id) : null;
-  }
-
-  /** Делает активной существующую задачу (реактивирует завершённую). */
-  switchTask(idOrName: string): Task | null {
-    const task = this.findTask(idOrName);
-    if (task === null) {
-      return null;
-    }
-    if (task.status === 'done') {
-      task.status = 'active';
-      task.updatedAt = new Date().toISOString();
-      this.persistTask(task);
-    }
-    this.task = task;
-    return task;
-  }
-
-  /**
-   * Привязывает менеджер к задаче сессии по её id (при resume/ветвлении/reset).
-   * Нет id — активной задачи нет (предсказуемо для новой ветки).
-   */
-  adopt(taskId: string | undefined): void {
-    this.task = taskId === undefined ? null : this.findTask(taskId);
-  }
-
-  /** Закрывает текущую задачу (помечает done); возвращает её имя или null. */
-  closeTask(): string | null {
-    if (this.task === null) {
-      return null;
-    }
-    const title = this.task.title;
-    this.task.status = 'done';
-    this.task.updatedAt = new Date().toISOString();
-    this.persistTask(this.task);
-    this.task = null;
-    return title;
-  }
-
-  /** Удаляет задачу по id или имени; возвращает удалённую задачу или null. */
-  deleteTask(idOrName: string): Task | null {
-    const task = this.findTask(idOrName);
-    if (task === null) {
-      return null;
-    }
-    this.tasks.delete(task.id);
-    this.taskStore?.delete(task.id);
-    if (this.task?.id === task.id) {
-      this.task = null; // удалили активную — снимаем
-    }
-    return task;
-  }
-
-  /**
-   * Забывает пункты профиля по номерам (1-based). Резолвит индексы ДО удаления,
-   * чтобы их сдвиг не мешал; невалидные игнорирует. Возвращает забытые тексты
-   * (в порядке возрастания номера).
-   */
-  forgetProfile(oneBasedIndices: number[]): string[] {
-    const drop = new Set<number>();
-    for (const oneBased of oneBasedIndices) {
-      const index = oneBased - 1;
-      if (index >= 0 && index < this.profile.entries.length) {
-        drop.add(index);
-      }
-    }
-    if (drop.size === 0) {
-      return [];
-    }
-    const removed = [...drop].sort((a, b) => a - b).map(index => this.profile.entries[index].text);
-    this.profile.entries = this.profile.entries.filter((_, index) => !drop.has(index));
-    this.profile.updatedAt = new Date().toISOString();
-    this.persistProfile();
-    return removed;
-  }
-
-  /** Системный блок профиля (или null, если пусто/выключено). */
-  private profileBlock(): ChatMessage | null {
-    if (!this.enabled || this.profile.entries.length === 0) {
-      return null;
-    }
-    const body = capToBudget(
-      this.profile.entries.map(entry => `- ${entry.text}`).join('\n'),
-      this.budgets.profile,
-    );
-    return { role: 'system', content: `Профиль пользователя:\n${body}` };
-  }
-
-  /** Системный блок текущей задачи (или null, если задачи нет/выключено). */
-  private taskBlock(): ChatMessage | null {
-    if (!this.enabled || this.task === null) {
-      return null;
-    }
-    const details =
-      this.task.details.length > 0
-        ? this.task.details.map(d => `- ${d}`).join('\n')
-        : '(пока без деталей)';
-    return {
-      role: 'system',
-      content: `Текущая задача: ${this.task.title}\n${capToBudget(details, this.budgets.task)}`,
-    };
-  }
-
   /** Извлекает из новых реплик факты задачи и явные предпочтения (один вызов). */
   private async extract(newMessages: ChatMessage[]): Promise<CompletionResult> {
     const dialogue = newMessages
       .map(m => `${m.role === 'assistant' ? 'Ассистент' : 'Пользователь'}: ${m.content}`)
       .join('\n');
+    const task = this.tasks.current();
     const taskContext =
-      this.task !== null
-        ? `Текущая задача: ${this.task.title}\nИзвестные факты задачи:\n${this.task.details.join('\n')}\n\n`
+      task !== null
+        ? `Текущая задача: ${task.title}\nИзвестные факты задачи:\n${task.details.join('\n')}\n\n`
         : 'Активной задачи нет.\n\n';
+    const profileTexts = this.profiles.entries();
     const profileContext =
-      this.profile.entries.length > 0
-        ? `Уже известно о пользователе:\n${this.profile.entries.map(e => e.text).join('\n')}\n\n`
-        : '';
+      profileTexts.length > 0 ? `Уже известно о пользователе:\n${profileTexts.join('\n')}\n\n` : '';
     const instruction =
       taskContext +
       profileContext +
@@ -433,8 +220,8 @@ export class MemoryManager {
   }
 
   /**
-   * Применяет результат извлечения к задаче и профилю (с сохранением). Возвращает,
-   * что именно записано: обновлена ли задача и какие пункты добавлены в профиль.
+   * Применяет результат извлечения к слоям. Детектит предложение новой задачи,
+   * пишет факты задачи и явные предпочтения. Возвращает, что именно записано.
    */
   private applyExtraction(content: string): { taskUpdated: boolean; profileAdded: string[] } {
     let parsed: { task?: unknown; user?: unknown; isNewTask?: unknown; proposedTitle?: unknown };
@@ -443,7 +230,6 @@ export class MemoryManager {
     } catch {
       return { taskUpdated: false, profileAdded: [] }; // невалидный JSON — пропускаем ход
     }
-    const now = new Date().toISOString();
     // Авто-определение новой задачи: предлагаем, если уверены, тема отличается от
     // текущей и пользователь раньше от такого имени не отказывался.
     const proposedTitle =
@@ -451,33 +237,13 @@ export class MemoryManager {
     if (
       parsed.isNewTask === true &&
       proposedTitle.length > 0 &&
-      proposedTitle !== this.task?.title &&
+      proposedTitle !== this.tasks.current()?.title &&
       !this.declined.has(proposedTitle)
     ) {
       this.proposal = proposedTitle;
     }
-    let taskUpdated = false;
-    if (this.task !== null && Array.isArray(parsed.task)) {
-      this.task.details = parsed.task.filter((x): x is string => typeof x === 'string');
-      this.task.updatedAt = now;
-      this.persistTask(this.task);
-      taskUpdated = true;
-    }
-    const profileAdded: string[] = [];
-    if (Array.isArray(parsed.user)) {
-      const known = new Set(this.profile.entries.map(entry => entry.text));
-      for (const trait of parsed.user) {
-        if (typeof trait === 'string' && trait.trim() && !known.has(trait.trim())) {
-          this.profile.entries.push({ text: trait.trim(), updatedAt: now });
-          known.add(trait.trim());
-          profileAdded.push(trait.trim());
-        }
-      }
-      if (profileAdded.length > 0) {
-        this.profile.updatedAt = now;
-        this.persistProfile();
-      }
-    }
+    const taskUpdated = Array.isArray(parsed.task) ? this.tasks.applyDetails(parsed.task) : false;
+    const profileAdded = Array.isArray(parsed.user) ? this.profiles.addTraits(parsed.user) : [];
     return { taskUpdated, profileAdded };
   }
 
@@ -503,10 +269,11 @@ export class MemoryManager {
       const applied = this.applyExtraction(result.content);
       this.extractedThrough = conversation.length;
       onExtraction?.(result.usage);
+      const task = this.tasks.current();
       return {
         usage: result.usage,
-        taskTitle: applied.taskUpdated && this.task !== null ? this.task.title : null,
-        taskFactCount: this.task !== null ? this.task.details.length : 0,
+        taskTitle: applied.taskUpdated && task !== null ? task.title : null,
+        taskFactCount: task !== null ? task.details.length : 0,
         profileAdded: applied.profileAdded,
         consolidated: null,
       };
@@ -533,9 +300,9 @@ export class MemoryManager {
       content: `${shortened[0].content}\n\n${PERSONALIZATION_DIRECTIVE}`,
     };
     const blocks: ChatMessage[] = [];
-    const profile = this.profileBlock();
+    const profile = this.profiles.block(this.budgets.profile);
     if (profile) blocks.push(profile);
-    const task = this.taskBlock();
+    const task = this.tasks.block(this.budgets.task);
     if (task) blocks.push(task);
     return [system, ...blocks, ...shortened.slice(1)];
   }
@@ -563,10 +330,8 @@ export class MemoryManager {
       return null;
     }
     const dialogue = userMessages.map(message => `Пользователь: ${message.content}`).join('\n');
-    const known =
-      this.profile.entries.length > 0
-        ? `Текущий профиль:\n${this.profile.entries.map(e => e.text).join('\n')}\n\n`
-        : '';
+    const profileTexts = this.profiles.entries();
+    const known = profileTexts.length > 0 ? `Текущий профиль:\n${profileTexts.join('\n')}\n\n` : '';
     const instruction =
       known +
       'Ниже — реплики ПОЛЬЗОВАТЕЛЯ. Сформируй долговременный профиль из УСТОЙЧИВЫХ ' +
@@ -583,15 +348,12 @@ export class MemoryManager {
         disableThinking: true,
         maxTokens: this.budgets.profile,
       });
-      const now = new Date().toISOString();
-      const entries = result.content
+      const texts = result.content
         .split('\n')
         .map(line => line.replace(/^[-*\s]+/, '').trim())
-        .filter(line => line.length > 0)
-        .map(text => ({ text, updatedAt: now }));
-      if (entries.length > 0) {
-        this.profile = { ...this.profile, entries, updatedAt: now };
-        this.persistProfile();
+        .filter(line => line.length > 0);
+      if (texts.length > 0) {
+        this.profiles.replace(texts);
       }
       onExtraction?.(result.usage);
       return {
@@ -599,7 +361,7 @@ export class MemoryManager {
         taskTitle: null,
         taskFactCount: 0,
         profileAdded: [],
-        consolidated: entries.length,
+        consolidated: texts.length,
       };
     } catch {
       // Консолидация не удалась — профиль остаётся прежним.
