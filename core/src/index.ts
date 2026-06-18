@@ -59,6 +59,19 @@ export type {
 } from './task-run.ts';
 export { FileRunStore } from './run-store.ts';
 export type { RunStore } from './run-store.ts';
+export {
+  runPlanning,
+  runExecution,
+  runVerification,
+  runCompletion,
+  parsePlanning,
+  parseExecution,
+  parseVerification,
+  parseCompletion,
+} from './pipeline-stages.ts';
+export type { StageContext } from './pipeline-stages.ts';
+export { runPipeline } from './pipeline.ts';
+export type { PipelineHooks, PipelineDeps } from './pipeline.ts';
 export type {
   Role,
   ChatMessage,
