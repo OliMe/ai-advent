@@ -112,6 +112,38 @@ export class TaskMemory {
     return task;
   }
 
+  /** Находит задачу по id или имени без смены активной (или null). */
+  get(idOrName: string): Task | null {
+    return this.find(idOrName);
+  }
+
+  /** Дописывает один факт к задаче по id/имени; возвращает задачу или null. */
+  addDetail(idOrName: string, detail: string): Task | null {
+    const task = this.find(idOrName);
+    if (task === null) {
+      return null;
+    }
+    task.details.push(detail);
+    task.updatedAt = new Date().toISOString();
+    this.persist(task);
+    return task;
+  }
+
+  /** Помечает задачу выполненной по id/имени; активную при этом снимает. */
+  markDone(idOrName: string): Task | null {
+    const task = this.find(idOrName);
+    if (task === null) {
+      return null;
+    }
+    task.status = 'done';
+    task.updatedAt = new Date().toISOString();
+    this.persist(task);
+    if (this.task?.id === task.id) {
+      this.task = null; // выполненная задача больше не активна
+    }
+    return task;
+  }
+
   /**
    * Применяет извлечённые факты к активной задаче (с сохранением). Возвращает
    * true, если задача активна и факты записаны.

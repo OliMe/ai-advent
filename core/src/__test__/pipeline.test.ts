@@ -229,6 +229,32 @@ describe('runPipeline', () => {
     assert.equal(called, false); // диалоги не создавались
   });
 
+  it('передаёт memoryContext в этапы (планирование видит контекст)', async t => {
+    const run = createRun('Задача', { idSuffix: 'k' });
+    let planPrompt = '';
+    const make = (systemPrompt: string, limits?: GenerationLimits) => {
+      const client = clientWith(t, async messages => {
+        if (systemPrompt.includes('планировщик')) planPrompt = messages.at(-1)?.content ?? '';
+        return { content: content()[stageOf(systemPrompt)](), usage: undefined };
+      });
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+    await runPipeline(run, {
+      store: fakeStore(),
+      makeConversation: make,
+      signal: idle,
+      memoryContext: 'ПАМЯТЬ ЗАДАЧИ',
+      hooks: approve,
+    });
+    assert.match(planPrompt, /ПАМЯТЬ ЗАДАЧИ/);
+  });
+
   it('--ephemeral (store=null): завершается, файлы-артефакты не пишутся', async t => {
     const run = createRun('Задача', { idSuffix: 'j' });
     const result = await runPipeline(run, {

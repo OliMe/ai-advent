@@ -153,6 +153,15 @@ export class MemoryManager {
   deleteTask(idOrName: string): Task | null {
     return this.tasks.delete(idOrName);
   }
+  getTask(idOrName: string): Task | null {
+    return this.tasks.get(idOrName);
+  }
+  addTaskDetail(idOrName: string, detail: string): Task | null {
+    return this.tasks.addDetail(idOrName, detail);
+  }
+  markTaskDone(idOrName: string): Task | null {
+    return this.tasks.markDone(idOrName);
+  }
 
   /** Сбрасывает состояние короткой памяти при смене ветки/сессии. */
   reset(): void {

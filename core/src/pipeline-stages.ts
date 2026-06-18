@@ -15,6 +15,8 @@ export interface StageContext {
   makeConversation: (systemPrompt: string, limits?: GenerationLimits) => Conversation;
   /** Пишет файл-артефакт прогона; null — хранилище отключено (--ephemeral). */
   writeArtifact: (name: string, content: string) => string | null;
+  /** Память задачи (детали + профиль) для подмешивания в планирование/выполнение; '' — нет. */
+  memoryContext: string;
 }
 
 const JSON_LIMITS: GenerationLimits = { responseFormat: { type: 'json_object' } };
@@ -125,13 +127,20 @@ const COMPLETER_SYSTEM =
   'Ты — завершающий. Сформулируй краткий итог выполненной задачи для пользователя. ' +
   'Верни СТРОГО JSON: {"summary": "итог одной фразой", "text": "итоговое резюме"}.';
 
-/** Планирование: задача (+правка) → план с критериями. */
+/** Контекстный префикс памяти задачи (или пусто). */
+function memoryPrefix(ctx: StageContext): string {
+  return ctx.memoryContext ? `${ctx.memoryContext}\n\n` : '';
+}
+
+/** Планирование: задача (+память +правка) → план с критериями. */
 export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> {
   const conversation = ctx.makeConversation(PLANNER_SYSTEM, JSON_LIMITS);
   const correction = ctx.run.correction
     ? `\n\nУчти правку пользователя: ${ctx.run.correction}`
     : '';
-  const result = await conversation.ask(`Задача: ${ctx.run.title}${correction}`);
+  const result = await conversation.ask(
+    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}${correction}`,
+  );
   return parsePlanning(result.content);
 }
 
@@ -141,7 +150,7 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
   const issues = ctx.run.artifacts.verification?.issues ?? [];
   const conversation = ctx.makeConversation(EXECUTOR_SYSTEM, JSON_LIMITS);
   const prompt =
-    `Задача: ${ctx.run.title}\n\nПлан:\n${(plan?.steps ?? []).join('\n')}\n\n` +
+    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\nПлан:\n${(plan?.steps ?? []).join('\n')}\n\n` +
     `Критерии приёмки:\n${(plan?.criteria ?? []).join('\n')}` +
     (issues.length > 0 ? `\n\nИсправь замечания проверки:\n${issues.join('\n')}` : '') +
     (ctx.run.correction ? `\n\nУчти правку пользователя: ${ctx.run.correction}` : '');

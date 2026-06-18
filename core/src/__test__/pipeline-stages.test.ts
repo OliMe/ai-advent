@@ -39,8 +39,9 @@ function ctxWith(
   run: TaskRun,
   capture?: (prompt: string) => void,
   writeArtifact: (name: string, content: string) => string | null = () => null,
+  memoryContext = '',
 ): StageContext {
-  return { run, makeConversation: makeConv(t, content, capture), writeArtifact };
+  return { run, makeConversation: makeConv(t, content, capture), writeArtifact, memoryContext };
 }
 
 describe('разбор артефактов (C + фолбэк D)', () => {
@@ -112,6 +113,37 @@ describe('раннеры этапов', () => {
     assert.match(prompt, /Задача: Сайт/);
     assert.match(prompt, /тёмную тему/);
     assert.deepEqual(artifact.steps, ['s']);
+  });
+
+  it('runPlanning и runExecution подмешивают память задачи в промпт', async t => {
+    const run = createRun('Сайт');
+    run.artifacts.planning = { steps: ['s'], criteria: ['c'], text: 'план' };
+    let planPrompt = '';
+    await runPlanning(
+      ctxWith(
+        t,
+        '{"steps":[],"criteria":[],"text":""}',
+        run,
+        p => (planPrompt = p),
+        () => null,
+        'КОНТЕКСТ ПАМЯТИ',
+      ),
+    );
+    assert.match(planPrompt, /КОНТЕКСТ ПАМЯТИ/);
+    assert.match(planPrompt, /Задача: Сайт/);
+
+    let execPrompt = '';
+    await runExecution(
+      ctxWith(
+        t,
+        '{"summary":"s","text":"t"}',
+        run,
+        p => (execPrompt = p),
+        () => null,
+        'КОНТЕКСТ ПАМЯТИ',
+      ),
+    );
+    assert.match(execPrompt, /КОНТЕКСТ ПАМЯТИ/);
   });
 
   it('runExecution: пишет файл-артефакт и подаёт замечания проверки', async t => {

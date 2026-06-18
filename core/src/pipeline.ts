@@ -31,6 +31,8 @@ export interface PipelineDeps {
   /** Кооперативная отмена/пауза: проверяется между этапами. */
   signal: AbortSignal;
   hooks: PipelineHooks;
+  /** Память задачи (детали + профиль) для планирования/выполнения; '' по умолчанию. */
+  memoryContext?: string;
 }
 
 /** Фиксирует смену статуса/этапа, обновляет время и сохраняет прогон. */
@@ -63,6 +65,7 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
     run,
     makeConversation: deps.makeConversation,
     writeArtifact: (name, content) => store?.writeArtifact(run.id, name, content) ?? null,
+    memoryContext: deps.memoryContext ?? '',
   };
 
   while (true) {

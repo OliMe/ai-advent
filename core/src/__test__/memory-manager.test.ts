@@ -252,6 +252,32 @@ describe('MemoryManager', () => {
     assert.equal(mgr.listTasks().length, 0);
   });
 
+  it('getTask/addTaskDetail/markTaskDone: доступ к задаче по id без смены активной', async t => {
+    const mgr = makeManager(t, () => ({ content: '{}', usage: undefined }));
+    const first = mgr.setTask('Первая');
+    const second = mgr.setTask('Вторая'); // активная
+
+    // getTask не меняет активную.
+    assert.equal(mgr.getTask(first.id)?.id, first.id);
+    assert.equal(mgr.getTask('нет'), null);
+    assert.equal(mgr.currentTask()?.id, second.id);
+
+    // addTaskDetail дописывает факт к указанной (не активной) задаче.
+    assert.equal(mgr.addTaskDetail('нет', 'x'), null);
+    const updated = mgr.addTaskDetail(first.id, 'итог работы');
+    assert.deepEqual(updated?.details, ['итог работы']);
+    assert.equal(mgr.currentTask()?.id, second.id); // активная не сменилась
+
+    // markTaskDone по неактивной — не трогает активную.
+    assert.equal(mgr.markTaskDone('нет'), null);
+    assert.equal(mgr.markTaskDone(first.id)?.status, 'done');
+    assert.equal(mgr.currentTask()?.id, second.id);
+
+    // markTaskDone по активной — снимает её.
+    assert.equal(mgr.markTaskDone(second.id)?.status, 'done');
+    assert.equal(mgr.currentTask(), null);
+  });
+
   it('задачи с хранилищем: list/load идут через store; adopt по id', async t => {
     const stored = createTask('Сохранённая', ['деталь'], new Date(), 'aaa111');
     const taskStore: TaskStore & { saved: Task[] } = (() => {
