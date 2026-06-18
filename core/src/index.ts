@@ -37,6 +37,28 @@ export { MemoryManager, layerBudgets } from './memory-manager.ts';
 export type { LayerBudgets, MemoryManagerOptions, MemoryWriteReport } from './memory-manager.ts';
 export { Conversation } from './conversation.ts';
 export type { ConversationConfig } from './conversation.ts';
+export {
+  RUN_VERSION,
+  DEFAULT_MAX_RETRIES,
+  STAGES,
+  createRun,
+  nextStage,
+  summarizeRun,
+} from './task-run.ts';
+export type {
+  Stage,
+  RunStatus,
+  PlanningArtifact,
+  ExecutionArtifact,
+  VerificationArtifact,
+  CompletionArtifact,
+  StageArtifacts,
+  RunTransition,
+  TaskRun,
+  RunSummary,
+} from './task-run.ts';
+export { FileRunStore } from './run-store.ts';
+export type { RunStore } from './run-store.ts';
 export type {
   Role,
   ChatMessage,
