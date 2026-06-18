@@ -96,9 +96,7 @@ export function loadConfig(): AppConfig {
       Number.isFinite(retryBaseMs) && retryBaseMs > 0 ? retryBaseMs : DEFAULT_RETRY_BASE_MS,
     // Размер контекста — положительное целое; иначе значение по умолчанию.
     contextTokens:
-      Number.isInteger(contextTokens) && contextTokens > 0
-        ? contextTokens
-        : DEFAULT_CONTEXT_TOKENS,
+      Number.isInteger(contextTokens) && contextTokens > 0 ? contextTokens : DEFAULT_CONTEXT_TOKENS,
     // Тарифы — неотрицательные числа ($/1M); 0 означает «тариф не задан».
     priceInputPer1M: nonNegativeNumber(process.env.LLM_PRICE_INPUT_PER_1M, DEFAULT_PRICE_PER_1M),
     priceOutputPer1M: nonNegativeNumber(process.env.LLM_PRICE_OUTPUT_PER_1M, DEFAULT_PRICE_PER_1M),

@@ -48,7 +48,9 @@ const EMPTY_RESPONSE_MESSAGE = 'API вернул пустой ответ без 
 
 /** Ошибка для ответа без видимого текста: обрезка по лимиту либо пустой ответ. */
 function emptyContentError(finishReason: string | null | undefined): Error {
-  return new Error(finishReason === 'length' ? TRUNCATED_BY_LENGTH_MESSAGE : EMPTY_RESPONSE_MESSAGE);
+  return new Error(
+    finishReason === 'length' ? TRUNCATED_BY_LENGTH_MESSAGE : EMPTY_RESPONSE_MESSAGE,
+  );
 }
 
 /** Стоит ли повторять запрос при таком HTTP-статусе (rate limit и ошибки сервера). */
@@ -147,7 +149,10 @@ export class ChatCompletionClient {
 
     armIdleTimeout();
     try {
-      const response = await this.performRequest(this.buildRequestBody(messages, options, true), signal);
+      const response = await this.performRequest(
+        this.buildRequestBody(messages, options, true),
+        signal,
+      );
       if (!response.body) {
         throw new Error(EMPTY_RESPONSE_MESSAGE);
       }
