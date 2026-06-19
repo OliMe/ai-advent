@@ -18,8 +18,12 @@ import {
 import { isAffirmative, isNegative } from './replies.ts';
 import { describeError } from './errors.ts';
 
-/** Фабрика диалога этапа: каждый агент получает свой системный промпт и ограничения. */
-export type ConversationFactory = (systemPrompt: string, limits?: GenerationLimits) => Conversation;
+/** Фабрика диалога этапа: системный промпт, ограничения и (опц.) температура агента. */
+export type ConversationFactory = (
+  systemPrompt: string,
+  limits?: GenerationLimits,
+  temperature?: number,
+) => Conversation;
 
 /** Максимум вопросов аналитика за один сбор требований (страховка от зацикливания). */
 const MAX_CLARIFIER_QUESTIONS = 20;
@@ -66,10 +70,11 @@ export function makeConversationFactory(
   disableThinking: boolean,
   temperature: number,
 ): ConversationFactory {
-  return (systemPrompt, limits) =>
+  return (systemPrompt, limits, temperatureOverride) =>
     new Conversation(client, {
       systemPrompt,
-      temperature,
+      // Этап может задать свою температуру (напр. проверяющий — низкую); иначе общая.
+      temperature: temperatureOverride ?? temperature,
       contextTokens: config.contextTokens,
       requestTimeoutMs: config.requestTimeoutMs,
       disableThinking,

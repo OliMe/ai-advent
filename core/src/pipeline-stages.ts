@@ -11,8 +11,12 @@ import type {
 /** Контекст этапа: всё, что нужно раннеру для одного прогона этапа. */
 export interface StageContext {
   run: TaskRun;
-  /** Фабрика диалога для агента этапа (свой системный промпт и ограничения). */
-  makeConversation: (systemPrompt: string, limits?: GenerationLimits) => Conversation;
+  /** Фабрика диалога для агента этапа (свой системный промпт, ограничения и температура). */
+  makeConversation: (
+    systemPrompt: string,
+    limits?: GenerationLimits,
+    temperature?: number,
+  ) => Conversation;
   /** Пишет файл-артефакт прогона; null — хранилище отключено (--ephemeral). */
   writeArtifact: (name: string, content: string) => string | null;
   /**
@@ -177,6 +181,9 @@ const COMPLETER_SYSTEM =
   'Ты — завершающий. Сформулируй краткий итог выполненной задачи для пользователя. ' +
   'Ответь ТОЛЬКО объектом JSON: {"summary": "итог одной фразой", "text": "итоговое резюме"}.';
 
+/** Низкая температура проверяющего — для стабильного, воспроизводимого вердикта. */
+const VERIFIER_TEMPERATURE = 0;
+
 /** Контекстный префикс памяти задачи (или пусто). */
 function memoryPrefix(ctx: StageContext): string {
   const context = ctx.memoryContext();
@@ -224,7 +231,7 @@ export async function runVerification(ctx: StageContext): Promise<VerificationAr
       text: 'Проверка невозможна: пустые критерии приёмки.',
     };
   }
-  const conversation = ctx.makeConversation(VERIFIER_SYSTEM);
+  const conversation = ctx.makeConversation(VERIFIER_SYSTEM, undefined, VERIFIER_TEMPERATURE);
   const result = await conversation.ask(
     `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\n` +
       `План:\n${plan.steps.join('\n')}\n\n` +

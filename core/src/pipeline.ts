@@ -38,7 +38,11 @@ export interface PipelineHooks {
 export interface PipelineDeps {
   /** Хранилище прогонов; null — в памяти (--ephemeral), без файлов и продолжения. */
   store: RunStore | null;
-  makeConversation: (systemPrompt: string, limits?: GenerationLimits) => Conversation;
+  makeConversation: (
+    systemPrompt: string,
+    limits?: GenerationLimits,
+    temperature?: number,
+  ) => Conversation;
   /** Кооперативная отмена/пауза: проверяется между этапами. */
   signal: AbortSignal;
   hooks: PipelineHooks;

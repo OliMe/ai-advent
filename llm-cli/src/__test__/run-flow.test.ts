@@ -167,6 +167,24 @@ describe('makeConversationFactory', () => {
     await make('S', { maxTokens: 50 }).ask('привет');
     assert.equal(captured.maxTokens, 50); // явный limits перекрывает конфиг
   });
+
+  it('применяет температуру этапа (override), иначе общую', async t => {
+    let captured: { temperature?: number } = {};
+    const make = makeConversationFactory(
+      clientWith(t, async (_messages, options) => {
+        captured = options;
+        return { content: '' };
+      }),
+      makeConfig(),
+      true,
+      0.7,
+    );
+    await make('S').ask('привет');
+    assert.equal(captured.temperature, 0.7); // общая температура
+
+    await make('S', undefined, 0).ask('привет');
+    assert.equal(captured.temperature, 0); // этап задал свою (напр. проверяющий)
+  });
 });
 
 describe('parseClarifierStep', () => {
