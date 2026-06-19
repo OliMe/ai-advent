@@ -70,6 +70,7 @@ export {
   parseExecution,
   parseVerification,
   parseCompletion,
+  extractJsonObject,
 } from './pipeline-stages.ts';
 export type { StageContext } from './pipeline-stages.ts';
 export { runPipeline } from './pipeline.ts';

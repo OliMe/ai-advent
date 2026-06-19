@@ -167,6 +167,12 @@ describe('parseClarifierStep', () => {
     assert.deepEqual(parseClarifierStep('{"question":""}'), { done: true }); // пустой вопрос = готово
     assert.deepEqual(parseClarifierStep('{}'), { done: true }); // нет полей
     assert.deepEqual(parseClarifierStep('не json'), { done: true }); // битый JSON
+    // JSON, обёрнутый прозой (без response_format), всё равно разбирается.
+    assert.deepEqual(parseClarifierStep('Вопрос: {"question":"Бюджет?","suggestion":"100к"}'), {
+      done: false,
+      question: 'Бюджет?',
+      suggestion: '100к',
+    });
   });
 });
 

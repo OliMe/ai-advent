@@ -105,6 +105,8 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
         transition(run, store, 'requirements', 'paused'); // прерван опрос — продолжим с него
         return run;
       }
+      // Замечания прошлой проверки учтены при сборе — не тянем их в новый план/выполнение.
+      run.artifacts.verification = undefined;
       transition(run, store, 'planning', 'running');
     } else if (run.stage === 'planning') {
       run.artifacts.planning = await runPlanning(ctx);

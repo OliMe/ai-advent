@@ -1,5 +1,5 @@
 import type { Writable } from 'node:stream';
-import { Conversation, createRun, runPipeline } from '../../core/src/index.ts';
+import { Conversation, createRun, runPipeline, extractJsonObject } from '../../core/src/index.ts';
 import type {
   AppConfig,
   ChatCompletionClient,
@@ -21,8 +21,6 @@ import { describeError } from './errors.ts';
 /** Фабрика диалога этапа: каждый агент получает свой системный промпт и ограничения. */
 export type ConversationFactory = (systemPrompt: string, limits?: GenerationLimits) => Conversation;
 
-const JSON_LIMITS: GenerationLimits = { responseFormat: { type: 'json_object' } };
-
 /** Максимум вопросов аналитика за один сбор требований (страховка от зацикливания). */
 const MAX_CLARIFIER_QUESTIONS = 20;
 
@@ -43,9 +41,13 @@ export type ClarifierStep = { done: true } | { done: false; question: string; su
 
 /** Разбирает ответ аналитика: вопрос+подсказка или «готово» (лениво, с фолбэком на done). */
 export function parseClarifierStep(content: string): ClarifierStep {
+  // JSON просим в промпте (без response_format); парсим целиком, иначе первый блок {…}.
+  const candidate = content.trim().startsWith('{')
+    ? content
+    : (extractJsonObject(content) ?? content);
   let parsed: { done?: unknown; question?: unknown; suggestion?: unknown } | null;
   try {
-    parsed = JSON.parse(content);
+    parsed = JSON.parse(candidate);
   } catch {
     return { done: true }; // не разобрали — считаем, что уточнять нечего
   }
@@ -212,7 +214,7 @@ export class RunController {
     cycle: number,
     signal: AbortSignal,
   ): Promise<{ collected: string[] }> {
-    const conversation = this.deps.makeConversation(CLARIFIER_SYSTEM, JSON_LIMITS);
+    const conversation = this.deps.makeConversation(CLARIFIER_SYSTEM);
     const context = this.deps.taskBridge.memoryContext();
     const prefix = context ? `${context}\n\n` : '';
     const issuesBlock =

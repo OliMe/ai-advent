@@ -23,20 +23,58 @@ export interface StageContext {
   memoryContext: () => string;
 }
 
-const JSON_LIMITS: GenerationLimits = { responseFormat: { type: 'json_object' } };
+// --- Ленивый разбор: JSON просим в промпте (без response_format, иначе z.ai/GLM
+// вырезает литерал «json» из ответа). Парсер устойчив к обёртке прозой. ---
 
-// --- Ленивый разбор (формат C: json_object; фолбэк D: текст/буллеты) ---
-
-/** Парсит JSON-объект из ответа модели или null. */
-function parseObject(content: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(content);
-    return typeof parsed === 'object' && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
+/** Извлекает первый сбалансированный объект `{…}` из текста (учёт строк и экранирования). */
+export function extractJsonObject(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start === -1) {
     return null;
   }
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index++) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+    } else if (character === '"') {
+      inString = true;
+    } else if (character === '{') {
+      depth++;
+    } else if (character === '}') {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, index + 1);
+      }
+    }
+  }
+  return null; // незакрытый объект
+}
+
+/** Парсит JSON-объект из ответа: целиком, иначе первый блок `{…}` в прозе; иначе null. */
+function parseObject(content: string): Record<string, unknown> | null {
+  for (const candidate of [content, extractJsonObject(content)]) {
+    if (candidate === null) {
+      continue;
+    }
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (typeof parsed === 'object' && parsed !== null) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // пробуем следующий кандидат
+    }
+  }
+  return null;
 }
 
 /** Массив строк из значения (иначе пустой). */
@@ -95,6 +133,10 @@ export function parseVerification(content: string): VerificationArtifact {
       text: asString(object.text) || content,
     };
   }
+  // Пустой ответ — вердикта нет, доверять «pass» нельзя.
+  if (content.trim() === '') {
+    return { passed: false, issues: ['Проверка не вернула ответа'], text: content };
+  }
   // Без структуры: считаем проваленным, если упомянут провал/fail.
   const passed = !/\b(fail|провал|не пройдено|не выполнено)\b/i.test(content);
   return { passed, issues: passed ? [] : extractBullets(content), text: content };
@@ -116,20 +158,24 @@ export function parseCompletion(content: string): CompletionArtifact {
 
 const PLANNER_SYSTEM =
   'Ты — планировщик. Разбей задачу на конкретные выполнимые шаги и сформулируй ' +
-  'критерии приёмки, по которым потом проверят результат. Верни СТРОГО JSON: ' +
-  '{"steps":[...], "criteria":[...], "text": "краткий план словами"}.';
+  'критерии приёмки — измеримые и проверяемые, по которым потом сверят результат. ' +
+  'Критерии ОБЯЗАТЕЛЬНЫ и не должны быть пустыми. Ответь ТОЛЬКО объектом JSON (без ' +
+  'обрамляющего текста): {"steps":[...], "criteria":[...], "text": "краткий план словами"}.';
 
 const EXECUTOR_SYSTEM =
-  'Ты — исполнитель. Выполни задачу строго по плану и критериям. Верни СТРОГО JSON: ' +
-  '{"summary": "что сделано", "log": ["шаги"], "text": "полный результат работы"}.';
+  'Ты — исполнитель. Выполни задачу строго по плану и критериям. В поле "text" положи ' +
+  'готовый результат целиком и без лишней прозы (для кода — только код). Ответь ТОЛЬКО ' +
+  'объектом JSON: {"summary": "что сделано", "log": ["шаги"], "text": "полный результат"}.';
 
 const VERIFIER_SYSTEM =
-  'Ты — придирчивый проверяющий. Сверь результат с КАЖДЫМ критерием приёмки. Верни ' +
-  'СТРОГО JSON: {"passed": true|false, "issues": ["что не так"], "text": "вывод проверки"}.';
+  'Ты — придирчивый проверяющий. Пройдись по КАЖДОМУ критерию приёмки отдельно и реши, ' +
+  'выполнен ли он. Общий "passed" равен true ТОЛЬКО если выполнены все критерии. Если ' +
+  'критериев нет или результат пуст — это провал (passed:false). Ответь ТОЛЬКО объектом ' +
+  'JSON: {"passed": true|false, "issues": ["что не так, по критериям"], "text": "вывод проверки"}.';
 
 const COMPLETER_SYSTEM =
   'Ты — завершающий. Сформулируй краткий итог выполненной задачи для пользователя. ' +
-  'Верни СТРОГО JSON: {"summary": "итог одной фразой", "text": "итоговое резюме"}.';
+  'Ответь ТОЛЬКО объектом JSON: {"summary": "итог одной фразой", "text": "итоговое резюме"}.';
 
 /** Контекстный префикс памяти задачи (или пусто). */
 function memoryPrefix(ctx: StageContext): string {
@@ -139,7 +185,7 @@ function memoryPrefix(ctx: StageContext): string {
 
 /** Планирование: задача (+память +правка) → план с критериями. */
 export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> {
-  const conversation = ctx.makeConversation(PLANNER_SYSTEM, JSON_LIMITS);
+  const conversation = ctx.makeConversation(PLANNER_SYSTEM);
   const correction = ctx.run.correction
     ? `\n\nУчти правку пользователя: ${ctx.run.correction}`
     : '';
@@ -153,7 +199,7 @@ export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> 
 export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact> {
   const plan = ctx.run.artifacts.planning;
   const issues = ctx.run.artifacts.verification?.issues ?? [];
-  const conversation = ctx.makeConversation(EXECUTOR_SYSTEM, JSON_LIMITS);
+  const conversation = ctx.makeConversation(EXECUTOR_SYSTEM);
   const prompt =
     `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\nПлан:\n${(plan?.steps ?? []).join('\n')}\n\n` +
     `Критерии приёмки:\n${(plan?.criteria ?? []).join('\n')}` +
@@ -166,22 +212,33 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
   return { ...parsed, files: path === null ? [] : [path] };
 }
 
-/** Проверка: результат против критериев → вердикт + замечания. */
+/** Проверка: результат против требований/критериев → вердикт + замечания. */
 export async function runVerification(ctx: StageContext): Promise<VerificationArtifact> {
   const plan = ctx.run.artifacts.planning;
   const execution = ctx.run.artifacts.execution;
-  const conversation = ctx.makeConversation(VERIFIER_SYSTEM, JSON_LIMITS);
-  const prompt =
-    `Критерии приёмки:\n${(plan?.criteria ?? []).join('\n')}\n\n` +
-    `Результат на проверку:\n${execution?.text ?? ''}`;
-  const result = await conversation.ask(prompt);
+  // Без критериев сверять не с чем — это провал по построению (модель не зовём).
+  if (plan === undefined || plan.criteria.length === 0) {
+    return {
+      passed: false,
+      issues: ['Критерии приёмки не сформулированы — нужно переформулировать план.'],
+      text: 'Проверка невозможна: пустые критерии приёмки.',
+    };
+  }
+  const conversation = ctx.makeConversation(VERIFIER_SYSTEM);
+  const result = await conversation.ask(
+    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\n` +
+      `План:\n${plan.steps.join('\n')}\n\n` +
+      `Критерии приёмки:\n${plan.criteria.join('\n')}\n\n` +
+      // Берём полный результат; если его нет — краткое резюме (хрупкость поля).
+      `Результат на проверку:\n${execution?.text || execution?.summary || ''}`,
+  );
   return parseVerification(result.content);
 }
 
 /** Завершение: все артефакты → итоговое резюме. */
 export async function runCompletion(ctx: StageContext): Promise<CompletionArtifact> {
   const { planning, execution, verification } = ctx.run.artifacts;
-  const conversation = ctx.makeConversation(COMPLETER_SYSTEM, JSON_LIMITS);
+  const conversation = ctx.makeConversation(COMPLETER_SYSTEM);
   const prompt =
     `Задача: ${ctx.run.title}\n\nПлан:\n${planning?.text ?? ''}\n\n` +
     `Результат:\n${execution?.summary ?? ''}\n\nПроверка: ${verification?.passed ? 'пройдена' : 'с замечаниями'}`;

@@ -10,6 +10,7 @@ import {
   runExecution,
   runVerification,
   runCompletion,
+  extractJsonObject,
   Conversation,
   createRun,
 } from '../index.ts';
@@ -80,6 +81,37 @@ describe('разбор артефактов (C + фолбэк D)', () => {
     const planning = parsePlanning('42'); // число — не объект
     assert.equal(planning.text, '42');
     assert.deepEqual(planning.steps, []);
+    assert.equal(parsePlanning('null').text, 'null'); // JSON null — тоже не объект
+  });
+
+  it('extractJsonObject: первый сбалансированный блок с учётом строк, иначе null', () => {
+    assert.equal(extractJsonObject('шум {"a":1} хвост'), '{"a":1}');
+    assert.equal(extractJsonObject('prefix {"a":"}"} suffix'), '{"a":"}"}'); // } внутри строки не закрывает
+    assert.equal(extractJsonObject('{"a":"\\""}'), '{"a":"\\""}'); // экранированная кавычка не закрывает строку
+    assert.equal(extractJsonObject('нет фигурных скобок'), null);
+    assert.equal(extractJsonObject('{"a":1'), null); // незакрытый объект
+  });
+
+  it('parseObject: JSON, обёрнутый прозой, всё равно разбирается', () => {
+    const planning = parsePlanning(
+      'Вот план: {"steps":["s"],"criteria":["c"],"text":"t"}. Готово.',
+    );
+    assert.deepEqual(planning.steps, ['s']);
+    assert.deepEqual(planning.criteria, ['c']);
+    assert.equal(planning.text, 't');
+  });
+
+  it('parseObject: похоже на объект, но не JSON → фолбэк', () => {
+    // extractJsonObject вернёт «{не json}», но JSON.parse упадёт → уходим в фолбэк.
+    const planning = parsePlanning('{не json}');
+    assert.deepEqual(planning.steps, []);
+    assert.equal(planning.text, '{не json}');
+  });
+
+  it('parseVerification: пустой ответ → провал', () => {
+    const v = parseVerification('   ');
+    assert.equal(v.passed, false);
+    assert.deepEqual(v.issues, ['Проверка не вернула ответа']);
   });
 
   it('parseVerification: JSON passed true/false и фолбэк', () => {
@@ -202,9 +234,55 @@ describe('раннеры этапов', () => {
     const run = createRun('Пустая'); // без артефактов
     const exec = await runExecution(ctxWith(t, '{"summary":"s","text":"t"}', run));
     assert.deepEqual(exec.files, []); // writeArtifact по умолчанию null
-    const v = await runVerification(ctxWith(t, '{"passed":true}', run));
-    assert.equal(v.passed, true);
     const c = await runCompletion(ctxWith(t, '{"summary":"итог","text":"t"}', run));
     assert.equal(c.summary, 'итог'); // verification отсутствует → «с замечаниями» в промпте
+  });
+
+  it('runVerification: пустые критерии → провал без вызова модели', async t => {
+    let called = false;
+    // (а) план вообще не сформирован
+    const noPlan = createRun('Пустая');
+    const v1 = await runVerification(ctxWith(t, '{"passed":true}', noPlan, () => (called = true)));
+    assert.equal(v1.passed, false);
+    assert.match(v1.issues[0], /Критерии приёмки не сформулированы/);
+
+    // (б) план есть, но критериев нет
+    const emptyCriteria = createRun('Пустая');
+    emptyCriteria.artifacts.planning = { steps: ['s'], criteria: [], text: 'план' };
+    const v2 = await runVerification(ctxWith(t, '{"passed":true}', emptyCriteria));
+    assert.equal(v2.passed, false);
+
+    assert.equal(called, false); // в обоих случаях модель не звали
+  });
+
+  it('runVerification: в промпт идут память, заголовок, шаги; результат — text или summary', async t => {
+    const run = createRun('Сайт');
+    run.artifacts.planning = { steps: ['шаг1'], criteria: ['c1'], text: 'план' };
+    // text пустой → берётся summary (хрупкость поля результата).
+    run.artifacts.execution = { summary: 'РЕЗЮМЕ', files: [], log: [], text: '' };
+    let prompt = '';
+    await runVerification(
+      ctxWith(
+        t,
+        '{"passed":true,"issues":[],"text":"ок"}',
+        run,
+        p => (prompt = p),
+        () => null,
+        'ПАМЯТЬ',
+      ),
+    );
+    assert.match(prompt, /ПАМЯТЬ/); // память задачи
+    assert.match(prompt, /Задача: Сайт/); // заголовок
+    assert.match(prompt, /шаг1/); // шаги плана
+    assert.match(prompt, /c1/); // критерии
+    assert.match(prompt, /РЕЗЮМЕ/); // результат из summary, т.к. text пуст
+  });
+
+  it('runVerification: нет артефакта выполнения → блок результата пуст', async t => {
+    const run = createRun('Сайт');
+    run.artifacts.planning = { steps: [], criteria: ['c1'], text: '' }; // execution отсутствует
+    let prompt = '';
+    await runVerification(ctxWith(t, '{"passed":false,"issues":["x"]}', run, p => (prompt = p)));
+    assert.match(prompt, /Результат на проверку:\n$/); // после заголовка пусто
   });
 });
