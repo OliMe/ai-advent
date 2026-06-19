@@ -64,17 +64,20 @@ describe('разбор артефактов (C + фолбэк D)', () => {
     assert.equal(fallback.text, '- шаг1\n- шаг2\nпросто строка');
   });
 
-  it('parseExecution: JSON и фолбэк', () => {
-    assert.deepEqual(parseExecution('{"summary":"s","log":["l"],"text":"t"}'), {
-      summary: 's',
-      log: ['l'],
-      text: 't',
-    });
-    assert.equal(parseExecution('{"summary":"s"}').text, '{"summary":"s"}'); // text отсутствует → контент
-    const fb = parseExecution('первая строка\nвторая');
-    assert.equal(fb.summary, 'первая строка');
-    assert.deepEqual(fb.log, []);
-    assert.equal(fb.text, 'первая строка\nвторая');
+  it('parseExecution: плоский результат + снятие markdown-ограждения', () => {
+    // Обычный текст: summary — первая содержательная строка, text — результат целиком.
+    const plain = parseExecution('первая строка\nвторая');
+    assert.equal(plain.summary, 'первая строка');
+    assert.deepEqual(plain.log, []);
+    assert.equal(plain.text, 'первая строка\nвторая');
+    // Markdown-ограждение снимается, результат — внутренний код.
+    const fenced = parseExecution('```ts\nconst x = 1;\n```');
+    assert.equal(fenced.text, 'const x = 1;');
+    assert.equal(fenced.summary, 'const x = 1;');
+    // Пустой/пробельный ввод → пустые summary и text.
+    const empty = parseExecution('   ');
+    assert.equal(empty.summary, '');
+    assert.equal(empty.text, '');
   });
 
   it('parseObject: валидный JSON не-объект трактуется как фолбэк', () => {
@@ -192,7 +195,7 @@ describe('раннеры этапов', () => {
     const artifact = await runExecution(
       ctxWith(
         t,
-        '{"summary":"готово","log":[],"text":"КОД"}',
+        'Готово\nconst code = 1;',
         run,
         p => (prompt = p),
         (name, content) => {
@@ -203,7 +206,15 @@ describe('раннеры этапов', () => {
     );
     assert.match(prompt, /нет валидации/); // замечания проверки в промпте
     assert.deepEqual(artifact.files, ['/runs/x/execution-1.md']);
-    assert.deepEqual(written, [{ name: 'execution-1.md', content: 'КОД' }]);
+    assert.deepEqual(written, [{ name: 'execution-1.md', content: 'Готово\nconst code = 1;' }]);
+  });
+
+  it('runExecution: при пустых шагах подаёт план прозой из text', async t => {
+    const run = createRun('Сайт');
+    run.artifacts.planning = { steps: [], criteria: ['c'], text: 'план прозой словами' };
+    let prompt = '';
+    await runExecution(ctxWith(t, 'результат', run, p => (prompt = p)));
+    assert.match(prompt, /План:\nплан прозой словами/); // text вместо пустых шагов
   });
 
   it('runExecution: без хранилища files пуст', async t => {

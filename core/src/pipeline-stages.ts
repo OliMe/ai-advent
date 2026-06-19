@@ -114,17 +114,22 @@ export function parsePlanning(content: string): PlanningArtifact {
   return { steps: extractBullets(content), criteria: [], text: content };
 }
 
-/** Разбирает артефакт выполнения (без files — их проставляет раннер). */
+/** Снимает обрамляющее markdown-ограждение (```lang … ```), если весь текст — один блок. */
+function stripCodeFence(content: string): string {
+  const trimmed = content.trim();
+  const match = trimmed.match(/^```[^\n]*\n([\s\S]*?)\n?```$/);
+  return match === null ? trimmed : match[1];
+}
+
+/**
+ * Разбирает артефакт выполнения: исполнитель возвращает плоский результат (не JSON,
+ * иначе крупный код ломает экранирование). Снимаем ограждение; summary — первая
+ * содержательная строка (для показа/контекста завершения), text — результат целиком.
+ */
 export function parseExecution(content: string): Omit<ExecutionArtifact, 'files'> {
-  const object = parseObject(content);
-  if (object !== null) {
-    return {
-      summary: asString(object.summary),
-      log: asStrings(object.log),
-      text: asString(object.text) || content,
-    };
-  }
-  return { summary: content.split('\n')[0], log: [], text: content };
+  const text = stripCodeFence(content);
+  const firstMeaningful = text.split('\n').find(line => line.trim().length > 0) ?? '';
+  return { summary: firstMeaningful.trim().slice(0, 200), log: [], text };
 }
 
 /** Разбирает артефакт проверки (passed/issues; фолбэк ищет признак провала). */
@@ -161,15 +166,16 @@ export function parseCompletion(content: string): CompletionArtifact {
 // --- Раннеры этапов (один агент на этап) ---
 
 const PLANNER_SYSTEM =
-  'Ты — планировщик. Разбей задачу на конкретные выполнимые шаги и сформулируй ' +
-  'критерии приёмки — измеримые и проверяемые, по которым потом сверят результат. ' +
-  'Критерии ОБЯЗАТЕЛЬНЫ и не должны быть пустыми. Ответь ТОЛЬКО объектом JSON (без ' +
-  'обрамляющего текста): {"steps":[...], "criteria":[...], "text": "краткий план словами"}.';
+  'Ты — планировщик. Разбей задачу на конкретные выполнимые шаги (steps) и сформулируй ' +
+  'критерии приёмки (criteria) — измеримые и проверяемые. И steps, и criteria ОБЯЗАТЕЛЬНЫ ' +
+  'и не должны быть пустыми; не описывай план только прозой в "text" — заполни массив ' +
+  '"steps". Ответь ТОЛЬКО объектом JSON (без обрамляющего текста): ' +
+  '{"steps":[...], "criteria":[...], "text": "краткий план словами"}.';
 
 const EXECUTOR_SYSTEM =
-  'Ты — исполнитель. Выполни задачу строго по плану и критериям. В поле "text" положи ' +
-  'готовый результат целиком и без лишней прозы (для кода — только код). Ответь ТОЛЬКО ' +
-  'объектом JSON: {"summary": "что сделано", "log": ["шаги"], "text": "полный результат"}.';
+  'Ты — исполнитель. Выполни задачу строго по плану и критериям и верни ГОТОВЫЙ РЕЗУЛЬТАТ ' +
+  'напрямую (для кода — только код, без пояснений). НЕ оборачивай ответ в JSON и НЕ ' +
+  'используй markdown-ограждения (```).';
 
 const VERIFIER_SYSTEM =
   'Ты — придирчивый проверяющий. Пройдись по КАЖДОМУ критерию приёмки отдельно и реши, ' +
@@ -207,8 +213,10 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
   const plan = ctx.run.artifacts.planning;
   const issues = ctx.run.artifacts.verification?.issues ?? [];
   const conversation = ctx.makeConversation(EXECUTOR_SYSTEM);
+  // Шаги, а если их нет — план прозой (модель иногда кладёт план в text).
+  const planBody = plan?.steps.length ? plan.steps.join('\n') : (plan?.text ?? '');
   const prompt =
-    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\nПлан:\n${(plan?.steps ?? []).join('\n')}\n\n` +
+    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\nПлан:\n${planBody}\n\n` +
     `Критерии приёмки:\n${(plan?.criteria ?? []).join('\n')}` +
     (issues.length > 0 ? `\n\nИсправь замечания проверки:\n${issues.join('\n')}` : '') +
     (ctx.run.correction ? `\n\nУчти правку пользователя: ${ctx.run.correction}` : '');

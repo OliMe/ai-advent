@@ -150,12 +150,15 @@ export function formatStageResult(stage: Stage, artifacts: StageArtifacts): stri
     }
     case 'planning': {
       const planning = artifacts.planning!;
-      const steps =
+      // Шаги списком; если их нет — показываем план прозой из text (не теряем план).
+      const stepsBlock =
         planning.steps.length > 0
           ? `Шаги:\n${planning.steps.map((step, index) => `  ${index + 1}. ${step}`).join('\n')}`
-          : '';
+          : planning.text.length > 0
+            ? `План:\n${planning.text}`
+            : '';
       const criteria = bulletList('Критерии приёмки:', planning.criteria);
-      const blocks = [steps, criteria].filter(block => block.length > 0);
+      const blocks = [stepsBlock, criteria].filter(block => block.length > 0);
       return blocks.length > 0 ? blocks.join('\n') : planning.text;
     }
     case 'execution': {

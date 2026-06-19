@@ -125,11 +125,17 @@ describe('форматирование прогонов задач', () => {
     });
     assert.match(plan, /Шаги:\n {2}1\. собрать\n {2}2\. проверить/);
     assert.match(plan, /Критерии приёмки:\n {2}- тесты зелёные/);
+    // Пустые шаги, но есть text → показываем план прозой под «План:».
     assert.equal(
       formatStageResult('planning', {
         planning: { steps: [], criteria: [], text: 'весь план тут' },
       }),
-      'весь план тут',
+      'План:\nвесь план тут',
+    );
+    // Совсем пусто → пустая строка (фолбэк на text).
+    assert.equal(
+      formatStageResult('planning', { planning: { steps: [], criteria: [], text: '' } }),
+      '',
     );
 
     // execution: summary-заголовок + полный text + ссылки на файлы (и без них).
