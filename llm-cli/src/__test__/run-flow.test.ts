@@ -155,11 +155,33 @@ describe('RunController', () => {
     const text = out.text();
     assert.match(text, /Запущена задача «Задача»/);
     assert.match(text, /планирование…/);
-    assert.match(text, /проверка пройдена/);
+    assert.match(text, /результат/); // полный текст этапа выполнения, не однострочник
+    assert.match(text, /Проверка пройдена ✓/);
     assert.match(text, /✓ Задача «Задача» завершена и подтверждена\. Итог записан в память задачи/);
     assert.deepEqual(completed, ['итог']); // итог отдан мосту
     assert.ok(store.saved.some(run => run.status === 'completed'));
     assert.ok(store.saved.some(run => run.taskId !== undefined)); // прогон связан с задачей
+  });
+
+  it('пишет результат каждого этапа в транскрипт сессии', async t => {
+    const out = makeCollector();
+    const recorded: Array<{ role: string; content: string }> = [];
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content()),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+      recordToSession: (role, content) => recorded.push({ role, content }),
+    });
+    await controller.start('Задача');
+    // user-обрамление запуска + по ассистентскому сообщению на каждый из 4 этапов.
+    assert.equal(recorded[0]?.role, 'user');
+    assert.match(recorded[0].content, /Запуск задачи по этапам/);
+    const stages = recorded.filter(entry => entry.role === 'assistant');
+    assert.equal(stages.length, 4);
+    assert.match(stages[0].content, /\[планирование\]/);
+    assert.match(stages[3].content, /\[завершение\]/);
   });
 
   it('start с описанием создаёт/находит задачу через мост', async t => {

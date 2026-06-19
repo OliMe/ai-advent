@@ -185,6 +185,12 @@ export async function runInteractive(
       session: () => currentSession,
       saveSession: session => store?.save(session),
     }),
+    // Результаты этапов прогона пишем в транскрипт сессии — видны в истории и идут в контекст.
+    recordToSession: (role, content) => {
+      currentSession.messages.push({ role, content });
+      currentSession.updatedAt = new Date().toISOString();
+      store?.save(currentSession);
+    },
   });
 
   // Реестр интерактивных команд: первая подходящая по `matches` выполняет `run`.

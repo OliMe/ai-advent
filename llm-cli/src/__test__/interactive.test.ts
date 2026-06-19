@@ -1163,7 +1163,7 @@ describe('runInteractive — команды прогонов задач (/run)',
     const out = text();
     assert.match(out, /Запущена задача «собери TODO-приложение»/);
     assert.match(out, /планирование…/);
-    assert.match(out, /проверка пройдена/);
+    assert.match(out, /Проверка пройдена ✓/);
     assert.match(out, /✓ Задача .* завершена и подтверждена/);
   });
 

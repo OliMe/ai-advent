@@ -7,7 +7,7 @@ import {
   formatProfileList,
   helpText,
   formatSessionList,
-  formatArtifact,
+  formatStageResult,
   formatRunStatus,
   formatRunList,
   formatRunContext,
@@ -106,40 +106,54 @@ describe('форматирование прогонов задач', () => {
     assert.equal(statusLabel('paused'), 'на паузе');
   });
 
-  it('formatArtifact по этапам и ветвям', () => {
-    assert.match(
-      formatArtifact('planning', { planning: { steps: ['a', 'b'], criteria: ['c'], text: '' } }),
-      /план: 2 шаг\(ов\), 1 критери/,
-    );
-    assert.match(
-      formatArtifact('execution', {
-        execution: { summary: 'ок', files: ['/p/1.md'], log: [], text: '' },
+  it('formatStageResult: полный читаемый результат по этапам и ветвям', () => {
+    // planning: шаги (нумерованно) + критерии; фолбэк на text, если оба пусты.
+    const plan = formatStageResult('planning', {
+      planning: { steps: ['собрать', 'проверить'], criteria: ['тесты зелёные'], text: 'прозаично' },
+    });
+    assert.match(plan, /Шаги:\n {2}1\. собрать\n {2}2\. проверить/);
+    assert.match(plan, /Критерии приёмки:\n {2}- тесты зелёные/);
+    assert.equal(
+      formatStageResult('planning', {
+        planning: { steps: [], criteria: [], text: 'весь план тут' },
       }),
-      /выполнено: ок → \/p\/1\.md/,
+      'весь план тут',
+    );
+
+    // execution: summary-заголовок + полный text + ссылки на файлы (и без них).
+    assert.equal(
+      formatStageResult('execution', {
+        execution: { summary: 'готово', files: ['/p/1.md'], log: [], text: 'КОД' },
+      }),
+      'готово\n\nКОД\n\nФайлы: /p/1.md',
     );
     assert.equal(
-      formatArtifact('execution', { execution: { summary: 'ок', files: [], log: [], text: '' } }),
-      '  выполнено: ок',
-    );
-    assert.match(
-      formatArtifact('verification', { verification: { passed: true, issues: [], text: '' } }),
-      /проверка пройдена/,
-    );
-    assert.match(
-      formatArtifact('verification', {
-        verification: { passed: false, issues: ['нет тестов'], text: 'x' },
+      formatStageResult('execution', {
+        execution: { summary: '', files: [], log: [], text: 'просто результат' },
       }),
-      /не пройдено: нет тестов/,
+      'просто результат',
     );
+
+    // verification: вердикт + замечания + текст.
     assert.match(
-      formatArtifact('verification', {
-        verification: { passed: false, issues: [], text: 'общий провал' },
+      formatStageResult('verification', {
+        verification: { passed: true, issues: [], text: 'всё ок' },
       }),
-      /не пройдено: общий провал/,
+      /Проверка пройдена ✓\nвсё ок/,
     );
-    assert.match(
-      formatArtifact('completion', { completion: { summary: 'итог', text: '' } }),
-      /итог: итог/,
+    const failed = formatStageResult('verification', {
+      verification: { passed: false, issues: ['нет тестов'], text: 'детали' },
+    });
+    assert.match(failed, /Проверка НЕ пройдена ✗/);
+    assert.match(failed, /Замечания:\n {2}- нет тестов/);
+    assert.match(failed, /детали/);
+
+    // completion: читаемый итог (text).
+    assert.equal(
+      formatStageResult('completion', {
+        completion: { summary: 'кратко', text: 'итоговое резюме' },
+      }),
+      'итоговое резюме',
     );
   });
 

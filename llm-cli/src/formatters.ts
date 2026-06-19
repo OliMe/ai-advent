@@ -126,26 +126,41 @@ export function statusLabel(status: RunStatus): string {
   return STATUS_LABELS[status];
 }
 
-/** Короткая строка об артефакте этапа (для печати по ходу пайплайна). */
-export function formatArtifact(stage: Stage, artifacts: StageArtifacts): string {
+/** Маркированный список строк (или пусто, если список пуст). */
+function bulletList(header: string, items: string[]): string {
+  return items.length > 0 ? `${header}\n${items.map(item => `  - ${item}`).join('\n')}` : '';
+}
+
+/**
+ * Полный читаемый результат этапа: то, что произвёл агент (план/результат/вердикт/
+ * итог) целиком, без JSON. Печатается под лейблом этапа и пишется в транскрипт сессии.
+ */
+export function formatStageResult(stage: Stage, artifacts: StageArtifacts): string {
   switch (stage) {
     case 'planning': {
       const planning = artifacts.planning!;
-      return `  план: ${planning.steps.length} шаг(ов), ${planning.criteria.length} критери(ев) приёмки`;
+      const steps =
+        planning.steps.length > 0
+          ? `Шаги:\n${planning.steps.map((step, index) => `  ${index + 1}. ${step}`).join('\n')}`
+          : '';
+      const criteria = bulletList('Критерии приёмки:', planning.criteria);
+      const blocks = [steps, criteria].filter(block => block.length > 0);
+      return blocks.length > 0 ? blocks.join('\n') : planning.text;
     }
     case 'execution': {
       const execution = artifacts.execution!;
-      const files = execution.files.length > 0 ? ` → ${execution.files.join(', ')}` : '';
-      return `  выполнено: ${execution.summary}${files}`;
+      const head = execution.summary ? `${execution.summary}\n\n` : '';
+      const files = execution.files.length > 0 ? `\n\nФайлы: ${execution.files.join(', ')}` : '';
+      return `${head}${execution.text}${files}`;
     }
     case 'verification': {
       const verification = artifacts.verification!;
-      return verification.passed
-        ? '  проверка пройдена ✓'
-        : `  не пройдено: ${verification.issues.join('; ') || verification.text}`;
+      const verdict = verification.passed ? 'Проверка пройдена ✓' : 'Проверка НЕ пройдена ✗';
+      const issues = bulletList('Замечания:', verification.issues);
+      return [verdict, issues, verification.text].filter(block => block.length > 0).join('\n');
     }
     case 'completion':
-      return `  итог: ${artifacts.completion!.summary}`;
+      return artifacts.completion!.text;
   }
 }
 

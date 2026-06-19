@@ -9,7 +9,7 @@ import type {
   TaskRun,
 } from '../../core/src/index.ts';
 import {
-  formatArtifact,
+  formatStageResult,
   formatRunList,
   formatRunStatus,
   stageLabel,
@@ -66,6 +66,8 @@ export interface RunControllerDeps {
   ask: (prompt: string) => Promise<string>;
   /** Связь прогона с задачей сессии (память на вход, итог на выход). */
   taskBridge: RunTaskBridge;
+  /** Пишет результат этапа в транскрипт основной сессии (если задан). */
+  recordToSession?: (role: 'user' | 'assistant', content: string) => void;
 }
 
 /**
@@ -98,6 +100,11 @@ export class RunController {
     this.deps.output.write(`${text}\n\n`);
   }
 
+  /** Записывает реплику прогона в транскрипт основной сессии (если включено). */
+  private record(role: 'user' | 'assistant', content: string): void {
+    this.deps.recordToSession?.(role, content);
+  }
+
   /**
    * Запускает прогон задачи: без аргумента — текущей задачи сессии; с аргументом —
    * существующей (по id/имени) или новой (по описанию). Прогон привязывается к задаче.
@@ -117,6 +124,7 @@ export class RunController {
     this.deps.store?.save(run);
     this.active = run;
     this.write(`Запущена задача «${task.title}» (${run.id}).`);
+    this.record('user', `Запуск задачи по этапам: «${task.title}»`);
     await this.drive(run);
   }
 
@@ -148,6 +156,7 @@ export class RunController {
       this.deps.taskBridge.adopt(run.taskId);
     }
     this.write(`Продолжаем «${run.title}» с этапа «${stageLabel(run.stage)}».`);
+    this.record('user', `Продолжение прогона «${run.title}» с этапа «${stageLabel(run.stage)}»`);
     await this.drive(run);
   }
 
@@ -218,7 +227,12 @@ export class RunController {
         memoryContext: this.deps.taskBridge.memoryContext(),
         hooks: {
           onStageStart: stage => this.write(`▸ ${stageLabel(stage)}…`),
-          onArtifact: (stage, artifacts) => this.write(formatArtifact(stage, artifacts)),
+          onArtifact: (stage, artifacts) => {
+            // Полный читаемый результат этапа — в консоль и в транскрипт сессии.
+            const result = formatStageResult(stage, artifacts);
+            this.write(result);
+            this.record('assistant', `[${stageLabel(stage)}]\n${result}`);
+          },
           onRetry: (attempt, reason) =>
             this.write(
               `↺ возврат в выполнение (${reason === 'verification' ? 'проверка не пройдена' : 'не подтверждено'}), попытка ${attempt}`,
