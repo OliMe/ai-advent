@@ -83,6 +83,7 @@ describe('MemoryManager', () => {
 
     assert.match(result[0].content, /СИС/);
     assert.match(result[0].content, /задач/i); // директива персонализации
+    assert.match(result[0].content, /уточняющие вопросы/); // сперва требования, потом решение
     assert.ok(result.some(m => m.content.includes('Профиль пользователя')));
     assert.ok(result.some(m => m.content.includes('краткие ответы')));
     assert.ok(result.some(m => m.content.includes('Текущая задача: Сайт')));
