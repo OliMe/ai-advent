@@ -3,8 +3,11 @@ import { sessionId } from './session.ts';
 
 /** Версия формата файла прогона — для будущих миграций. */
 export const RUN_VERSION = 1;
-/** Сколько авто-возвратов в execution допустимо по умолчанию. */
-export const DEFAULT_MAX_RETRIES = 2;
+/**
+ * Сколько провалов проверки подряд допустимо до возврата к планированию.
+ * При исчерпании прогон не встаёт на паузу, а переигрывает план (счётчик сброшен).
+ */
+export const DEFAULT_MAX_RETRIES = 10;
 
 /** Фиксированные этапы пайплайна в строгом порядке (пропуск запрещён). */
 export const STAGES = ['planning', 'execution', 'verification', 'completion'] as const;
@@ -66,7 +69,7 @@ export interface TaskRun {
   stage: Stage;
   status: RunStatus;
   artifacts: StageArtifacts;
-  /** Сколько авто-возвратов в execution уже сделано. */
+  /** Сколько авто-возвратов в execution сделано с последнего планирования. */
   retries: number;
   maxRetries: number;
   /** Правка пользователя, учитываемая при перезапуске текущего этапа. */

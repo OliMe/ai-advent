@@ -254,6 +254,7 @@ export class RunController {
       return;
     }
     this.active.correction = correction;
+    this.active.retries = 0; // правка — новый заход, сбрасываем счётчик проверок реализации
     this.deps.store?.save(this.active);
     this.write(`Правка учтена, применится при продолжении: ${correction}`);
   }
@@ -302,6 +303,10 @@ export class RunController {
           onRetry: (attempt, reason) =>
             this.write(
               `↺ возврат в выполнение (${reason === 'verification' ? 'проверка не пройдена' : 'не подтверждено'}), попытка ${attempt}`,
+            ),
+          onReplan: () =>
+            this.write(
+              `↺ лимит проверок (${run.maxRetries}) исчерпан — возврат к планированию, счётчик сброшен`,
             ),
           confirmCompletion: async artifact => {
             const reply = (

@@ -161,7 +161,7 @@ describe('форматирование прогонов задач', () => {
     const fresh = createRun('Задача', { idSuffix: 'f' });
     const freshText = formatRunStatus(fresh);
     assert.match(freshText, /Задача: Задача/);
-    assert.match(freshText, /Этап: планирование · статус: идёт · возвраты: 0\/2/);
+    assert.match(freshText, /Этап: планирование · статус: идёт · возвраты: 0\/10/);
     assert.doesNotMatch(freshText, /Планирование:/);
 
     const full: TaskRun = {

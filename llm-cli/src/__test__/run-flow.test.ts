@@ -385,15 +385,15 @@ describe('RunController', () => {
     assert.match(out.text(), /попытка 1/);
   });
 
-  it('провал проверки исчерпал ретраи → пауза (continue связывает задачу)', async t => {
+  it('отказ на завершении исчерпал лимит → пауза (continue связывает задачу)', async t => {
     const run = createRun('Задача', { maxRetries: 0, idSuffix: 'x', taskId: 't1' });
     const out = makeCollector();
     const { bridge, adopted } = fakeBridge();
     const controller = new RunController({
       store: fakeStore([run]),
-      makeConversation: factory(t, content({ verification: () => FAIL })),
+      makeConversation: factory(t, content()), // проверка проходит, пауза — из-за отказа
       output: out.stream,
-      ask: answers([]),
+      ask: answers(['нет']), // отказ на завершении при maxRetries=0 → пауза
       taskBridge: bridge,
     });
     await controller.continue(run.id);
@@ -401,6 +401,48 @@ describe('RunController', () => {
     assert.deepEqual(adopted, ['t1']); // задача прогона стала текущей
     assert.match(text, /Продолжаем «Задача» с этапа «планирование»/);
     assert.match(text, /Лимит авто-возвратов \(0\) исчерпан/);
+  });
+
+  it('лимит проверок исчерпан → возврат к планированию, счётчик сброшен', async t => {
+    const run = createRun('Задача', { maxRetries: 1, idSuffix: 'rp', taskId: 't1' });
+    const out = makeCollector();
+    let verifyCalls = 0;
+    const controller = new RunController({
+      store: fakeStore([run]),
+      // Проверка валит дважды → 1 ретрай + реплан, после реплана успех.
+      makeConversation: factory(
+        t,
+        content({ verification: () => (++verifyCalls <= 2 ? FAIL : PASS) }),
+      ),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+    });
+    await controller.continue(run.id);
+    const text = out.text();
+    assert.match(text, /возврат в выполнение \(проверка не пройдена\), попытка 1/);
+    assert.match(text, /лимит проверок \(1\) исчерпан — возврат к планированию/);
+    assert.match(text, /завершена и подтверждена/);
+  });
+
+  it('edit сбрасывает счётчик проверок реализации', async t => {
+    const run = createRun('Задача', { maxRetries: 2, idSuffix: 'er' });
+    const out = makeCollector();
+    const store = fakeStore([run]);
+    const controller = new RunController({
+      store,
+      makeConversation: factory(t, content()), // проверка проходит
+      output: out.stream,
+      // Трижды отказ на завершении (maxRetries=2): retries 1, 2, затем пауза с retries=2.
+      ask: answers(['нет', 'нет', 'нет']),
+      taskBridge: fakeBridge().bridge,
+    });
+    await controller.continue(run.id);
+    assert.equal(run.retries, 2); // на паузе счётчик накоплен отказами
+    controller.edit('доработай валидацию');
+    assert.match(out.text(), /Правка учтена/);
+    assert.equal(run.retries, 0); // правка сбросила счётчик
+    assert.equal(store.saved.at(-1)?.retries, 0); // и это сохранено
   });
 
   it('завершение прогона без задачи в памяти — без записи итога', async t => {
@@ -590,9 +632,9 @@ describe('RunController', () => {
     store.save(toPause);
     const failing = new RunController({
       store,
-      makeConversation: factory(t, content({ verification: () => FAIL })),
+      makeConversation: factory(t, content()),
       output: out.stream,
-      ask: answers([]),
+      ask: answers(['нет']), // отказ при maxRetries=0 → пауза на завершении
       taskBridge: fakeBridge().bridge,
     });
     await failing.continue(toPause.id); // → paused
@@ -622,9 +664,9 @@ describe('RunController', () => {
     store.save(run);
     const failing = new RunController({
       store,
-      makeConversation: factory(t, content({ verification: () => FAIL })),
+      makeConversation: factory(t, content()),
       output: out.stream,
-      ask: answers([]),
+      ask: answers(['нет']), // отказ при maxRetries=0 → пауза на завершении
       taskBridge: fakeBridge().bridge,
     });
     await failing.continue(run.id); // → paused, активный

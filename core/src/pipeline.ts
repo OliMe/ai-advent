@@ -21,6 +21,8 @@ export interface PipelineHooks {
   onArtifact?: (stage: Stage, artifacts: StageArtifacts) => void;
   /** Авто-возврат в execution (после провала проверки/отказа). */
   onRetry?: (attempt: number, reason: 'verification' | 'rejection') => void;
+  /** Лимит провалов проверки исчерпан → возврат к планированию (счётчик сброшен). */
+  onReplan?: () => void;
 }
 
 /** Зависимости запуска пайплайна. */
@@ -96,8 +98,10 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
         hooks.onRetry?.(run.retries, 'verification');
         transition(run, store, 'execution', 'running');
       } else {
-        transition(run, store, 'verification', 'paused'); // ретраи исчерпаны — пользователю
-        return run;
+        // Лимит провалов проверки исчерпан — переигрываем план, счётчик сбрасываем.
+        run.retries = 0;
+        hooks.onReplan?.();
+        transition(run, store, 'planning', 'running');
       }
     } else {
       // completion

@@ -126,17 +126,31 @@ describe('runPipeline', () => {
     assert.deepEqual(retries, [1]);
   });
 
-  it('провал проверки исчерпал ретраи → пауза', async t => {
+  it('провал проверки исчерпал лимит → возврат к планированию, счётчик сброшен', async t => {
     const run = createRun('Задача', { idSuffix: 'c', maxRetries: 1 });
+    let verifyCalls = 0;
+    let replans = 0;
+    const planningStarts: Stage[] = [];
     const result = await runPipeline(run, {
       store: fakeStore(),
-      makeConversation: makeConversation(t, content({ verification: () => FAIL })),
+      // Проверка валит дважды (1 ретрай + исчерпание → реплан), после реплана — успех.
+      makeConversation: makeConversation(
+        t,
+        content({ verification: () => (++verifyCalls <= 2 ? FAIL : PASS) }),
+      ),
       signal: idle,
-      hooks: approve,
+      hooks: {
+        confirmCompletion: async () => ({ approved: true }),
+        onReplan: () => replans++,
+        onStageStart: stage => {
+          if (stage === 'planning') planningStarts.push(stage);
+        },
+      },
     });
-    assert.equal(result.status, 'paused');
-    assert.equal(result.stage, 'verification');
-    assert.equal(result.retries, 1);
+    assert.equal(result.status, 'completed');
+    assert.equal(replans, 1); // один возврат к планированию
+    assert.equal(planningStarts.length, 2); // в планирование заходили дважды
+    assert.equal(result.retries, 0); // счётчик сброшен после реплана
   });
 
   it('отказ на завершении → возврат в execution, затем подтверждение', async t => {
