@@ -107,6 +107,18 @@ describe('форматирование прогонов задач', () => {
   });
 
   it('formatStageResult: полный читаемый результат по этапам и ветвям', () => {
+    // requirements: список собранных пунктов; пусто — «уточнения не потребовались».
+    assert.match(
+      formatStageResult('requirements', {
+        requirements: { collected: ['Бюджет → 100к'], text: 'Бюджет → 100к' },
+      }),
+      /Собранные требования:\n {2}- Бюджет → 100к/,
+    );
+    assert.equal(
+      formatStageResult('requirements', { requirements: { collected: [], text: '' } }),
+      'Уточнения не потребовались.',
+    );
+
     // planning: шаги (нумерованно) + критерии; фолбэк на text, если оба пусты.
     const plan = formatStageResult('planning', {
       planning: { steps: ['собрать', 'проверить'], criteria: ['тесты зелёные'], text: 'прозаично' },
@@ -161,7 +173,7 @@ describe('форматирование прогонов задач', () => {
     const fresh = createRun('Задача', { idSuffix: 'f' });
     const freshText = formatRunStatus(fresh);
     assert.match(freshText, /Задача: Задача/);
-    assert.match(freshText, /Этап: планирование · статус: идёт · возвраты: 0\/10/);
+    assert.match(freshText, /Этап: сбор требований · статус: идёт · возвраты: 0\/10/);
     assert.doesNotMatch(freshText, /Планирование:/);
 
     const full: TaskRun = {
@@ -169,6 +181,7 @@ describe('форматирование прогонов задач', () => {
       stage: 'completion',
       correction: 'учесть тёмную тему',
       artifacts: {
+        requirements: { collected: ['Бюджет → 100к', 'Сроки → месяц'], text: '' },
         planning: { steps: ['ш1'], criteria: ['к1'], text: 'п' },
         execution: { summary: 'сделано', files: ['/p/1.md'], log: [], text: 'r' },
         verification: { passed: true, issues: [], text: 'ок' },
@@ -176,6 +189,7 @@ describe('форматирование прогонов задач', () => {
       },
     };
     const fullText = formatRunStatus(full);
+    assert.match(fullText, /Требования: 2 пункт\(ов\)/);
     assert.match(fullText, /Правка к учёту: учесть тёмную тему/);
     assert.match(fullText, /Планирование: 1 шаг\(ов\), 1 критери/);
     assert.match(fullText, /Выполнение: сделано \(\/p\/1\.md\)/);

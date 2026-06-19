@@ -41,7 +41,12 @@ function ctxWith(
   writeArtifact: (name: string, content: string) => string | null = () => null,
   memoryContext = '',
 ): StageContext {
-  return { run, makeConversation: makeConv(t, content, capture), writeArtifact, memoryContext };
+  return {
+    run,
+    makeConversation: makeConv(t, content, capture),
+    writeArtifact,
+    memoryContext: () => memoryContext,
+  };
 }
 
 describe('разбор артефактов (C + фолбэк D)', () => {

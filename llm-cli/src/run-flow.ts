@@ -23,26 +23,38 @@ export type ConversationFactory = (systemPrompt: string, limits?: GenerationLimi
 
 const JSON_LIMITS: GenerationLimits = { responseFormat: { type: 'json_object' } };
 
-/** Персона агента-аналитика: уточняет требования ДО планирования. */
-const CLARIFIER_SYSTEM =
-  'Ты — аналитик требований. По формулировке задачи задай минимально необходимые ' +
-  'уточняющие вопросы, чтобы снять неоднозначности перед решением: цель, объём, ограничения, ' +
-  'формат результата, крайние случаи. Не задавай лишних вопросов, если и так всё ясно. ' +
-  'Верни СТРОГО JSON: {"questions": ["...", "..."]}. Если уточнять нечего — {"questions": []}.';
+/** Максимум вопросов аналитика за один сбор требований (страховка от зацикливания). */
+const MAX_CLARIFIER_QUESTIONS = 20;
 
-/** Извлекает список уточняющих вопросов из ответа аналитика (лениво). */
-export function parseQuestions(content: string): string[] {
+/** Слова пользователя, завершающие опрос требований досрочно. */
+const STOP_WORDS = new Set(['стоп', 'достаточно', 'хватит', 'хорош', 'всё', 'все']);
+
+/** Персона агента-аналитика: ведёт уточнение требований ПО ОДНОМУ вопросу адаптивно. */
+const CLARIFIER_SYSTEM =
+  'Ты — аналитик требований. Веди уточнение ПО ОДНОМУ вопросу за ход, опираясь на уже ' +
+  'полученные ответы (и, если даны, замечания проверки), чтобы снять неоднозначности перед ' +
+  'решением: цель, объём, ограничения, формат результата, крайние случаи. Каждый следующий ' +
+  'вопрос выбирай с учётом предыдущих ответов. К каждому вопросу предлагай наиболее подходящий ' +
+  'ответ по умолчанию. Когда требований достаточно — заверши. Верни СТРОГО JSON: ' +
+  '{"question": "следующий вопрос", "suggestion": "предлагаемый ответ"} либо {"done": true}.';
+
+/** Шаг диалога аналитика: либо следующий вопрос с подсказкой, либо признак завершения. */
+export type ClarifierStep = { done: true } | { done: false; question: string; suggestion: string };
+
+/** Разбирает ответ аналитика: вопрос+подсказка или «готово» (лениво, с фолбэком на done). */
+export function parseClarifierStep(content: string): ClarifierStep {
+  let parsed: { done?: unknown; question?: unknown; suggestion?: unknown } | null;
   try {
-    const parsed: unknown = JSON.parse(content);
-    const questions = (parsed as { questions?: unknown } | null)?.questions;
-    return Array.isArray(questions)
-      ? questions
-          .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-          .map(item => item.trim())
-      : [];
+    parsed = JSON.parse(content);
   } catch {
-    return [];
+    return { done: true }; // не разобрали — считаем, что уточнять нечего
   }
+  const question = typeof parsed?.question === 'string' ? parsed.question.trim() : '';
+  if (parsed?.done === true || question.length === 0) {
+    return { done: true };
+  }
+  const suggestion = typeof parsed?.suggestion === 'string' ? parsed.suggestion.trim() : '';
+  return { done: false, question, suggestion };
 }
 
 /** Строит фабрику диалогов для агентов пайплайна на базе клиента и конфигурации. */
@@ -151,7 +163,7 @@ export class RunController {
     this.active = run;
     this.write(`Запущена задача «${task.title}» (${run.id}).`);
     this.record('user', `Запуск задачи по этапам: «${task.title}»`);
-    await this.drive(run, task); // task !== null → сперва соберём требования
+    await this.drive(run); // первый этап пайплайна — сбор требований
   }
 
   /** Продолжает приостановленный прогон (активный или по id). */
@@ -183,41 +195,72 @@ export class RunController {
     }
     this.write(`Продолжаем «${run.title}» с этапа «${stageLabel(run.stage)}».`);
     this.record('user', `Продолжение прогона «${run.title}» с этапа «${stageLabel(run.stage)}»`);
-    await this.drive(run, null); // продолжение — требования уже собраны
+    await this.drive(run); // продолжение — пайплайн возобновится с сохранённого этапа
   }
 
   /**
-   * Сбор требований ДО планирования: аналитик задаёт уточняющие вопросы, ответы
-   * пишутся в детали задачи (и в транскрипт). Нет вопросов — сразу дальше. Сбой
-   * аналитика не блокирует прогон. Прерывается на границе вопроса по signal.
+   * Адаптивный сбор требований (этап requirements): аналитик ведёт диалог ПО ОДНОМУ
+   * вопросу, выбирая следующий с учётом прошлых ответов и (если есть) замечаний
+   * проверки, и предлагает ответ по умолчанию. Ответы пишутся в детали задачи и в
+   * транскрипт. Пустой ответ принимает предложение аналитика; слово-стоп завершает
+   * опрос; страховочный лимит вопросов и signal тоже останавливают. Сбой аналитика не
+   * валит прогон. Возвращает собранные пункты для артефакта этапа.
    */
-  private async gatherRequirements(task: Task, signal: AbortSignal): Promise<void> {
+  private async gatherRequirements(
+    title: string,
+    issues: string[],
+    cycle: number,
+    signal: AbortSignal,
+  ): Promise<{ collected: string[] }> {
     const conversation = this.deps.makeConversation(CLARIFIER_SYSTEM, JSON_LIMITS);
     const context = this.deps.taskBridge.memoryContext();
     const prefix = context ? `${context}\n\n` : '';
-    let questions: string[];
-    try {
-      const result = await conversation.ask(
-        `${prefix}Задача: ${task.title}\n\nЗадай уточняющие вопросы по требованиям, если нужно.`,
-      );
-      questions = parseQuestions(result.content);
-    } catch (error) {
-      this.write(`[уточнение пропущено] ${describeError(error)}`); // не валим прогон
-      return;
-    }
-    if (questions.length === 0) {
-      return; // задача ясна — уточнять нечего
-    }
-    this.write('▸ уточнение требований…');
-    for (const question of questions) {
+    const issuesBlock =
+      issues.length > 0
+        ? `\n\nЗамечания прошлой проверки (учти их в вопросах):\n${issues.join('\n')}`
+        : '';
+    const collected: string[] = [];
+    let headerShown = false;
+    let prompt =
+      `${prefix}Задача: ${title}${issuesBlock}\n\n` +
+      'Задай первый уточняющий вопрос или верни {"done": true}, если уточнять нечего.';
+    for (let asked = 0; asked < MAX_CLARIFIER_QUESTIONS; asked++) {
       if (signal.aborted) break; // опрос прерван пользователем
-      const answer = (await this.deps.ask(`❓ ${question}\n   ответ: `)).trim();
-      if (answer) {
-        this.deps.taskBridge.addDetail(`Требование: ${question} → ${answer}`);
-        this.record('user', `${question} → ${answer}`);
+      let step: ClarifierStep;
+      try {
+        const result = await conversation.ask(prompt);
+        step = parseClarifierStep(result.content);
+      } catch (error) {
+        this.write(`[уточнение пропущено] ${describeError(error)}`); // не валим прогон
+        break;
       }
+      if (step.done || signal.aborted) break;
+      if (!headerShown) {
+        // Заголовок печатаем лениво — только когда есть хотя бы один вопрос.
+        this.write(
+          cycle > 0 ? `▸ уточнение требований (повтор, цикл ${cycle})…` : '▸ уточнение требований…',
+        );
+        headerShown = true;
+      }
+      const hint = step.suggestion
+        ? ` (предлагаемый ответ: ${step.suggestion}; Enter — принять)`
+        : '';
+      const raw = (await this.deps.ask(`❓ ${step.question}${hint}\n   ответ: `)).trim();
+      if (STOP_WORDS.has(raw.toLowerCase())) break; // ручной стоп
+      const answer = raw === '' ? step.suggestion : raw; // пустой ответ — принимаем предложение
+      if (answer) {
+        this.deps.taskBridge.addDetail(`Требование: ${step.question} → ${answer}`);
+        this.record('user', `${step.question} → ${answer}`);
+        collected.push(`${step.question} → ${answer}`);
+      }
+      prompt =
+        `Ответ пользователя: ${answer || '(без ответа)'}\n\n` +
+        'Задай следующий вопрос или верни {"done": true}, если требований достаточно.';
     }
-    this.write('Требования собраны и записаны в задачу.');
+    if (collected.length > 0) {
+      this.write('Требования собраны и записаны в задачу.');
+    }
+    return { collected };
   }
 
   /** Показывает статус прогона (активного или по id). */
@@ -278,21 +321,22 @@ export class RunController {
   }
 
   /**
-   * Прогоняет пайплайн с хуками печати/подтверждения; ловит паузу и ошибки. Перед
-   * первым запуском (task !== null) собирает требования у пользователя.
+   * Прогоняет пайплайн с хуками печати/подтверждения/сбора требований; ловит паузу и
+   * ошибки. Сбор требований — этап пайплайна (хук gatherRequirements), не пред-шаг.
    */
-  private async drive(run: TaskRun, task: Task | null): Promise<void> {
+  private async drive(run: TaskRun): Promise<void> {
     this.pause = new AbortController();
+    const signal = this.pause.signal;
     try {
-      if (task !== null) {
-        await this.gatherRequirements(task, this.pause.signal);
-      }
       const result = await runPipeline(run, {
         store: this.deps.store,
         makeConversation: this.deps.makeConversation,
-        signal: this.pause.signal,
-        memoryContext: this.deps.taskBridge.memoryContext(),
+        signal,
+        // Провайдер: свежие требования (дописанные на этапе requirements) видны планированию.
+        memoryContext: () => this.deps.taskBridge.memoryContext(),
         hooks: {
+          gatherRequirements: ({ issues, cycle }) =>
+            this.gatherRequirements(run.title, issues, cycle, signal),
           onStageStart: stage => this.write(`▸ ${stageLabel(stage)}…`),
           onArtifact: (stage, artifacts) => {
             // Полный читаемый результат этапа — в консоль и в транскрипт сессии.
@@ -304,9 +348,10 @@ export class RunController {
             this.write(
               `↺ возврат в выполнение (${reason === 'verification' ? 'проверка не пройдена' : 'не подтверждено'}), попытка ${attempt}`,
             ),
-          onReplan: () =>
+          onRegather: cycle =>
             this.write(
-              `↺ лимит проверок (${run.maxRetries}) исчерпан — возврат к планированию, счётчик сброшен`,
+              `↺ лимит проверок (${run.maxRetries}) исчерпан — возврат к сбору требований ` +
+                `(цикл ${cycle}/${run.maxRequirementCycles}), счётчик сброшен`,
             ),
           confirmCompletion: async artifact => {
             const reply = (
@@ -342,8 +387,15 @@ export class RunController {
     }
   }
 
-  /** Печатает пояснение к паузе прогона (исчерпание ретраев или пользовательская пауза). */
+  /** Печатает пояснение к паузе прогона (исчерпание лимитов или пользовательская пауза). */
   private reportPaused(run: TaskRun): void {
+    if (run.stage === 'verification' && run.requirementCycles >= run.maxRequirementCycles) {
+      this.write(
+        `⏸ Исчерпан лимит циклов сбора требований (${run.maxRequirementCycles}). ` +
+          'Внесите правку (/run edit) и продолжите (/run continue) либо завершите (/run abort).',
+      );
+      return;
+    }
     if (run.retries >= run.maxRetries) {
       this.write(
         `⏸ Лимит авто-возвратов (${run.maxRetries}) исчерпан на этапе «${stageLabel(run.stage)}». ` +

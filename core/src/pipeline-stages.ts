@@ -15,8 +15,12 @@ export interface StageContext {
   makeConversation: (systemPrompt: string, limits?: GenerationLimits) => Conversation;
   /** Пишет файл-артефакт прогона; null — хранилище отключено (--ephemeral). */
   writeArtifact: (name: string, content: string) => string | null;
-  /** Память задачи (детали + профиль) для подмешивания в планирование/выполнение; '' — нет. */
-  memoryContext: string;
+  /**
+   * Память задачи (детали + профиль) для подмешивания в планирование/выполнение.
+   * Провайдер (а не строка): требования, собранные на этапе requirements, сразу
+   * видны последующим этапам. Пусто — контекста нет.
+   */
+  memoryContext: () => string;
 }
 
 const JSON_LIMITS: GenerationLimits = { responseFormat: { type: 'json_object' } };
@@ -129,7 +133,8 @@ const COMPLETER_SYSTEM =
 
 /** Контекстный префикс памяти задачи (или пусто). */
 function memoryPrefix(ctx: StageContext): string {
-  return ctx.memoryContext ? `${ctx.memoryContext}\n\n` : '';
+  const context = ctx.memoryContext();
+  return context ? `${context}\n\n` : '';
 }
 
 /** Планирование: задача (+память +правка) → план с критериями. */

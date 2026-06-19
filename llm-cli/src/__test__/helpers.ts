@@ -50,7 +50,11 @@ export function taskRunClient(
   t.mock.method(
     client,
     'streamWithUsage',
-    async (messages: ChatMessage[], _options: CompleteOptions, onDelta: (d: StreamDelta) => void) => {
+    async (
+      messages: ChatMessage[],
+      _options: CompleteOptions,
+      onDelta: (d: StreamDelta) => void,
+    ) => {
       const content = reply(messages);
       onDelta({ content });
       return { content, usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } };

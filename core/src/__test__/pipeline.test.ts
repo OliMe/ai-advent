@@ -67,6 +67,8 @@ const idle = new AbortController().signal; // не отменён
 
 function content(over: Partial<StageContent> = {}): StageContent {
   return {
+    // requirements не ходит через makeConversation (это интерактивный хук) — заглушка.
+    requirements: () => '',
     planning: () => PLAN,
     execution: () => EXEC,
     verification: () => PASS,
@@ -101,9 +103,62 @@ describe('runPipeline', () => {
     assert.deepEqual(result.artifacts.execution?.files, ['/runs/' + run.id + '/execution-1.md']);
     assert.equal(result.artifacts.verification?.passed, true);
     assert.equal(result.artifacts.completion?.summary, 'итог');
-    assert.deepEqual(stages, ['planning', 'execution', 'verification', 'completion']);
+    assert.deepEqual(stages, [
+      'requirements',
+      'planning',
+      'execution',
+      'verification',
+      'completion',
+    ]);
     assert.equal(store.artifacts.length, 1); // один файл execution
     assert.ok(store.saved.length >= 4);
+  });
+
+  it('этап requirements вызывает хук сбора требований и пишет артефакт', async t => {
+    const run = createRun('Задача', { idSuffix: 'rq' });
+    const calls: Array<{ issues: string[]; cycle: number }> = [];
+    const result = await runPipeline(run, {
+      store: fakeStore(),
+      makeConversation: makeConversation(t, content()),
+      signal: idle,
+      hooks: {
+        confirmCompletion: async () => ({ approved: true }),
+        gatherRequirements: async context => {
+          calls.push(context);
+          return { collected: ['Разделитель → запятая', 'Заголовки → да'] };
+        },
+      },
+    });
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(calls, [{ issues: [], cycle: 0 }]); // первый проход: без замечаний, цикл 0
+    assert.deepEqual(result.artifacts.requirements?.collected, [
+      'Разделитель → запятая',
+      'Заголовки → да',
+    ]);
+  });
+
+  it('отмена во время сбора требований → пауза на этапе requirements', async t => {
+    const run = createRun('Задача', { idSuffix: 'rqp' });
+    const aborter = new AbortController();
+    let confirmCalled = false;
+    const result = await runPipeline(run, {
+      store: fakeStore(),
+      makeConversation: makeConversation(t, content()),
+      signal: aborter.signal,
+      hooks: {
+        confirmCompletion: async () => {
+          confirmCalled = true;
+          return { approved: true };
+        },
+        gatherRequirements: async () => {
+          aborter.abort(); // пользователь прервал опрос (Ctrl+C)
+          return { collected: ['частично'] };
+        },
+      },
+    });
+    assert.equal(result.status, 'paused');
+    assert.equal(result.stage, 'requirements');
+    assert.equal(confirmCalled, false); // до завершения не дошли
   });
 
   it('провал проверки → авто-возврат в execution, затем успех', async t => {
@@ -126,14 +181,14 @@ describe('runPipeline', () => {
     assert.deepEqual(retries, [1]);
   });
 
-  it('провал проверки исчерпал лимит → возврат к планированию, счётчик сброшен', async t => {
+  it('провал проверки исчерпал лимит → возврат к сбору требований, счётчик сброшен', async t => {
     const run = createRun('Задача', { idSuffix: 'c', maxRetries: 1 });
     let verifyCalls = 0;
-    let replans = 0;
-    const planningStarts: Stage[] = [];
+    const regatherCycles: number[] = [];
+    const requirementStarts: Stage[] = [];
     const result = await runPipeline(run, {
       store: fakeStore(),
-      // Проверка валит дважды (1 ретрай + исчерпание → реплан), после реплана — успех.
+      // Проверка валит дважды (1 ретрай + исчерпание → возврат к требованиям), потом успех.
       makeConversation: makeConversation(
         t,
         content({ verification: () => (++verifyCalls <= 2 ? FAIL : PASS) }),
@@ -141,16 +196,35 @@ describe('runPipeline', () => {
       signal: idle,
       hooks: {
         confirmCompletion: async () => ({ approved: true }),
-        onReplan: () => replans++,
+        onRegather: cycle => regatherCycles.push(cycle),
         onStageStart: stage => {
-          if (stage === 'planning') planningStarts.push(stage);
+          if (stage === 'requirements') requirementStarts.push(stage);
         },
       },
     });
     assert.equal(result.status, 'completed');
-    assert.equal(replans, 1); // один возврат к планированию
-    assert.equal(planningStarts.length, 2); // в планирование заходили дважды
-    assert.equal(result.retries, 0); // счётчик сброшен после реплана
+    assert.deepEqual(regatherCycles, [1]); // один возврат к сбору требований (цикл 1)
+    assert.equal(requirementStarts.length, 2); // в сбор требований заходили дважды
+    assert.equal(result.retries, 0); // счётчик проверок сброшен
+    assert.equal(result.requirementCycles, 1);
+  });
+
+  it('исчерпаны и проверки, и циклы сбора требований → пауза', async t => {
+    const run = createRun('Задача', {
+      idSuffix: 'cc',
+      maxRetries: 0,
+      maxRequirementCycles: 1,
+    });
+    const result = await runPipeline(run, {
+      store: fakeStore(),
+      makeConversation: makeConversation(t, content({ verification: () => FAIL })),
+      signal: idle,
+      hooks: approve,
+    });
+    // maxRetries=0 → сразу возврат к требованиям (цикл 1); снова FAIL, циклы исчерпаны → пауза.
+    assert.equal(result.status, 'paused');
+    assert.equal(result.stage, 'verification');
+    assert.equal(result.requirementCycles, 1);
   });
 
   it('отказ на завершении → возврат в execution, затем подтверждение', async t => {
@@ -202,7 +276,7 @@ describe('runPipeline', () => {
       },
     });
     assert.equal(result.status, 'paused');
-    assert.equal(result.stage, 'planning');
+    assert.equal(result.stage, 'requirements'); // первый этап — сбор требований
     assert.equal(confirmCalled, false);
   });
 
@@ -263,7 +337,7 @@ describe('runPipeline', () => {
       store: fakeStore(),
       makeConversation: make,
       signal: idle,
-      memoryContext: 'ПАМЯТЬ ЗАДАЧИ',
+      memoryContext: () => 'ПАМЯТЬ ЗАДАЧИ',
       hooks: approve,
     });
     assert.match(planPrompt, /ПАМЯТЬ ЗАДАЧИ/);

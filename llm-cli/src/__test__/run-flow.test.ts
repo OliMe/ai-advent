@@ -6,7 +6,7 @@ import type { RunStore, RunSummary, Stage, Task, TaskRun } from '../../../core/s
 import {
   RunController,
   makeConversationFactory,
-  parseQuestions,
+  parseClarifierStep,
   type ConversationFactory,
   type RunTaskBridge,
 } from '../run-flow.ts';
@@ -30,6 +30,8 @@ function stageOf(systemPrompt: string): Stage {
 
 function content(over: Partial<StageContent> = {}): StageContent {
   return {
+    // requirements не ходит через makeConversation (это интерактивный хук) — заглушка.
+    requirements: () => '',
     planning: () => PLAN,
     execution: () => EXEC,
     verification: () => PASS,
@@ -41,27 +43,36 @@ function content(over: Partial<StageContent> = {}): StageContent {
 interface FactoryHooks {
   onStage?: (stage: Stage) => void;
   onPrompt?: (stage: Stage, prompt: string) => void;
+  /** Ловит промпт каждого хода аналитика (для проверки адаптивности). */
+  onClarifier?: (prompt: string) => void;
 }
 
 /**
  * Фабрика диалогов: этапы отвечают по персоне; агент-аналитик (сбор требований) —
- * отдельным ответом `clarifier` (по умолчанию «вопросов нет»). Ловит этап/промпт.
+ * последовательностью ответов `clarifier` (ход за ходом; по умолчанию сразу «готово»).
+ * Ловит этап/промпт.
  */
 function factory(
   t: TestContext,
   by: StageContent,
   hooks: FactoryHooks = {},
-  clarifier = '{"questions":[]}',
+  clarifier: string[] = ['{"done":true}'],
 ): ConversationFactory {
   return (systemPrompt, limits) => {
     const isClarifier = systemPrompt.includes('аналитик');
     const stage = stageOf(systemPrompt);
+    let clarifierTurn = 0;
     const client = clientWith(t, async messages => {
-      if (!isClarifier) {
-        hooks.onStage?.(stage);
-        hooks.onPrompt?.(stage, messages.at(-1)?.content ?? '');
+      const lastPrompt = messages.at(-1)?.content ?? '';
+      if (isClarifier) {
+        hooks.onClarifier?.(lastPrompt);
+        const reply = clarifier[Math.min(clarifierTurn, clarifier.length - 1)];
+        clarifierTurn++;
+        return { content: reply, usage: undefined };
       }
-      return { content: isClarifier ? clarifier : by[stage](), usage: undefined };
+      hooks.onStage?.(stage);
+      hooks.onPrompt?.(stage, lastPrompt);
+      return { content: by[stage](), usage: undefined };
     });
     return new Conversation(client, {
       systemPrompt,
@@ -140,36 +151,78 @@ describe('makeConversationFactory', () => {
   });
 });
 
-describe('parseQuestions', () => {
-  it('берёт строки из {questions}, иначе пусто', () => {
-    assert.deepEqual(parseQuestions('{"questions":["Бюджет?"," Сроки? ",1,""]}'), [
-      'Бюджет?',
-      'Сроки?',
-    ]);
-    assert.deepEqual(parseQuestions('{"questions":"нет"}'), []); // не массив
-    assert.deepEqual(parseQuestions('{}'), []); // нет поля
-    assert.deepEqual(parseQuestions('не json'), []); // битый JSON
+describe('parseClarifierStep', () => {
+  it('разбирает вопрос+подсказку, done и фолбэки', () => {
+    assert.deepEqual(parseClarifierStep('{"question":" Бюджет? ","suggestion":" 100к "}'), {
+      done: false,
+      question: 'Бюджет?',
+      suggestion: '100к',
+    });
+    assert.deepEqual(parseClarifierStep('{"question":"Сроки?"}'), {
+      done: false,
+      question: 'Сроки?',
+      suggestion: '', // подсказки нет
+    });
+    assert.deepEqual(parseClarifierStep('{"done":true}'), { done: true });
+    assert.deepEqual(parseClarifierStep('{"question":""}'), { done: true }); // пустой вопрос = готово
+    assert.deepEqual(parseClarifierStep('{}'), { done: true }); // нет полей
+    assert.deepEqual(parseClarifierStep('не json'), { done: true }); // битый JSON
   });
 });
 
 describe('RunController', () => {
-  it('собирает требования (опрос по одному) перед планированием', async t => {
+  it('адаптивный опрос: вопросы по одному, пустой ответ принимает предложение', async t => {
     const out = makeCollector();
     const { bridge, details } = fakeBridge();
+    const clarifierPrompts: string[] = [];
+    const askPrompts: string[] = [];
+    const queue = ['бюджет 100к', '', 'да']; // 1-й вопрос; пустой (примет предложение); подтверждение
+    let answerIndex = 0;
     const controller = new RunController({
       store: fakeStore(),
-      makeConversation: factory(t, content(), {}, '{"questions":["Какой бюджет?","Какие сроки?"]}'),
+      makeConversation: factory(t, content(), { onClarifier: p => clarifierPrompts.push(p) }, [
+        '{"question":"Какой бюджет?","suggestion":"100к"}',
+        '{"question":"Какие сроки?","suggestion":"месяц"}',
+        '{"done":true}',
+      ]),
       output: out.stream,
-      // 2 ответа на вопросы (второй пустой → не пишется) + подтверждение завершения.
-      ask: answers(['бюджет 100к', '', 'да']),
+      ask: async prompt => {
+        askPrompts.push(prompt);
+        return queue[answerIndex++] ?? 'да';
+      },
       taskBridge: bridge,
     });
     await controller.start('Лендинг');
     const text = out.text();
     assert.match(text, /уточнение требований…/);
+    // Подсказка идёт в приглашение readline (его печатает реальный CLI), не в общий вывод.
+    assert.match(askPrompts.join('\n'), /предлагаемый ответ: 100к; Enter — принять/);
     assert.match(text, /Требования собраны и записаны в задачу/);
-    assert.deepEqual(details, ['Требование: Какой бюджет? → бюджет 100к']); // пустой ответ пропущен
-    assert.match(text, /завершена и подтверждена/); // дальше прошёл пайплайн
+    assert.deepEqual(details, [
+      'Требование: Какой бюджет? → бюджет 100к',
+      'Требование: Какие сроки? → месяц', // пустой ответ принял предложение
+    ]);
+    // Следующий вопрос задаётся с учётом предыдущего ответа (адаптивность).
+    assert.match(clarifierPrompts[1] ?? '', /Ответ пользователя: бюджет 100к/);
+    assert.match(text, /завершена и подтверждена/);
+  });
+
+  it('опрос требований: слово-стоп завершает сбор досрочно', async t => {
+    const out = makeCollector();
+    const { bridge, details } = fakeBridge();
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content(), {}, [
+        '{"question":"Какой бюджет?","suggestion":"100к"}',
+        '{"question":"Какие сроки?","suggestion":"месяц"}',
+      ]),
+      output: out.stream,
+      ask: answers(['бюджет 100к', 'достаточно', 'да']), // 2-й ответ — стоп-слово
+      taskBridge: bridge,
+    });
+    await controller.start('Лендинг');
+    assert.deepEqual(details, ['Требование: Какой бюджет? → бюджет 100к']); // стоп прервал опрос
+    assert.match(out.text(), /завершена и подтверждена/);
   });
 
   it('нет вопросов аналитика → опрос пропускается', async t => {
@@ -216,13 +269,16 @@ describe('RunController', () => {
     assert.match(text, /завершена и подтверждена/);
   });
 
-  it('опрос требований прерывается по Ctrl+C', async t => {
+  it('опрос требований прерывается по Ctrl+C → пауза на сборе требований', async t => {
     const out = makeCollector();
     const { details } = fakeBridge();
     let controller: RunController;
     controller = new RunController({
       store: fakeStore(),
-      makeConversation: factory(t, content(), {}, '{"questions":["Q1","Q2"]}'),
+      makeConversation: factory(t, content(), {}, [
+        '{"question":"Q1","suggestion":"s1"}',
+        '{"question":"Q2","suggestion":"s2"}',
+      ]),
       output: out.stream,
       ask: async () => {
         controller.requestPause(); // пауза после первого вопроса
@@ -232,7 +288,7 @@ describe('RunController', () => {
     });
     await controller.start('Задача');
     assert.equal(details.length, 1); // второй вопрос не задан (прервано)
-    assert.match(out.text(), /Пауза на этапе «планирование»/);
+    assert.match(out.text(), /Пауза на этапе «сбор требований»/);
   });
 
   it('start без аргумента и без текущей задачи подсказывает', async t => {
@@ -283,13 +339,14 @@ describe('RunController', () => {
       recordToSession: (role, content) => recorded.push({ role, content }),
     });
     await controller.start('Задача');
-    // user-обрамление запуска + по ассистентскому сообщению на каждый из 4 этапов.
+    // user-обрамление запуска + по ассистентскому сообщению на каждый из 5 этапов.
     assert.equal(recorded[0]?.role, 'user');
     assert.match(recorded[0].content, /Запуск задачи по этапам/);
     const stages = recorded.filter(entry => entry.role === 'assistant');
-    assert.equal(stages.length, 4);
-    assert.match(stages[0].content, /\[планирование\]/);
-    assert.match(stages[3].content, /\[завершение\]/);
+    assert.equal(stages.length, 5);
+    assert.match(stages[0].content, /\[сбор требований\]/);
+    assert.match(stages[1].content, /\[планирование\]/);
+    assert.match(stages[4].content, /\[завершение\]/);
   });
 
   it('start с описанием создаёт/находит задачу через мост', async t => {
@@ -399,30 +456,71 @@ describe('RunController', () => {
     await controller.continue(run.id);
     const text = out.text();
     assert.deepEqual(adopted, ['t1']); // задача прогона стала текущей
-    assert.match(text, /Продолжаем «Задача» с этапа «планирование»/);
+    assert.match(text, /Продолжаем «Задача» с этапа «сбор требований»/);
     assert.match(text, /Лимит авто-возвратов \(0\) исчерпан/);
   });
 
-  it('лимит проверок исчерпан → возврат к планированию, счётчик сброшен', async t => {
+  it('лимит проверок исчерпан → возврат к сбору требований, счётчик сброшен', async t => {
     const run = createRun('Задача', { maxRetries: 1, idSuffix: 'rp', taskId: 't1' });
     const out = makeCollector();
     let verifyCalls = 0;
     const controller = new RunController({
       store: fakeStore([run]),
-      // Проверка валит дважды → 1 ретрай + реплан, после реплана успех.
+      // На каждом цикле сбора аналитик задаёт по вопросу; проверка валит дважды
+      // (1 ретрай + возврат к требованиям), после повторного сбора — успех.
       makeConversation: factory(
         t,
         content({ verification: () => (++verifyCalls <= 2 ? FAIL : PASS) }),
+        {},
+        ['{"question":"Уточни масштаб?","suggestion":"малый"}', '{"done":true}'],
       ),
       output: out.stream,
-      ask: answers(['да']),
+      ask: answers(['малый', 'малый', 'да']), // ответы на вопрос в обоих циклах + подтверждение
       taskBridge: fakeBridge().bridge,
     });
     await controller.continue(run.id);
     const text = out.text();
     assert.match(text, /возврат в выполнение \(проверка не пройдена\), попытка 1/);
-    assert.match(text, /лимит проверок \(1\) исчерпан — возврат к планированию/);
+    assert.match(text, /лимит проверок \(1\) исчерпан — возврат к сбору требований \(цикл 1\/3\)/);
+    assert.match(text, /уточнение требований \(повтор, цикл 1\)…/); // заголовок повторного сбора
     assert.match(text, /завершена и подтверждена/);
+  });
+
+  it('пустой ответ без подсказки — вопрос пропущен, опрос продолжается', async t => {
+    const out = makeCollector();
+    const { bridge, details } = fakeBridge();
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content(), {}, [
+        '{"question":"Любые ограничения?"}', // без suggestion
+        '{"done":true}',
+      ]),
+      output: out.stream,
+      ask: answers(['', 'да']), // пустой ответ на вопрос без подсказки → не записан
+      taskBridge: bridge,
+    });
+    await controller.start('Задача');
+    assert.deepEqual(details, []); // пустой ответ без подсказки ничего не записал
+    assert.match(out.text(), /завершена и подтверждена/);
+  });
+
+  it('исчерпан лимит циклов сбора требований → пауза', async t => {
+    const run = createRun('Задача', {
+      maxRetries: 0,
+      maxRequirementCycles: 1,
+      idSuffix: 'rc',
+      taskId: 't1',
+    });
+    const out = makeCollector();
+    const controller = new RunController({
+      store: fakeStore([run]),
+      makeConversation: factory(t, content({ verification: () => FAIL })),
+      output: out.stream,
+      ask: answers([]),
+      taskBridge: fakeBridge().bridge,
+    });
+    await controller.continue(run.id);
+    assert.match(out.text(), /Исчерпан лимит циклов сбора требований \(1\)/);
   });
 
   it('edit сбрасывает счётчик проверок реализации', async t => {

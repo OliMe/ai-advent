@@ -4,17 +4,35 @@ import { sessionId } from './session.ts';
 /** Версия формата файла прогона — для будущих миграций. */
 export const RUN_VERSION = 1;
 /**
- * Сколько провалов проверки подряд допустимо до возврата к планированию.
- * При исчерпании прогон не встаёт на паузу, а переигрывает план (счётчик сброшен).
+ * Сколько провалов проверки подряд допустимо до возврата к сбору требований.
+ * При исчерпании прогон не встаёт на паузу, а заново собирает требования (счётчик сброшен).
  */
 export const DEFAULT_MAX_RETRIES = 10;
 
+/**
+ * Сколько полных возвратов к сбору требований допустимо до паузы. Защита от
+ * бесконечного цикла «требования → планирование → … → требования».
+ */
+export const DEFAULT_MAX_REQUIREMENT_CYCLES = 3;
+
 /** Фиксированные этапы пайплайна в строгом порядке (пропуск запрещён). */
-export const STAGES = ['planning', 'execution', 'verification', 'completion'] as const;
+export const STAGES = [
+  'requirements',
+  'planning',
+  'execution',
+  'verification',
+  'completion',
+] as const;
 export type Stage = (typeof STAGES)[number];
 
 /** Состояние прогона: идёт / на паузе / завершён / отменён. */
 export type RunStatus = 'running' | 'paused' | 'completed' | 'cancelled';
+
+/** Артефакт сбора требований: собранные пары «вопрос → ответ» + читаемый текст. */
+export interface RequirementsArtifact {
+  collected: string[];
+  text: string;
+}
 
 /** Артефакт планирования: шаги + критерии приёмки + читаемый текст. */
 export interface PlanningArtifact {
@@ -46,6 +64,7 @@ export interface CompletionArtifact {
 
 /** Артефакты по этапам (заполняются по мере прохождения). */
 export interface StageArtifacts {
+  requirements?: RequirementsArtifact;
   planning?: PlanningArtifact;
   execution?: ExecutionArtifact;
   verification?: VerificationArtifact;
@@ -69,9 +88,12 @@ export interface TaskRun {
   stage: Stage;
   status: RunStatus;
   artifacts: StageArtifacts;
-  /** Сколько авто-возвратов в execution сделано с последнего планирования. */
+  /** Сколько авто-возвратов в execution сделано с последнего сбора требований. */
   retries: number;
   maxRetries: number;
+  /** Сколько полных возвратов к сбору требований уже сделано. */
+  requirementCycles: number;
+  maxRequirementCycles: number;
   /** Правка пользователя, учитываемая при перезапуске текущего этапа. */
   correction?: string;
   transitions: RunTransition[];
@@ -96,7 +118,13 @@ function randomSuffix(): string {
 /** Создаёт новый прогон на этапе planning. */
 export function createRun(
   title: string,
-  options: { taskId?: string; maxRetries?: number; now?: Date; idSuffix?: string } = {},
+  options: {
+    taskId?: string;
+    maxRetries?: number;
+    maxRequirementCycles?: number;
+    now?: Date;
+    idSuffix?: string;
+  } = {},
 ): TaskRun {
   const now = options.now ?? new Date();
   const timestamp = now.toISOString();
@@ -105,12 +133,14 @@ export function createRun(
     id: sessionId(now, options.idSuffix ?? randomSuffix()),
     ...(options.taskId === undefined ? {} : { taskId: options.taskId }),
     title,
-    stage: 'planning',
+    stage: 'requirements',
     status: 'running',
     artifacts: {},
     retries: 0,
     maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES,
-    transitions: [{ stage: 'planning', status: 'running', at: timestamp }],
+    requirementCycles: 0,
+    maxRequirementCycles: options.maxRequirementCycles ?? DEFAULT_MAX_REQUIREMENT_CYCLES,
+    transitions: [{ stage: 'requirements', status: 'running', at: timestamp }],
     createdAt: timestamp,
     updatedAt: timestamp,
   };

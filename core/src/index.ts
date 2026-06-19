@@ -40,6 +40,7 @@ export type { ConversationConfig } from './conversation.ts';
 export {
   RUN_VERSION,
   DEFAULT_MAX_RETRIES,
+  DEFAULT_MAX_REQUIREMENT_CYCLES,
   STAGES,
   createRun,
   nextStage,
@@ -48,6 +49,7 @@ export {
 export type {
   Stage,
   RunStatus,
+  RequirementsArtifact,
   PlanningArtifact,
   ExecutionArtifact,
   VerificationArtifact,

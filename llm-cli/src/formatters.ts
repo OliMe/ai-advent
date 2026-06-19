@@ -102,6 +102,7 @@ export function helpText(): string {
 
 /** Человекочитаемые названия этапов пайплайна. */
 const STAGE_LABELS: Record<Stage, string> = {
+  requirements: 'сбор требований',
   planning: 'планирование',
   execution: 'выполнение',
   verification: 'проверка',
@@ -137,6 +138,12 @@ function bulletList(header: string, items: string[]): string {
  */
 export function formatStageResult(stage: Stage, artifacts: StageArtifacts): string {
   switch (stage) {
+    case 'requirements': {
+      const requirements = artifacts.requirements!;
+      return requirements.collected.length > 0
+        ? bulletList('Собранные требования:', requirements.collected)
+        : 'Уточнения не потребовались.';
+    }
     case 'planning': {
       const planning = artifacts.planning!;
       const steps =
@@ -174,7 +181,10 @@ export function formatRunStatus(run: TaskRun): string {
   if (run.correction !== undefined) {
     lines.push(`Правка к учёту: ${run.correction}`);
   }
-  const { planning, execution, verification, completion } = run.artifacts;
+  const { requirements, planning, execution, verification, completion } = run.artifacts;
+  if (requirements !== undefined) {
+    lines.push(`  Требования: ${requirements.collected.length} пункт(ов)`);
+  }
   if (planning !== undefined) {
     lines.push(
       `  Планирование: ${planning.steps.length} шаг(ов), ${planning.criteria.length} критери(ев)`,
