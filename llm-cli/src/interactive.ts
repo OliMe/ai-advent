@@ -193,6 +193,16 @@ export async function runInteractive(
     },
   });
 
+  // Создаёт новую задачу, делает её текущей задачей сессии и сразу запускает её
+  // исполнение пайплайном (запуск выполнения совмещён с созданием задачи).
+  const createTaskAndRun = async (title: string): Promise<void> => {
+    const task = memoryManager.setTask(title);
+    currentSession.taskId = task.id;
+    store?.save(currentSession);
+    output.write(`Задача установлена: ${task.title}\n\n`);
+    await runController.start(''); // прогон текущей задачи сессии
+  };
+
   // Реестр интерактивных команд: первая подходящая по `matches` выполняет `run`.
   // Порядок важен (точные перед префиксными, напр. «/task done» до «/task »).
   // `run` может быть асинхронной (прогон пайплайна) — вызывающий цикл её ожидает.
@@ -384,14 +394,12 @@ export async function runInteractive(
     },
     {
       matches: input => input.startsWith('/task '),
-      run: input => {
+      run: async input => {
         if (!memoryManager.enabled) {
           output.write(MEMORY_OFF_NOTICE);
         } else {
-          const task = memoryManager.setTask(input.slice('/task '.length).trim());
-          currentSession.taskId = task.id;
-          store?.save(currentSession);
-          output.write(`Задача установлена: ${task.title}\n\n`);
+          // Новая задача сразу исполняется пайплайном.
+          await createTaskAndRun(input.slice('/task '.length).trim());
         }
       },
     },
@@ -585,14 +593,14 @@ export async function runInteractive(
           break; // подтверждение прервано (Ctrl+C / EOF) — выходим
         }
         if (isAffirmative(reply)) {
-          currentSession.taskId = memoryManager.setTask(proposed).id;
-          store?.save(currentSession);
-          output.write(`Задача установлена: ${proposed}\n\n`);
-        } else {
-          memoryManager.declineProposal(proposed);
-          if (isNegative(reply)) {
-            output.write('Хорошо, без задачи.\n\n');
-          }
+          // Подтверждённая задача сразу исполняется пайплайном — прогон заменяет
+          // обычный ответ модели на это сообщение, поэтому переходим к новой строке.
+          await createTaskAndRun(proposed);
+          continue;
+        }
+        memoryManager.declineProposal(proposed);
+        if (isNegative(reply)) {
+          output.write('Хорошо, без задачи.\n\n');
         }
       }
       // Сборка контекста (короткая память + профиль + задача) и ответ.

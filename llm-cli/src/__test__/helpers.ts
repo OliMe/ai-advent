@@ -1,12 +1,63 @@
 import * as readline from 'node:readline/promises';
+import type { TestContext } from 'node:test';
 import { PassThrough, Writable } from 'node:stream';
 import { runInteractive, type MemoryKind, type MemorySettings } from '../index.ts';
 import { ChatCompletionClient, createSession, summarize } from '../../../core/src/index.ts';
-import type { AppConfig, Session, SessionStore } from '../../../core/src/index.ts';
+import type {
+  AppConfig,
+  ChatMessage,
+  CompleteOptions,
+  Session,
+  SessionStore,
+  StreamDelta,
+} from '../../../core/src/index.ts';
 import { makeConfig } from '../../../core/src/__test__/helpers.ts';
 
 // Моки клиента живут в core (движок памяти там же); реэкспортируем для CLI-тестов.
 export { clientWith, clientWithStream } from '../../../core/src/__test__/helpers.ts';
+
+/**
+ * Клиент для тестов авто-прогона задачи: отвечает по персоне системного промпта —
+ * аналитик не задаёт вопросов, проверка проходит, — поэтому пайплайн завершается
+ * без зависаний. На извлечение памяти отдаёт `extraction` (по умолчанию «ничего
+ * нового»), на обычный чат — `chat`. Мокает и потоковый, и непотоковый методы.
+ */
+export function taskRunClient(
+  t: TestContext,
+  options: { extraction?: string; chat?: string } = {},
+): ChatCompletionClient {
+  const extraction =
+    options.extraction ?? '{"task":[],"user":[],"isNewTask":false,"proposedTitle":""}';
+  const chat = options.chat ?? 'ОТВЕТ';
+  const reply = (messages: ChatMessage[]): string => {
+    const head = messages[0]?.content ?? '';
+    if (head.includes('аналитик')) return '{"questions":[]}';
+    if (head.includes('планировщик'))
+      return JSON.stringify({ steps: ['шаг'], criteria: ['критерий'], text: 'план' });
+    if (head.includes('исполнитель'))
+      return JSON.stringify({ summary: 'готово', log: [], text: 'результат' });
+    if (head.includes('проверяющий'))
+      return JSON.stringify({ passed: true, issues: [], text: 'ок' });
+    if (head.includes('завершающий')) return JSON.stringify({ summary: 'итог', text: 'резюме' });
+    // Извлечение памяти (инструкция содержит «СТРОГО JSON с полями») — иначе обычный чат.
+    return head.includes('СТРОГО JSON с полями') ? extraction : chat;
+  };
+  const client = new ChatCompletionClient(makeConfig());
+  t.mock.method(client, 'completeWithUsage', async (messages: ChatMessage[]) => ({
+    content: reply(messages),
+    usage: undefined,
+  }));
+  t.mock.method(
+    client,
+    'streamWithUsage',
+    async (messages: ChatMessage[], _options: CompleteOptions, onDelta: (d: StreamDelta) => void) => {
+      const content = reply(messages);
+      onDelta({ content });
+      return { content, usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } };
+    },
+  );
+  return client;
+}
 
 /** Сессия с системным сообщением из конфига (для интерактивных тестов). */
 export function makeSession(config: AppConfig = makeConfig()): Session {

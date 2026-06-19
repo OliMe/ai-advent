@@ -11,6 +11,7 @@ import {
   driveInteractive,
   clientWith,
   clientWithStream,
+  taskRunClient,
   makeSession,
   makeCollector,
   fakeStore,
@@ -575,11 +576,11 @@ describe('runInteractive', () => {
 describe('интерактив: команды слоистой памяти', () => {
   const layered: MemorySettings = { enabled: true, profileStore: null, taskStore: null };
 
-  it('/task задаёт и показывает текущую задачу', async t => {
-    const client = clientWithStream(t, () => 'X');
+  it('/task создаёт задачу и сразу запускает её исполнение пайплайном', async t => {
+    const client = taskRunClient(t);
     const { finished, text } = driveInteractive(
       client,
-      ['/task Сделать лендинг', '/task', '/exit'],
+      ['/task Сделать лендинг', 'да', '/task', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -591,18 +592,22 @@ describe('интерактив: команды слоистой памяти', (
     );
     await finished;
     assert.match(text(), /Задача установлена: Сделать лендинг/);
-    assert.match(text(), /Текущая задача: Сделать лендинг/);
+    assert.match(text(), /Запущена задача «Сделать лендинг»/); // прогон стартовал сразу
+    assert.match(text(), /завершена и подтверждена/); // дошёл до завершения по «да»
+    assert.match(text(), /Активной задачи нет/); // после завершения задача отвязана
   });
 
   it('/tasks, /task switch и /task done', async t => {
-    const client = clientWithStream(t, () => 'X');
+    const client = taskRunClient(t);
     const { finished, text } = driveInteractive(
       client,
       [
         '/task Первая',
+        'да', // подтверждаем завершение авто-прогона «Первая»
         '/task Вторая',
+        'да', // и «Вторая»
         '/tasks',
-        '/task switch Первая',
+        '/task switch Первая', // реактивируем завершённую
         '/task done',
         '/task done',
         '/exit',
@@ -642,11 +647,21 @@ describe('интерактив: команды слоистой памяти', (
   });
 
   it('/task delete удаляет задачу и снимает её с сессии', async t => {
-    const client = clientWithStream(t, () => 'X');
+    const client = taskRunClient(t);
     const session = makeSession();
     const { finished, text } = driveInteractive(
       client,
-      ['/task Черновик', '/task delete Черновик', '/task delete нет', '/task', '/exit'],
+      // switch реактивирует завершённую задачу и снова привязывает её к сессии —
+      // тогда delete видит её активной и отвязывает.
+      [
+        '/task Черновик',
+        'да',
+        '/task switch Черновик',
+        '/task delete Черновик',
+        '/task delete нет',
+        '/task',
+        '/exit',
+      ],
       0.7,
       makeConfig(),
       true,
@@ -664,10 +679,10 @@ describe('интерактив: команды слоистой памяти', (
   });
 
   it('/task delete принимает несколько id/имён через запятую', async t => {
-    const client = clientWithStream(t, () => 'X');
+    const client = taskRunClient(t);
     const { finished, text } = driveInteractive(
       client,
-      ['/task Один', '/task Два', '/task delete Один, Два, Нет', '/tasks', '/exit'],
+      ['/task Один', 'да', '/task Два', 'да', '/task delete Один, Два, Нет', '/tasks', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -866,7 +881,7 @@ describe('интерактив: команды слоистой памяти', (
   });
 
   it('стартовая задача (initialTaskTitle) и сохранение задач в хранилище', async t => {
-    const client = clientWithStream(t, () => 'X');
+    const client = taskRunClient(t);
     const taskMap = new Map<string, Task>();
     const taskStore: TaskStore = {
       list: () => [...taskMap.values()].map(summarizeTask),
@@ -882,7 +897,7 @@ describe('интерактив: команды слоистой памяти', (
     const session = makeSession();
     const { finished, text } = driveInteractive(
       client,
-      ['/task Вторая', '/task switch Старт', '/task done', '/exit'],
+      ['/task Вторая', 'да', '/task switch Старт', '/task done', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -973,9 +988,11 @@ describe('интерактив: команды слоистой памяти', (
         ? { content: '{"task":["цель A","цель B"],"user":[]}', usage: undefined }
         : { content: '', usage: undefined },
     );
+    // Активная задача задаётся на старте (initialTaskTitle), без авто-прогона —
+    // чтобы проверить накопление фактов в живой задаче во время обычного диалога.
     const { finished, text } = driveInteractive(
       client,
-      ['/task Сайт', 'добавь две цели', '/exit'],
+      ['добавь две цели', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -983,7 +1000,7 @@ describe('интерактив: команды слоистой памяти', (
       makeSession(),
       'window',
       6,
-      layered,
+      { enabled: true, profileStore: null, taskStore: null, initialTaskTitle: 'Сайт' },
     );
     await finished;
     assert.match(text(), /\[память\] задача «Сайт» ← 2 факт\(ов\)/);
@@ -1018,10 +1035,14 @@ describe('интерактив: команды слоистой памяти', (
     return client;
   }
 
-  it('авто-задача: предложение и подтверждение «да» устанавливает задачу', async t => {
+  it('авто-задача: подтверждение «да» создаёт задачу и сразу запускает прогон', async t => {
+    const client = taskRunClient(t, {
+      extraction: '{"task":[],"user":[],"isNewTask":true,"proposedTitle":"Сбор ТЗ"}',
+    });
     const { finished, text } = driveInteractive(
-      autoTaskClient(t),
-      ['Собери ТЗ на приложение', 'да', '/task', '/exit'],
+      client,
+      // 1-е «да» — подтверждение задачи, 2-е — подтверждение завершения прогона.
+      ['Собери ТЗ на приложение', 'да', 'да', '/task', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -1034,7 +1055,10 @@ describe('интерактив: команды слоистой памяти', (
     await finished;
     assert.match(text(), /Сделать задачей сессии «Сбор ТЗ»\?/);
     assert.match(text(), /Задача установлена: Сбор ТЗ/);
-    assert.match(text(), /Текущая задача: Сбор ТЗ/);
+    assert.match(text(), /Запущена задача «Сбор ТЗ»/); // прогон вместо обычного ответа
+    assert.match(text(), /завершена и подтверждена/);
+    assert.doesNotMatch(text(), /Ассистент:/); // обычного ответа модели на сообщение нет
+    assert.match(text(), /Активной задачи нет/); // после завершения задача отвязана
   });
 
   it('авто-задача: отказ «нет» не ставит задачу', async t => {
