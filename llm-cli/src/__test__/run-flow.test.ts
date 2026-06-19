@@ -6,6 +6,7 @@ import type { RunStore, RunSummary, Stage, Task, TaskRun } from '../../../core/s
 import {
   RunController,
   makeConversationFactory,
+  parseQuestions,
   type ConversationFactory,
   type RunTaskBridge,
 } from '../run-flow.ts';
@@ -42,14 +43,25 @@ interface FactoryHooks {
   onPrompt?: (stage: Stage, prompt: string) => void;
 }
 
-/** Фабрика диалогов: ответ зависит от персоны системного промпта; ловит этап/промпт. */
-function factory(t: TestContext, by: StageContent, hooks: FactoryHooks = {}): ConversationFactory {
+/**
+ * Фабрика диалогов: этапы отвечают по персоне; агент-аналитик (сбор требований) —
+ * отдельным ответом `clarifier` (по умолчанию «вопросов нет»). Ловит этап/промпт.
+ */
+function factory(
+  t: TestContext,
+  by: StageContent,
+  hooks: FactoryHooks = {},
+  clarifier = '{"questions":[]}',
+): ConversationFactory {
   return (systemPrompt, limits) => {
+    const isClarifier = systemPrompt.includes('аналитик');
     const stage = stageOf(systemPrompt);
     const client = clientWith(t, async messages => {
-      hooks.onStage?.(stage);
-      hooks.onPrompt?.(stage, messages.at(-1)?.content ?? '');
-      return { content: by[stage](), usage: undefined };
+      if (!isClarifier) {
+        hooks.onStage?.(stage);
+        hooks.onPrompt?.(stage, messages.at(-1)?.content ?? '');
+      }
+      return { content: isClarifier ? clarifier : by[stage](), usage: undefined };
     });
     return new Conversation(client, {
       systemPrompt,
@@ -97,6 +109,7 @@ function fakeBridge(opts: { task?: Task | null; context?: string } = {}) {
   const completed: string[] = [];
   const adopted: string[] = [];
   const created: string[] = [];
+  const details: string[] = [];
   const bridge: RunTaskBridge = {
     current: () => task,
     resolveOrCreate: arg => {
@@ -104,13 +117,14 @@ function fakeBridge(opts: { task?: Task | null; context?: string } = {}) {
       return createTask(arg);
     },
     adopt: id => void adopted.push(id),
+    addDetail: text => void details.push(text),
     memoryContext: () => opts.context ?? '',
     complete: summary => {
       completed.push(summary);
       return task !== null;
     },
   };
-  return { bridge, completed, adopted, created };
+  return { bridge, completed, adopted, created, details };
 }
 
 describe('makeConversationFactory', () => {
@@ -126,7 +140,101 @@ describe('makeConversationFactory', () => {
   });
 });
 
+describe('parseQuestions', () => {
+  it('берёт строки из {questions}, иначе пусто', () => {
+    assert.deepEqual(parseQuestions('{"questions":["Бюджет?"," Сроки? ",1,""]}'), [
+      'Бюджет?',
+      'Сроки?',
+    ]);
+    assert.deepEqual(parseQuestions('{"questions":"нет"}'), []); // не массив
+    assert.deepEqual(parseQuestions('{}'), []); // нет поля
+    assert.deepEqual(parseQuestions('не json'), []); // битый JSON
+  });
+});
+
 describe('RunController', () => {
+  it('собирает требования (опрос по одному) перед планированием', async t => {
+    const out = makeCollector();
+    const { bridge, details } = fakeBridge();
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content(), {}, '{"questions":["Какой бюджет?","Какие сроки?"]}'),
+      output: out.stream,
+      // 2 ответа на вопросы (второй пустой → не пишется) + подтверждение завершения.
+      ask: answers(['бюджет 100к', '', 'да']),
+      taskBridge: bridge,
+    });
+    await controller.start('Лендинг');
+    const text = out.text();
+    assert.match(text, /уточнение требований…/);
+    assert.match(text, /Требования собраны и записаны в задачу/);
+    assert.deepEqual(details, ['Требование: Какой бюджет? → бюджет 100к']); // пустой ответ пропущен
+    assert.match(text, /завершена и подтверждена/); // дальше прошёл пайплайн
+  });
+
+  it('нет вопросов аналитика → опрос пропускается', async t => {
+    const out = makeCollector();
+    const { details } = fakeBridge();
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content()), // clarifier по умолчанию: вопросов нет
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+    });
+    await controller.start('Задача');
+    assert.doesNotMatch(out.text(), /уточнение требований/);
+    assert.deepEqual(details, []);
+  });
+
+  it('сбой аналитика не блокирует прогон', async t => {
+    const out = makeCollector();
+    const make: ConversationFactory = (systemPrompt, limits) => {
+      const isClarifier = systemPrompt.includes('аналитик');
+      const client = clientWith(t, async () => {
+        if (isClarifier) throw new Error('аналитик упал');
+        return { content: content()[stageOf(systemPrompt)](), usage: undefined };
+      });
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: make,
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+    });
+    await controller.start('Задача');
+    const text = out.text();
+    assert.match(text, /\[уточнение пропущено\] аналитик упал/);
+    assert.match(text, /завершена и подтверждена/);
+  });
+
+  it('опрос требований прерывается по Ctrl+C', async t => {
+    const out = makeCollector();
+    const { details } = fakeBridge();
+    let controller: RunController;
+    controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content(), {}, '{"questions":["Q1","Q2"]}'),
+      output: out.stream,
+      ask: async () => {
+        controller.requestPause(); // пауза после первого вопроса
+        return 'ответ';
+      },
+      taskBridge: { ...fakeBridge().bridge, addDetail: text => void details.push(text) },
+    });
+    await controller.start('Задача');
+    assert.equal(details.length, 1); // второй вопрос не задан (прервано)
+    assert.match(out.text(), /Пауза на этапе «планирование»/);
+  });
+
   it('start без аргумента и без текущей задачи подсказывает', async t => {
     const out = makeCollector();
     const controller = new RunController({

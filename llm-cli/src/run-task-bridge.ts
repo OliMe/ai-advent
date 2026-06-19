@@ -53,6 +53,13 @@ export class MemoryRunBridge implements RunTaskBridge {
     this.bindSession(taskId);
   }
 
+  addDetail(text: string): void {
+    const task = this.deps.memory.currentTask();
+    if (task !== null) {
+      this.deps.memory.addTaskDetail(task.id, text);
+    }
+  }
+
   memoryContext(): string {
     const task = this.deps.memory.currentTask();
     return formatRunContext(task === null ? [] : task.details, this.deps.memory.profileEntries());

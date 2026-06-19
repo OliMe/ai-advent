@@ -116,6 +116,25 @@ describe('MemoryRunBridge', () => {
     assert.equal(saved.length, 1);
   });
 
+  it('addDetail: пишет в текущую задачу; без текущей — no-op', () => {
+    const task = createTask('Задача');
+    const present = facadeWith({ current: task, existing: [task] });
+    new MemoryRunBridge({
+      memory: present.facade,
+      session: () => sessionWith(),
+      saveSession: () => {},
+    }).addDetail('Требование: бюджет → 100к');
+    assert.deepEqual(present.calls.addDetail, [[task.id, 'Требование: бюджет → 100к']]);
+
+    const absent = facadeWith({ current: null });
+    new MemoryRunBridge({
+      memory: absent.facade,
+      session: () => sessionWith(),
+      saveSession: () => {},
+    }).addDetail('игнор');
+    assert.deepEqual(absent.calls.addDetail, []);
+  });
+
   it('memoryContext: детали текущей задачи + профиль; пусто без задачи', () => {
     const task = createTask('Задача', ['бюджет 100к']);
     const withTask = facadeWith({ current: task, profile: ['любит кратко'] });

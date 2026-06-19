@@ -21,6 +21,30 @@ import { describeError } from './errors.ts';
 /** Фабрика диалога этапа: каждый агент получает свой системный промпт и ограничения. */
 export type ConversationFactory = (systemPrompt: string, limits?: GenerationLimits) => Conversation;
 
+const JSON_LIMITS: GenerationLimits = { responseFormat: { type: 'json_object' } };
+
+/** Персона агента-аналитика: уточняет требования ДО планирования. */
+const CLARIFIER_SYSTEM =
+  'Ты — аналитик требований. По формулировке задачи задай минимально необходимые ' +
+  'уточняющие вопросы, чтобы снять неоднозначности перед решением: цель, объём, ограничения, ' +
+  'формат результата, крайние случаи. Не задавай лишних вопросов, если и так всё ясно. ' +
+  'Верни СТРОГО JSON: {"questions": ["...", "..."]}. Если уточнять нечего — {"questions": []}.';
+
+/** Извлекает список уточняющих вопросов из ответа аналитика (лениво). */
+export function parseQuestions(content: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    const questions = (parsed as { questions?: unknown } | null)?.questions;
+    return Array.isArray(questions)
+      ? questions
+          .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+          .map(item => item.trim())
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Строит фабрику диалогов для агентов пайплайна на базе клиента и конфигурации. */
 export function makeConversationFactory(
   client: ChatCompletionClient,
@@ -50,6 +74,8 @@ export interface RunTaskBridge {
   resolveOrCreate(arg: string): Task;
   /** Делает задачу текущей (при продолжении прогона по её id). */
   adopt(taskId: string): void;
+  /** Дописывает факт/требование в детали текущей задачи. */
+  addDetail(text: string): void;
   /** Контекст памяти текущей задачи (детали + профиль) для агентов пайплайна. */
   memoryContext(): string;
   /** Пишет итог в память текущей задачи и помечает её done; true — задача найдена. */
@@ -125,7 +151,7 @@ export class RunController {
     this.active = run;
     this.write(`Запущена задача «${task.title}» (${run.id}).`);
     this.record('user', `Запуск задачи по этапам: «${task.title}»`);
-    await this.drive(run);
+    await this.drive(run, task); // task !== null → сперва соберём требования
   }
 
   /** Продолжает приостановленный прогон (активный или по id). */
@@ -157,7 +183,41 @@ export class RunController {
     }
     this.write(`Продолжаем «${run.title}» с этапа «${stageLabel(run.stage)}».`);
     this.record('user', `Продолжение прогона «${run.title}» с этапа «${stageLabel(run.stage)}»`);
-    await this.drive(run);
+    await this.drive(run, null); // продолжение — требования уже собраны
+  }
+
+  /**
+   * Сбор требований ДО планирования: аналитик задаёт уточняющие вопросы, ответы
+   * пишутся в детали задачи (и в транскрипт). Нет вопросов — сразу дальше. Сбой
+   * аналитика не блокирует прогон. Прерывается на границе вопроса по signal.
+   */
+  private async gatherRequirements(task: Task, signal: AbortSignal): Promise<void> {
+    const conversation = this.deps.makeConversation(CLARIFIER_SYSTEM, JSON_LIMITS);
+    const context = this.deps.taskBridge.memoryContext();
+    const prefix = context ? `${context}\n\n` : '';
+    let questions: string[];
+    try {
+      const result = await conversation.ask(
+        `${prefix}Задача: ${task.title}\n\nЗадай уточняющие вопросы по требованиям, если нужно.`,
+      );
+      questions = parseQuestions(result.content);
+    } catch (error) {
+      this.write(`[уточнение пропущено] ${describeError(error)}`); // не валим прогон
+      return;
+    }
+    if (questions.length === 0) {
+      return; // задача ясна — уточнять нечего
+    }
+    this.write('▸ уточнение требований…');
+    for (const question of questions) {
+      if (signal.aborted) break; // опрос прерван пользователем
+      const answer = (await this.deps.ask(`❓ ${question}\n   ответ: `)).trim();
+      if (answer) {
+        this.deps.taskBridge.addDetail(`Требование: ${question} → ${answer}`);
+        this.record('user', `${question} → ${answer}`);
+      }
+    }
+    this.write('Требования собраны и записаны в задачу.');
   }
 
   /** Показывает статус прогона (активного или по id). */
@@ -216,10 +276,16 @@ export class RunController {
     this.active = null;
   }
 
-  /** Прогоняет пайплайн с хуками печати/подтверждения; ловит паузу и ошибки. */
-  private async drive(run: TaskRun): Promise<void> {
+  /**
+   * Прогоняет пайплайн с хуками печати/подтверждения; ловит паузу и ошибки. Перед
+   * первым запуском (task !== null) собирает требования у пользователя.
+   */
+  private async drive(run: TaskRun, task: Task | null): Promise<void> {
     this.pause = new AbortController();
     try {
+      if (task !== null) {
+        await this.gatherRequirements(task, this.pause.signal);
+      }
       const result = await runPipeline(run, {
         store: this.deps.store,
         makeConversation: this.deps.makeConversation,
