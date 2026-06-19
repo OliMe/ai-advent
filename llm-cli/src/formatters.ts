@@ -1,3 +1,4 @@
+import { estimateTokens } from '../../core/src/index.ts';
 import type {
   ProfileSummary,
   RunStatus,
@@ -9,6 +10,9 @@ import type {
   TaskRun,
   TaskSummary,
 } from '../../core/src/index.ts';
+
+/** Бюджет (в токенах) на блок деталей задачи в контексте агентов пайплайна. */
+export const RUN_CONTEXT_DETAIL_BUDGET_TOKENS = 1500;
 
 /** Сообщение, когда сессионные команды вызваны при отключённом хранилище. */
 export const EPHEMERAL_NOTICE = 'Хранилище сессий отключено (--ephemeral).\n\n';
@@ -203,11 +207,36 @@ export function formatRunStatus(run: TaskRun): string {
   return `${lines.join('\n')}\n\n`;
 }
 
-/** Контекст памяти для агентов пайплайна: детали задачи + активный профиль. */
-export function formatRunContext(details: string[], profile: string[]): string {
+/** Оставляет самые свежие детали (с конца), укладывающиеся в бюджет; всегда ≥1. */
+function recentDetailsWithinBudget(details: string[], budgetTokens: number): string[] {
+  const kept: string[] = [];
+  let used = 0;
+  for (let index = details.length - 1; index >= 0; index--) {
+    const next = used + estimateTokens(details[index]);
+    if (next > budgetTokens && kept.length > 0) {
+      break; // бюджет исчерпан — старые детали опускаем
+    }
+    kept.unshift(details[index]);
+    used = next;
+  }
+  return kept;
+}
+
+/**
+ * Контекст памяти для агентов пайплайна: детали задачи + активный профиль. Детали
+ * ограничиваются бюджетом (свежие важнее), чтобы у долгой задачи контекст не рос
+ * неограниченно; опущенные ранние детали помечаются.
+ */
+export function formatRunContext(
+  details: string[],
+  profile: string[],
+  detailBudgetTokens: number = RUN_CONTEXT_DETAIL_BUDGET_TOKENS,
+): string {
   const parts: string[] = [];
   if (details.length > 0) {
-    parts.push(`Контекст задачи:\n${details.map(detail => `- ${detail}`).join('\n')}`);
+    const kept = recentDetailsWithinBudget(details, detailBudgetTokens);
+    const omitted = kept.length < details.length ? '- … (ранние детали опущены)\n' : '';
+    parts.push(`Контекст задачи:\n${omitted}${kept.map(detail => `- ${detail}`).join('\n')}`);
   }
   if (profile.length > 0) {
     parts.push(`О пользователе:\n${profile.map(entry => `- ${entry}`).join('\n')}`);

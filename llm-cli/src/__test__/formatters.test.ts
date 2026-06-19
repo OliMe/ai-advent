@@ -218,6 +218,14 @@ describe('форматирование прогонов задач', () => {
     assert.match(both, /О пользователе:\n- пишет на TS/);
   });
 
+  it('formatRunContext: при превышении бюджета держит свежие детали, ранние помечает', () => {
+    // Крошечный бюджет → влезает только самая свежая деталь, ранние опущены.
+    const capped = formatRunContext(['старое требование', 'свежее требование'], [], 3);
+    assert.match(capped, /- … \(ранние детали опущены\)/);
+    assert.match(capped, /- свежее требование/);
+    assert.doesNotMatch(capped, /старое требование/);
+  });
+
   it('formatRunList: пусто и со сводками', () => {
     assert.match(formatRunList([]), /Прогонов задач пока нет/);
     const summaries: RunSummary[] = [

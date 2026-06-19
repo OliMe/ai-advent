@@ -18,6 +18,12 @@ export interface AppConfig {
   priceOutputPer1M: number;
   /** Курс доллара к рублю для вывода стоимости в ₽. */
   usdToRub: number;
+  /**
+   * Потолок генерации для агентов пайплайна задач (этапы + аналитик), токенов.
+   * Не задан — берётся дефолт провайдера. Нужен провайдерам, требующим явный
+   * max_tokens (иначе подставляют 0 и отвергают запрос).
+   */
+  stageMaxTokens?: number;
 }
 
 const DEFAULT_TEMPERATURE = 0.7;
@@ -77,6 +83,8 @@ export function loadConfig(): AppConfig {
   const retryBaseMs = Number(process.env.LLM_RETRY_BASE_MS ?? DEFAULT_RETRY_BASE_MS);
   const contextTokens = Number(process.env.LLM_CONTEXT_TOKENS ?? DEFAULT_CONTEXT_TOKENS);
   const usdToRub = Number(process.env.LLM_USD_RUB ?? DEFAULT_USD_RUB);
+  // Потолок генерации этапов — положительное целое; иначе не задаём (дефолт провайдера).
+  const stageMaxTokens = Number(process.env.LLM_STAGE_MAX_TOKENS);
 
   return {
     apiKey,
@@ -102,5 +110,7 @@ export function loadConfig(): AppConfig {
     priceOutputPer1M: nonNegativeNumber(process.env.LLM_PRICE_OUTPUT_PER_1M, DEFAULT_PRICE_PER_1M),
     // Курс ₽/$ — положительный; иначе значение по умолчанию.
     usdToRub: Number.isFinite(usdToRub) && usdToRub > 0 ? usdToRub : DEFAULT_USD_RUB,
+    // Потолок генерации этапов задаётся только если это положительное целое.
+    ...(Number.isInteger(stageMaxTokens) && stageMaxTokens > 0 ? { stageMaxTokens } : {}),
   };
 }

@@ -73,7 +73,11 @@ export function makeConversationFactory(
       contextTokens: config.contextTokens,
       requestTimeoutMs: config.requestTimeoutMs,
       disableThinking,
-      limits,
+      // Потолок генерации этапов из конфига (если задан); явный limits имеет приоритет.
+      limits:
+        config.stageMaxTokens === undefined
+          ? limits
+          : { ...limits, maxTokens: limits?.maxTokens ?? config.stageMaxTokens },
     });
 }
 

@@ -149,6 +149,24 @@ describe('makeConversationFactory', () => {
     const conversation = make('СИСТЕМА');
     assert.equal(conversation.messages[0]?.content, 'СИСТЕМА');
   });
+
+  it('применяет stageMaxTokens из конфига; явный limits имеет приоритет', async t => {
+    let captured: { maxTokens?: number } = {};
+    const make = makeConversationFactory(
+      clientWith(t, async (_messages, options) => {
+        captured = options;
+        return { content: '' };
+      }),
+      makeConfig({ stageMaxTokens: 1234 }),
+      true,
+      0.3,
+    );
+    await make('S').ask('привет');
+    assert.equal(captured.maxTokens, 1234); // потолок из конфига
+
+    await make('S', { maxTokens: 50 }).ask('привет');
+    assert.equal(captured.maxTokens, 50); // явный limits перекрывает конфиг
+  });
 });
 
 describe('parseClarifierStep', () => {

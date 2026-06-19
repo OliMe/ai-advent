@@ -18,6 +18,7 @@ const ENV_KEYS = [
   'LLM_PRICE_INPUT_PER_1M',
   'LLM_PRICE_OUTPUT_PER_1M',
   'LLM_USD_RUB',
+  'LLM_STAGE_MAX_TOKENS',
 ];
 
 describe('loadConfig', () => {
@@ -212,6 +213,20 @@ describe('loadConfig', () => {
     const config = loadConfig();
     assert.equal(config.maxRetries, 3);
     assert.equal(config.retryBaseMs, 500);
+  });
+
+  it('читает потолок генерации этапов: валидный — задан, иначе — отсутствует', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+
+    assert.equal(loadConfig().stageMaxTokens, undefined); // не задан
+
+    process.env.LLM_STAGE_MAX_TOKENS = '2048';
+    assert.equal(loadConfig().stageMaxTokens, 2048); // валидный
+
+    process.env.LLM_STAGE_MAX_TOKENS = '-5';
+    assert.equal(loadConfig().stageMaxTokens, undefined); // невалидный → отсутствует
   });
 
   it('подгружает переменные из файла .env в текущем каталоге', () => {
