@@ -114,6 +114,38 @@ describe('runPipeline', () => {
     assert.ok(store.saved.length >= 4);
   });
 
+  it('возобновление чинит несогласованное состояние откатом (без проскока этапа)', async t => {
+    // Правленый/повреждённый прогон: стоит на completion, но артефактов нет —
+    // перепрыгнуть этапы нельзя, должен откатиться к requirements и пройти всё заново.
+    const run = {
+      ...createRun('Задача', { idSuffix: 'rp' }),
+      stage: 'completion' as Stage,
+      status: 'paused' as const,
+    };
+    const repairs: Array<[Stage, Stage]> = [];
+    const stages: Stage[] = [];
+    const result = await runPipeline(run, {
+      store: fakeStore(),
+      makeConversation: makeConversation(t, content()),
+      signal: idle,
+      hooks: {
+        confirmCompletion: async () => ({ approved: true }),
+        onStageRepair: (from, to) => repairs.push([from, to]),
+        onStageStart: stage => stages.push(stage),
+      },
+    });
+
+    assert.deepEqual(repairs, [['completion', 'requirements']]); // откатили к началу
+    assert.deepEqual(stages, [
+      'requirements',
+      'planning',
+      'execution',
+      'verification',
+      'completion',
+    ]);
+    assert.equal(result.status, 'completed'); // прошёл все этапы, ничего не проскочил
+  });
+
   it('этап requirements вызывает хук сбора требований и пишет артефакт', async t => {
     const run = createRun('Задача', { idSuffix: 'rq' });
     const calls: Array<{ issues: string[]; cycle: number }> = [];

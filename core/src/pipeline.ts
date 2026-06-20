@@ -2,6 +2,7 @@ import type { Conversation } from './conversation.ts';
 import type { GenerationLimits } from './types.ts';
 import type { RunStore } from './run-store.ts';
 import type { CompletionArtifact, RunStatus, Stage, StageArtifacts, TaskRun } from './task-run.ts';
+import { applyTransition, repairStage } from './task-run.ts';
 import {
   runCompletion,
   runExecution,
@@ -42,6 +43,11 @@ export interface PipelineHooks {
    * перегенерации исчерпаны (этап встаёт на паузу); иначе идёт перегенерация.
    */
   onInvariantViolation?: (info: { stage: Stage; violations: string[]; fatal: boolean }) => void;
+  /**
+   * Несогласованное состояние при возобновлении исправлено откатом этапа `from`→`to`
+   * (артефакты предыдущих этапов отсутствовали). Чтобы нельзя было «перепрыгнуть» этап.
+   */
+  onStageRepair?: (from: Stage, to: Stage) => void;
 }
 
 /** Зависимости запуска пайплайна. */
@@ -65,12 +71,12 @@ export interface PipelineDeps {
   invariants?: () => string[];
 }
 
-/** Фиксирует смену статуса/этапа, обновляет время и сохраняет прогон. */
+/**
+ * Валидированная смена этапа/статуса: applyTransition проверяет допустимость перехода
+ * (таблица + предусловия) и бросает InvalidTransitionError на недопустимом; затем сохраняем.
+ */
 function transition(run: TaskRun, store: RunStore | null, stage: Stage, status: RunStatus): void {
-  run.stage = stage;
-  run.status = status;
-  run.updatedAt = new Date().toISOString();
-  run.transitions.push({ stage, status, at: run.updatedAt });
+  applyTransition(run, stage, status);
   store?.save(run);
 }
 
@@ -90,6 +96,15 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
   }
   if (run.status === 'paused') {
     run.status = 'running'; // возобновляем
+  }
+  // Возобновление чинит несогласованность: если этап «впереди» своих артефактов
+  // (повреждённый/правленый прогон), откатываемся — перепрыгнуть этап нельзя.
+  const stageBeforeRepair = repairStage(run);
+  if (run.stage !== stageBeforeRepair) {
+    run.updatedAt = new Date().toISOString();
+    run.transitions.push({ stage: run.stage, status: run.status, at: run.updatedAt });
+    store?.save(run);
+    hooks.onStageRepair?.(stageBeforeRepair, run.stage);
   }
 
   const ctx: StageContext = {

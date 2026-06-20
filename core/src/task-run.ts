@@ -162,3 +162,99 @@ export function summarizeRun(run: TaskRun): RunSummary {
     updatedAt: run.updatedAt,
   };
 }
+
+// --- Явный автомат жизненного цикла: разрешённые переходы и предусловия этапов ---
+
+/**
+ * Разрешённые переходы МЕЖДУ этапами (не считая смены статуса на том же этапе).
+ * Перепрыгнуть этап нельзя: например, из requirements можно только в planning.
+ */
+export const ALLOWED_STAGE_TRANSITIONS: Record<Stage, readonly Stage[]> = {
+  requirements: ['planning'],
+  planning: ['execution'],
+  execution: ['verification'],
+  verification: ['execution', 'requirements', 'completion'], // ретрай / возврат к требованиям / приёмка
+  completion: ['execution'], // отказ на завершении → доработка
+};
+
+/** Разрешён ли прямой переход между этапами по таблице. */
+export function isAllowedStageTransition(from: Stage, to: Stage): boolean {
+  return ALLOWED_STAGE_TRANSITIONS[from].includes(to);
+}
+
+/**
+ * Выполнено ли предусловие входа в этап (есть нужный артефакт предыдущего):
+ * planning← requirements, execution← planning (утверждённый план), verification←
+ * execution, completion← пройденная проверка. requirements — без предусловий.
+ */
+export function stagePrerequisiteMet(run: TaskRun, stage: Stage): boolean {
+  switch (stage) {
+    case 'requirements':
+      return true;
+    case 'planning':
+      return run.artifacts.requirements !== undefined;
+    case 'execution':
+      return run.artifacts.planning !== undefined;
+    case 'verification':
+      return run.artifacts.execution !== undefined;
+    case 'completion':
+      return run.artifacts.verification?.passed === true;
+  }
+}
+
+/** Результат проверки перехода: либо разрешено, либо причина отказа. */
+export type TransitionCheck = { ok: true } | { ok: false; reason: string };
+
+/** Можно ли перевести прогон в этап `to`: ребро таблицы + предусловие (тот же этап — да). */
+export function canTransition(run: TaskRun, to: Stage): TransitionCheck {
+  if (run.stage === to) {
+    return { ok: true }; // смена статуса на том же этапе
+  }
+  if (!isAllowedStageTransition(run.stage, to)) {
+    return { ok: false, reason: `переход «${run.stage}» → «${to}» не разрешён` };
+  }
+  if (!stagePrerequisiteMet(run, to)) {
+    return { ok: false, reason: `не выполнено предусловие этапа «${to}»` };
+  }
+  return { ok: true };
+}
+
+/** Ошибка недопустимого перехода жизненного цикла прогона. */
+export class InvalidTransitionError extends Error {
+  readonly from: Stage;
+  readonly to: Stage;
+  constructor(from: Stage, to: Stage, reason: string) {
+    super(`Недопустимый переход «${from}» → «${to}»: ${reason}`);
+    this.name = 'InvalidTransitionError';
+    this.from = from;
+    this.to = to;
+  }
+}
+
+/**
+ * Валидированный переход: проверяет допустимость (ребро + предусловие) и применяет
+ * смену этапа/статуса к прогону. Недопустимый переход → {@link InvalidTransitionError}.
+ */
+export function applyTransition(run: TaskRun, to: Stage, status: RunStatus): void {
+  const check = canTransition(run, to);
+  if (!check.ok) {
+    throw new InvalidTransitionError(run.stage, to, check.reason);
+  }
+  run.stage = to;
+  run.status = status;
+  run.updatedAt = new Date().toISOString();
+  run.transitions.push({ stage: to, status, at: run.updatedAt });
+}
+
+/**
+ * Чинит несогласованное состояние при возобновлении: пока предусловие текущего этапа
+ * не выполнено, откатывается к предыдущему этапу (до requirements). Никогда не двигает
+ * вперёд — легитимный возврат к сбору требований не нарушается. Возвращает прежний этап.
+ */
+export function repairStage(run: TaskRun): Stage {
+  const before = run.stage;
+  while (run.stage !== 'requirements' && !stagePrerequisiteMet(run, run.stage)) {
+    run.stage = STAGES[STAGES.indexOf(run.stage) - 1];
+  }
+  return before;
+}

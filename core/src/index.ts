@@ -48,10 +48,18 @@ export {
   createRun,
   nextStage,
   summarizeRun,
+  ALLOWED_STAGE_TRANSITIONS,
+  isAllowedStageTransition,
+  stagePrerequisiteMet,
+  canTransition,
+  applyTransition,
+  repairStage,
+  InvalidTransitionError,
 } from './task-run.ts';
 export type {
   Stage,
   RunStatus,
+  TransitionCheck,
   RequirementsArtifact,
   PlanningArtifact,
   ExecutionArtifact,
