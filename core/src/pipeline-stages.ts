@@ -217,10 +217,20 @@ export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> 
     ? `\n\nУчти правку пользователя: ${ctx.run.correction}`
     : '';
   const prompt = `${memoryPrefix(ctx)}Задача: ${ctx.run.title}${correction}`;
-  const text = await guarded(ctx, feedback =>
-    conversation.ask(feedback ?? prompt).then(result => result.content),
+  let artifact = parsePlanning(
+    await guarded(ctx, feedback => conversation.ask(feedback ?? prompt).then(r => r.content)),
   );
-  return parsePlanning(text);
+  // Критерии обязательны: если их нет (план ушёл прозой) — добираем повторным запросом
+  // (до 2 раз), иначе план «зависнет» на проверке пустых критериев.
+  const followUp =
+    'Критерии приёмки обязательны и не должны быть пустыми. Верни их непустым массивом ' +
+    'в поле "criteria" (вместе со steps), в том же JSON-формате.';
+  for (let attempt = 0; artifact.criteria.length === 0 && attempt < 2; attempt++) {
+    artifact = parsePlanning(
+      await guarded(ctx, feedback => conversation.ask(feedback ?? followUp).then(r => r.content)),
+    );
+  }
+  return artifact;
 }
 
 /** Выполнение: план (+проблемы проверки/правка) → результат; крупный текст в файл. */
@@ -244,23 +254,33 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
   return { ...parsed, files: path === null ? [] : [path] };
 }
 
-/** Проверка: результат против требований/критериев → вердикт + замечания. */
+/** Проверка: результат против критериев → вердикт + замечания. */
 export async function runVerification(ctx: StageContext): Promise<VerificationArtifact> {
   const plan = ctx.run.artifacts.planning;
   const execution = ctx.run.artifacts.execution;
-  // Без критериев сверять не с чем — это провал по построению (модель не зовём).
-  if (plan === undefined || plan.criteria.length === 0) {
+  // Основа приёмки: критерии, иначе шаги, иначе текст плана — чтобы не зациклиться
+  // на «пустых критериях» (модель иногда отдаёт план прозой).
+  let basis = '';
+  if (plan !== undefined) {
+    if (plan.criteria.length > 0) {
+      basis = `План:\n${plan.steps.join('\n')}\n\nКритерии приёмки (сверяй результат по ним):\n${plan.criteria.join('\n')}`;
+    } else if (plan.steps.length > 0) {
+      basis = `Шаги плана (критериев нет — сверяй результат по ним):\n${plan.steps.join('\n')}`;
+    } else if (plan.text) {
+      basis = `План (критериев и шагов нет — сверяй результат по нему):\n${plan.text}`;
+    }
+  }
+  // Совсем пустой план — сверять не с чем (модель не зовём).
+  if (basis === '') {
     return {
       passed: false,
-      issues: ['Критерии приёмки не сформулированы — нужно переформулировать план.'],
-      text: 'Проверка невозможна: пустые критерии приёмки.',
+      issues: ['План пуст — нечего проверять; нужно переформулировать план.'],
+      text: 'Проверка невозможна: пустой план.',
     };
   }
   const conversation = ctx.makeConversation(VERIFIER_SYSTEM, undefined, VERIFIER_TEMPERATURE);
   const result = await conversation.ask(
-    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\n` +
-      `План:\n${plan.steps.join('\n')}\n\n` +
-      `Критерии приёмки:\n${plan.criteria.join('\n')}\n\n` +
+    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\n${basis}\n\n` +
       // Берём полный результат; если его нет — краткое резюме (хрупкость поля).
       `Результат на проверку:\n${execution?.text || execution?.summary || ''}`,
   );

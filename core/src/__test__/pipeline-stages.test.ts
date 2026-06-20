@@ -155,6 +155,59 @@ describe('раннеры этапов', () => {
     assert.deepEqual(artifact.steps, ['s']);
   });
 
+  it('runPlanning: добирает пустые критерии повторным запросом', async t => {
+    const run = createRun('Сайт');
+    const replies = [
+      '{"steps":["s"],"criteria":[],"text":"план прозой"}', // первый раз критерии пусты
+      '{"steps":["s"],"criteria":["к1"],"text":"ок"}', // на доборе — есть
+    ];
+    let index = 0;
+    const ctx: StageContext = {
+      run,
+      makeConversation: () =>
+        new Conversation(
+          clientWith(t, async () => ({
+            content: replies[Math.min(index++, replies.length - 1)],
+            usage: undefined,
+          })),
+          {
+            systemPrompt: 'планировщик',
+            temperature: 0.5,
+            contextTokens: 8192,
+            requestTimeoutMs: 5000,
+          },
+        ),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+    };
+    const artifact = await runPlanning(ctx);
+    assert.deepEqual(artifact.criteria, ['к1']); // критерии добраны со второго раза
+  });
+
+  it('runPlanning: добор не помог → возвращаем план как есть', async t => {
+    const run = createRun('Сайт');
+    const ctx: StageContext = {
+      run,
+      makeConversation: () =>
+        new Conversation(
+          clientWith(t, async () => ({
+            content: '{"steps":["s"],"criteria":[],"text":"всё прозой"}',
+            usage: undefined,
+          })),
+          {
+            systemPrompt: 'планировщик',
+            temperature: 0.5,
+            contextTokens: 8192,
+            requestTimeoutMs: 5000,
+          },
+        ),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+    };
+    const artifact = await runPlanning(ctx);
+    assert.deepEqual(artifact.criteria, []); // после исчерпания доборов — как есть
+  });
+
   it('runPlanning и runExecution подмешивают память задачи в промпт', async t => {
     const run = createRun('Сайт');
     run.artifacts.planning = { steps: ['s'], criteria: ['c'], text: 'план' };
@@ -162,7 +215,7 @@ describe('раннеры этапов', () => {
     await runPlanning(
       ctxWith(
         t,
-        '{"steps":[],"criteria":[],"text":""}',
+        '{"steps":["s"],"criteria":["c"],"text":"план"}', // непустые критерии → без добора
         run,
         p => (planPrompt = p),
         () => null,
@@ -249,21 +302,43 @@ describe('раннеры этапов', () => {
     assert.equal(c.summary, 'итог'); // verification отсутствует → «с замечаниями» в промпте
   });
 
-  it('runVerification: пустые критерии → провал без вызова модели', async t => {
+  it('runVerification: совсем пустой план → провал без вызова модели', async t => {
+    // (а) плана нет
     let called = false;
-    // (а) план вообще не сформирован
     const noPlan = createRun('Пустая');
     const v1 = await runVerification(ctxWith(t, '{"passed":true}', noPlan, () => (called = true)));
     assert.equal(v1.passed, false);
-    assert.match(v1.issues[0], /Критерии приёмки не сформулированы/);
+    assert.match(v1.issues[0], /План пуст/);
 
-    // (б) план есть, но критериев нет
-    const emptyCriteria = createRun('Пустая');
-    emptyCriteria.artifacts.planning = { steps: ['s'], criteria: [], text: 'план' };
-    const v2 = await runVerification(ctxWith(t, '{"passed":true}', emptyCriteria));
+    // (б) план есть, но пуст полностью (ни критериев, ни шагов, ни текста)
+    const empty = createRun('Пустая');
+    empty.artifacts.planning = { steps: [], criteria: [], text: '' };
+    const v2 = await runVerification(ctxWith(t, '{"passed":true}', empty, () => (called = true)));
     assert.equal(v2.passed, false);
-
     assert.equal(called, false); // в обоих случаях модель не звали
+  });
+
+  it('runVerification: нет критериев → сверяет по шагам, иначе по тексту плана', async t => {
+    // Критериев нет, но есть шаги → сверяем по шагам (модель зовём).
+    const bySteps = createRun('Сайт');
+    bySteps.artifacts.planning = { steps: ['шаг A'], criteria: [], text: 'п' };
+    bySteps.artifacts.execution = { summary: 'готово', files: [], log: [], text: 'результат' };
+    let stepsPrompt = '';
+    const v1 = await runVerification(
+      ctxWith(t, '{"passed":true,"issues":[]}', bySteps, p => (stepsPrompt = p)),
+    );
+    assert.equal(v1.passed, true);
+    assert.match(stepsPrompt, /Шаги плана[\s\S]*шаг A/);
+
+    // Ни критериев, ни шагов, но есть текст → сверяем по тексту.
+    const byText = createRun('Сайт');
+    byText.artifacts.planning = { steps: [], criteria: [], text: 'план прозой' };
+    let textPrompt = '';
+    const v2 = await runVerification(
+      ctxWith(t, '{"passed":true,"issues":[]}', byText, p => (textPrompt = p)),
+    );
+    assert.equal(v2.passed, true);
+    assert.match(textPrompt, /сверяй результат по нему[\s\S]*план прозой/);
   });
 
   it('runVerification: в промпт идут память, заголовок, шаги; результат — text или summary', async t => {
