@@ -64,19 +64,25 @@ describe('enforceInvariants', () => {
     assert.equal(calls, 1);
   });
 
-  it('нарушение → перегенерация → успех', async t => {
+  it('нарушение → перегенерация → успех; фидбэк сохраняет формат', async t => {
     const violations: string[][] = [];
+    let feedbackSeen = '';
     const text = await enforceInvariants({
       invariants: ['нативный TS'],
       makeChecker: checkerFactory(t, [
         '{"ok":false,"violations":["webpack запрещён"]}',
         '{"ok":true}',
       ]),
-      produce: async feedback => (feedback === undefined ? 'ПЛОХО' : 'ИСПРАВЛЕНО'),
+      produce: async feedback => {
+        if (feedback !== undefined) feedbackSeen = feedback;
+        return feedback === undefined ? 'ПЛОХО' : 'ИСПРАВЛЕНО';
+      },
       onViolation: v => violations.push(v),
     });
     assert.equal(text, 'ИСПРАВЛЕНО');
     assert.deepEqual(violations, [['webpack запрещён']]); // одно замечание, перегенерация
+    assert.match(feedbackSeen, /webpack запрещён/); // названо нарушение
+    assert.match(feedbackSeen, /Сохрани тот же формат/); // напоминание про формат
   });
 
   it('исчерпание перегенераций → InvariantViolationError', async t => {

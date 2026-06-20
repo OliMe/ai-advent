@@ -598,6 +598,43 @@ describe('RunController', () => {
     assert.match(text, /Инварианты нарушены и не исправлены/); // фатально → пауза
   });
 
+  it('инварианты подаются в контекст аналитика и планировщика', async t => {
+    const out = makeCollector();
+    let clarifierPrompt = '';
+    let planPrompt = '';
+    const make: ConversationFactory = systemPrompt => {
+      const isClarifier = systemPrompt.includes('аналитик');
+      const isPlanner = systemPrompt.includes('планировщик');
+      const client = clientWith(t, async messages => {
+        const last = messages.at(-1)?.content ?? '';
+        if (isClarifier) {
+          clarifierPrompt = last;
+          return { content: '{"done":true}', usage: undefined };
+        }
+        if (systemPrompt.includes('контролёр')) return { content: '{"ok":true}', usage: undefined };
+        if (isPlanner) planPrompt = last;
+        return { content: content()[stageOf(systemPrompt)](), usage: undefined };
+      });
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+      });
+    };
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: make,
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+      invariants: () => ['React запрещён'],
+    });
+    await controller.start('Задача');
+    assert.match(clarifierPrompt, /ИНВАРИАНТЫ[\s\S]*React запрещён/); // аналитик видит инварианты
+    assert.match(planPrompt, /ИНВАРИАНТЫ[\s\S]*React запрещён/); // планировщик видит инварианты
+  });
+
   it('edit сбрасывает счётчик проверок реализации', async t => {
     const run = createRun('Задача', { maxRetries: 2, idSuffix: 'er' });
     const out = makeCollector();

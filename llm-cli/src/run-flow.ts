@@ -37,8 +37,9 @@ const CLARIFIER_SYSTEM =
   'полученные ответы (и, если даны, замечания проверки), чтобы снять неоднозначности перед ' +
   'решением: цель, объём, ограничения, формат результата, крайние случаи. Каждый следующий ' +
   'вопрос выбирай с учётом предыдущих ответов. К каждому вопросу предлагай наиболее подходящий ' +
-  'ответ по умолчанию. Когда требований достаточно — заверши. Верни СТРОГО JSON: ' +
-  '{"question": "следующий вопрос", "suggestion": "предлагаемый ответ"} либо {"done": true}.';
+  'ответ по умолчанию. Если в контексте даны ИНВАРИАНТЫ — строго соблюдай их: не задавай ' +
+  'вопросов и не предлагай подсказок, которые их нарушают. Когда требований достаточно — заверши. ' +
+  'Верни СТРОГО JSON: {"question": "следующий вопрос", "suggestion": "предлагаемый ответ"} либо {"done": true}.';
 
 /** Шаг диалога аналитика: либо следующий вопрос с подсказкой, либо признак завершения. */
 export type ClarifierStep = { done: true } | { done: false; question: string; suggestion: string };
@@ -156,6 +157,15 @@ export class RunController {
     this.deps.recordToSession?.(role, content);
   }
 
+  /** Блок инвариантов для контекста агентов пайплайна (или пусто, если их нет). */
+  private invariantsBlock(): string {
+    const list = this.deps.invariants?.() ?? [];
+    return list.length === 0
+      ? ''
+      : `ИНВАРИАНТЫ (соблюдать строго, не нарушать и не предлагать нарушающее):\n` +
+          `${list.map(item => `- ${item}`).join('\n')}\n\n`;
+  }
+
   /**
    * Запускает прогон задачи: без аргумента — текущей задачи сессии; с аргументом —
    * существующей (по id/имени) или новой (по описанию). Прогон привязывается к задаче.
@@ -227,7 +237,8 @@ export class RunController {
   ): Promise<{ collected: string[] }> {
     const conversation = this.deps.makeConversation(CLARIFIER_SYSTEM);
     const context = this.deps.taskBridge.memoryContext();
-    const prefix = context ? `${context}\n\n` : '';
+    // Инварианты — первыми: аналитик не должен предлагать нарушающие их варианты.
+    const prefix = this.invariantsBlock() + (context ? `${context}\n\n` : '');
     const issuesBlock =
       issues.length > 0
         ? `\n\nЗамечания прошлой проверки (учти их в вопросах):\n${issues.join('\n')}`
@@ -345,8 +356,9 @@ export class RunController {
         store: this.deps.store,
         makeConversation: this.deps.makeConversation,
         signal,
-        // Провайдер: свежие требования (дописанные на этапе requirements) видны планированию.
-        memoryContext: () => this.deps.taskBridge.memoryContext(),
+        // Провайдер: инварианты + свежие требования (дописанные на этапе requirements) —
+        // видны планированию/выполнению, чтобы агенты не нарушали ограничения изначально.
+        memoryContext: () => this.invariantsBlock() + this.deps.taskBridge.memoryContext(),
         invariants: this.deps.invariants,
         hooks: {
           onInvariantViolation: ({ stage, violations, fatal }) =>

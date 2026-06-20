@@ -93,7 +93,8 @@ export async function enforceInvariants(options: EnforceInvariantsOptions): Prom
     if (attempt < maxRegenerations) {
       text = await produce(
         `Твой ответ нарушает инварианты:\n${violations.join('\n')}\n` +
-          'Перегенерируй решение, строго соблюдая ВСЕ инварианты.',
+          'Перегенерируй ответ, строго соблюдая ВСЕ инварианты. Сохрани тот же формат и ' +
+          'полноту ответа (все обязательные поля/разделы); измени только нарушающее инвариант.',
       );
     }
   }
