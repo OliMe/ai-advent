@@ -865,6 +865,10 @@ describe('интерактив: команды слоистой памяти', (
         '/profile switch Z',
         '/profile rename Z',
         '/profile delete Z',
+        '/invariants',
+        '/invariant',
+        '/invariant add X',
+        '/invariant delete 1',
         '/exit',
       ],
       0.7,
@@ -878,6 +882,133 @@ describe('интерактив: команды слоистой памяти', (
     );
     await finished;
     assert.match(text(), /Слоистая память выключена/);
+  });
+
+  it('инварианты: add / список / delete / показ', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(
+      client,
+      [
+        '/invariant',
+        '/invariant add только нативный TS',
+        '/invariant add только нативный TS',
+        '/invariants',
+        '/invariant delete 9',
+        '/invariant delete 1',
+        '/invariant',
+        '/exit',
+      ],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Инвариантов нет/); // пустой список в начале
+    assert.match(text(), /Инвариант добавлен: только нативный TS/);
+    assert.match(text(), /Инвариант пуст или уже задан/); // дубль
+    assert.match(text(), /Инварианты \(нарушать нельзя\):/);
+    assert.match(text(), /Нет таких инвариантов/); // delete 9 — вне диапазона
+    assert.match(text(), /Удалено: «только нативный TS»/);
+  });
+
+  it('инвариант: авто-предложение — «да» добавляет, «нет» отклоняет', async t => {
+    const client = taskRunClient(t, {
+      extraction: '{"task":[],"user":[],"invariant":"только PostgreSQL"}',
+    });
+    const accepted = driveInteractive(
+      client,
+      ['используем только PostgreSQL', 'да', '/invariants', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await accepted.finished;
+    assert.match(accepted.text(), /Сделать инвариантом «только PostgreSQL»\?/);
+    assert.match(accepted.text(), /Инвариант добавлен: только PostgreSQL/);
+    assert.match(accepted.text(), /1\. только PostgreSQL/); // виден в /invariants
+
+    const declined = driveInteractive(
+      taskRunClient(t, { extraction: '{"task":[],"user":[],"invariant":"только PostgreSQL"}' }),
+      ['используем только PostgreSQL', 'нет', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await declined.finished;
+    assert.match(declined.text(), /Хорошо, без инварианта/);
+
+    // Неявный ответ (не да/нет) — инвариант не ставится и не звучит «Хорошо».
+    const implicit = driveInteractive(
+      taskRunClient(t, { extraction: '{"task":[],"user":[],"invariant":"только PostgreSQL"}' }),
+      ['используем только PostgreSQL', 'не знаю', '/invariants', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await implicit.finished;
+    assert.match(implicit.text(), /Сделать инвариантом «только PostgreSQL»\?/);
+    assert.doesNotMatch(implicit.text(), /Хорошо, без инварианта/);
+    assert.match(implicit.text(), /Инвариантов нет/); // не добавлен
+  });
+
+  it('инвариант: прерывание ввода на подтверждении завершает чат', async t => {
+    const client = taskRunClient(t, {
+      extraction: '{"task":[],"user":[],"invariant":"только PostgreSQL"}',
+    });
+    const input = new PassThrough();
+    let buffer = '';
+    let asked = false;
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        const text = chunk.toString();
+        buffer += text;
+        if (text.includes('Вы: ') && !asked) {
+          asked = true;
+          setImmediate(() => input.write('используем только PostgreSQL\n'));
+        } else if (text.includes('(да/нет)')) {
+          setImmediate(() => input.end()); // EOF на подтверждении → штатный выход
+        }
+        callback();
+      },
+    });
+    await runInteractive(
+      client,
+      makeConfig(),
+      {},
+      false,
+      0.7,
+      true,
+      'window',
+      6,
+      makeSession(),
+      null,
+      input,
+      output,
+      readline.createInterface,
+      layered,
+    );
+    assert.match(buffer, /Сделать инвариантом «только PostgreSQL»\?/);
+    assert.match(buffer, /До встречи!/);
   });
 
   it('стартовая задача (initialTaskTitle) и сохранение задач в хранилище', async t => {

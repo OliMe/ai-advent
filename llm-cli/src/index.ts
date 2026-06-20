@@ -7,6 +7,7 @@ import {
   FileProfileStore,
   FileTaskStore,
   FileRunStore,
+  FileInvariantsStore,
   DEFAULT_PROFILE_NAME,
 } from '../../core/src/index.ts';
 import { parseArgs } from './args.ts';
@@ -19,6 +20,7 @@ import {
   profilePath,
   tasksDirectory,
   runsDirectory,
+  invariantsPath,
 } from './paths.ts';
 import { runInteractive, type MemorySettings } from './interactive.ts';
 
@@ -89,6 +91,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       enabled: !noMemory,
       profileStore,
       taskStore: ephemeral ? null : new FileTaskStore(tasksDirectory()),
+      invariantsStore: ephemeral ? null : new FileInvariantsStore(invariantsPath()),
       profileTokens,
       taskTokens,
       initialTaskTitle: task,

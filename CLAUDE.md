@@ -83,9 +83,11 @@ npm --prefix llm-cli start             # запустить CLI (node src/cli.ts
   (`FileSessionStore`, атомарная запись). Ветвление/переключение сессий.
 - Память (движок): `memory-strategy.ts` (короткая: window/summary/facts),
   `memory-task.ts` (`TaskMemory`), `memory-profile.ts` (`ProfileMemory`),
-  `memory-manager.ts` (`MemoryManager` — оркестрирует профиль+задачу+короткую,
-  подмешивает блоки и директиву персонализации, извлекает память из реплик,
-  консолидирует профиль). Хранилища: `profile-store.ts`, `task-store.ts`.
+  `memory-invariants.ts` (`InvariantsMemory` — глобальные жёсткие ограничения),
+  `memory-manager.ts` (`MemoryManager` — оркестрирует инварианты+профиль+задачу+короткую,
+  подмешивает блоки и директивы персонализации/инвариантов, извлекает память из реплик,
+  консолидирует профиль). Хранилища: `profile-store.ts`, `task-store.ts`,
+  `invariants-store.ts` (глобальный `~/.llm-cli/invariants.json`).
 - Пайплайн задач: `task-run.ts` (`TaskRun`/`Stage`/артефакты/`createRun`),
   `run-store.ts` (`FileRunStore`: `<id>.json` + каталог файлов-артефактов),
   `pipeline-stages.ts` (раннеры этапов + ленивый разбор), `pipeline.ts` (`runPipeline`

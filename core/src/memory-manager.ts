@@ -3,9 +3,11 @@ import type { ChatMessage, Usage } from './types.ts';
 import type { Profile, ProfileStore, ProfileSummary } from './profile-store.ts';
 import type { Task, TaskStore, TaskSummary } from './task-store.ts';
 import type { MemoryStrategy } from './memory-strategy.ts';
+import type { InvariantsStore } from './invariants-store.ts';
 import { MIN_HISTORY_BUDGET_TOKENS } from './tokens.ts';
 import { TaskMemory } from './memory-task.ts';
 import { ProfileMemory } from './memory-profile.ts';
+import { InvariantsMemory } from './memory-invariants.ts';
 
 /** Ограничивает число диапазоном [min, max]. */
 function clampTokens(value: number, min: number, max: number): number {
@@ -51,6 +53,13 @@ const PERSONALIZATION_DIRECTIVE =
   'уточняющие вопросы и собери требования (они зафиксируются в задаче), и только потом ' +
   'предлагай решение; не бросайся решать недопонятую задачу.';
 
+/** Директива инвариантов: велит модели жёстко соблюдать ограничения и отказывать нарушающему. */
+const INVARIANTS_DIRECTIVE =
+  'ИНВАРИАНТЫ выше — жёсткие ограничения, которые НЕЛЬЗЯ нарушать (архитектура, ' +
+  'техрешения, ограничения стека, бизнес-правила). Перед ответом сверь предложение с ' +
+  'КАЖДЫМ инвариантом. Если запрос или решение нарушает инвариант — НЕ предлагай его: ' +
+  'явно назови нарушенный инвариант и предложи совместимую альтернативу.';
+
 /** Параметры менеджера слоистой памяти. */
 export interface MemoryManagerOptions {
   /** Включена ли слоистая память (--no-memory выключает). */
@@ -65,6 +74,8 @@ export interface MemoryManagerOptions {
   /** Хранилища; null — режим «в памяти, без записи на диск» (--ephemeral). */
   profileStore: ProfileStore | null;
   taskStore: TaskStore | null;
+  /** Хранилище глобальных инвариантов; null — в памяти / отсутствует. */
+  invariantsStore?: InvariantsStore | null;
 }
 
 /** Отчёт о записи в память — что и в какой слой записано на этом шаге. */
@@ -94,10 +105,13 @@ export class MemoryManager {
   private readonly requestTimeoutMs: number;
   private readonly tasks: TaskMemory;
   private readonly profiles: ProfileMemory;
+  private readonly invariants: InvariantsMemory;
   private extractedThrough = 0;
   // Предложенное (но ещё не подтверждённое) имя новой задачи.
   private proposal: string | null = null;
-  // Имена предложений, от которых пользователь уже отказался (не предлагаем снова).
+  // Предложенный (но ещё не подтверждённый) инвариант.
+  private invariantProposal: string | null = null;
+  // Имена предложений (задач/инвариантов), от которых пользователь отказался.
   private readonly declined = new Set<string>();
 
   constructor(options: MemoryManagerOptions) {
@@ -108,6 +122,31 @@ export class MemoryManager {
     this.requestTimeoutMs = options.requestTimeoutMs;
     this.tasks = new TaskMemory(options.taskStore);
     this.profiles = new ProfileMemory(options.profile, options.profileStore);
+    this.invariants = new InvariantsMemory(options.invariantsStore ?? null);
+  }
+
+  // --- Инварианты (делегирование в InvariantsMemory) ---
+  /** Текущий список инвариантов. */
+  invariantsList(): string[] {
+    return this.invariants.all();
+  }
+  /** Добавляет инвариант; возвращает добавленный текст или null (пусто/дубль). */
+  addInvariant(text: string): string | null {
+    return this.invariants.add(text);
+  }
+  /** Удаляет инварианты по номерам (1-based); возвращает удалённые. */
+  removeInvariants(oneBasedIndices: number[]): string[] {
+    return this.invariants.remove(oneBasedIndices);
+  }
+  /** Забирает предложение нового инварианта (если есть), очищая его. */
+  takeInvariantProposal(): string | null {
+    const proposed = this.invariantProposal;
+    this.invariantProposal = null;
+    return proposed;
+  }
+  /** Помечает предложение инварианта отклонённым — больше не предлагаем. */
+  declineInvariant(text: string): void {
+    this.declined.add(text);
   }
 
   // --- Профиль (делегирование в ProfileMemory) ---
@@ -213,6 +252,9 @@ export class MemoryManager {
       '"isNewTask" — true, если пользователь ставит НОВУЮ задачу/цель, отличную от ' +
       'текущей (а не уточняет её и не ведёт болтовню); иначе false. ' +
       '"proposedTitle" — краткое имя этой новой задачи (если isNewTask), иначе "". ' +
+      '"invariant" — если пользователь ЯВНО зафиксировал жёсткое ограничение, которое ' +
+      'нельзя нарушать (выбранная архитектура, принятое техрешение, ограничение стека, ' +
+      'бизнес-правило) — его краткая формулировка; иначе "". ' +
       'Без пояснений.\n\nСообщения:\n' +
       dialogue;
     return this.client.completeWithUsage([{ role: 'user', content: instruction }], {
@@ -228,7 +270,13 @@ export class MemoryManager {
    * пишет факты задачи и явные предпочтения. Возвращает, что именно записано.
    */
   private applyExtraction(content: string): { taskUpdated: boolean; profileAdded: string[] } {
-    let parsed: { task?: unknown; user?: unknown; isNewTask?: unknown; proposedTitle?: unknown };
+    let parsed: {
+      task?: unknown;
+      user?: unknown;
+      isNewTask?: unknown;
+      proposedTitle?: unknown;
+      invariant?: unknown;
+    };
     try {
       parsed = JSON.parse(content);
     } catch {
@@ -245,6 +293,16 @@ export class MemoryManager {
       !this.declined.has(proposedTitle)
     ) {
       this.proposal = proposedTitle;
+    }
+    // Авто-предложение инварианта: если зафиксировано жёсткое ограничение, ещё не
+    // добавленное и ранее не отклонённое.
+    const proposedInvariant = typeof parsed.invariant === 'string' ? parsed.invariant.trim() : '';
+    if (
+      proposedInvariant.length > 0 &&
+      !this.invariants.all().includes(proposedInvariant) &&
+      !this.declined.has(proposedInvariant)
+    ) {
+      this.invariantProposal = proposedInvariant;
     }
     const taskUpdated = Array.isArray(parsed.task) ? this.tasks.applyDetails(parsed.task) : false;
     const profileAdded = Array.isArray(parsed.user) ? this.profiles.addTraits(parsed.user) : [];
@@ -299,11 +357,18 @@ export class MemoryManager {
     if (!this.enabled) {
       return shortened;
     }
+    // Блок инвариантов — высший приоритет; директиву инвариантов добавляем только когда они есть.
+    const invariants = this.invariants.block(this.budgets.task);
+    const directive =
+      invariants === null
+        ? PERSONALIZATION_DIRECTIVE
+        : `${PERSONALIZATION_DIRECTIVE}\n\n${INVARIANTS_DIRECTIVE}`;
     const system: ChatMessage = {
       role: 'system',
-      content: `${shortened[0].content}\n\n${PERSONALIZATION_DIRECTIVE}`,
+      content: `${shortened[0].content}\n\n${directive}`,
     };
     const blocks: ChatMessage[] = [];
+    if (invariants) blocks.push(invariants);
     const profile = this.profiles.block(this.budgets.profile);
     if (profile) blocks.push(profile);
     const task = this.tasks.block(this.budgets.task);

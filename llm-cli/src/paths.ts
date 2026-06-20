@@ -16,6 +16,11 @@ export function profilePath(): string {
   return join(memoryBaseDir(), 'profile.json');
 }
 
+/** Путь к файлу глобальных инвариантов проекта. */
+export function invariantsPath(): string {
+  return join(memoryBaseDir(), 'invariants.json');
+}
+
 /** Каталог хранения задач. */
 export function tasksDirectory(): string {
   return join(memoryBaseDir(), 'tasks');

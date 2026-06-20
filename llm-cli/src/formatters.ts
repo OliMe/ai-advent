@@ -57,6 +57,15 @@ export function formatProfile(entries: string[], activeName: string): string {
   return `${header}:\n${lines.join('\n')}\n\n`;
 }
 
+/** Форматирует список инвариантов (нумерованный) для команды /invariants. */
+export function formatInvariants(invariants: string[]): string {
+  if (invariants.length === 0) {
+    return 'Инвариантов нет. Задать: /invariant add <ограничение>\n\n';
+  }
+  const lines = invariants.map((item, index) => `  ${index + 1}. ${item}`);
+  return `Инварианты (нарушать нельзя):\n${lines.join('\n')}\n\n`;
+}
+
 /** Форматирует список профилей (с пометкой активного) для команды /profiles. */
 export function formatProfileList(summaries: ProfileSummary[], activeName: string): string {
   // Активный профиль показываем всегда, даже если он ещё пуст и не сохранён.
@@ -97,6 +106,9 @@ export function helpText(): string {
     '  /run continue [id]  — продолжить приостановленный прогон\n' +
     '  /run edit <правка>  — внести правку перед продолжением\n' +
     '  /run abort          — завершить задачу досрочно\n' +
+    '  /invariants         — список инвариантов (жёстких ограничений)\n' +
+    '  /invariant add <текст> — добавить инвариант (нарушать нельзя)\n' +
+    '  /invariant delete <n,…> — удалить инвариант(ы)\n' +
     '  /system <текст>     — изменить системный промпт\n' +
     '  /file <путь>        — добавить содержимое файла в контекст\n' +
     '  /temp <число>       — изменить температуру\n' +

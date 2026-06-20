@@ -5,6 +5,7 @@ import {
   formatCurrentTask,
   formatProfile,
   formatProfileList,
+  formatInvariants,
   helpText,
   formatSessionList,
   formatStageResult,
@@ -44,6 +45,14 @@ describe('format helpers (задачи и профиль)', () => {
     assert.match(formatProfile(['любит кратко', 'TypeScript'], 'работа'), /Профиль «работа»:/);
     assert.match(formatProfile(['любит кратко', 'TypeScript'], 'работа'), /1\. любит кратко/);
     assert.match(formatProfile(['любит кратко', 'TypeScript'], 'работа'), /2\. TypeScript/);
+  });
+
+  it('formatInvariants: пусто и нумерованный список', () => {
+    assert.match(formatInvariants([]), /Инвариантов нет\. Задать: \/invariant add/);
+    const text = formatInvariants(['только нативный TS', 'без сборки']);
+    assert.match(text, /Инварианты \(нарушать нельзя\):/);
+    assert.match(text, /1\. только нативный TS/);
+    assert.match(text, /2\. без сборки/);
   });
 
   it('formatProfileList: помечает активный и добавляет его, если отсутствует', () => {

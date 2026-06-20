@@ -18,6 +18,7 @@ import type {
   ChatCompletionClient,
   GenerationLimits,
   ProfileStore,
+  InvariantsStore,
   RunStore,
   Session,
   SessionStore,
@@ -39,6 +40,7 @@ import {
   formatCurrentTask,
   formatProfile,
   formatProfileList,
+  formatInvariants,
   EPHEMERAL_NOTICE,
   MEMORY_OFF_NOTICE,
 } from './formatters.ts';
@@ -56,6 +58,8 @@ export interface MemorySettings {
   /** Хранилища; null — в памяти на сессию, без записи на диск (--ephemeral). */
   profileStore: ProfileStore | null;
   taskStore: TaskStore | null;
+  /** Хранилище глобальных инвариантов; null — в памяти (--ephemeral). */
+  invariantsStore?: InvariantsStore | null;
   /** Переопределение размеров слоёв (иначе — эвристика от контекста). */
   profileTokens?: number;
   taskTokens?: number;
@@ -130,6 +134,7 @@ export async function runInteractive(
       memorySettings.profileStore?.load(activeProfileName) ?? emptyProfile(activeProfileName),
     profileStore: memorySettings.profileStore,
     taskStore: memorySettings.taskStore,
+    invariantsStore: memorySettings.invariantsStore ?? null,
   });
   memoryManager.adopt(currentSession.taskId);
   if (memorySettings.initialTaskTitle !== undefined && memoryManager.currentTask() === null) {
@@ -431,6 +436,57 @@ export async function runInteractive(
       run: input => runController.start(input.slice('/run'.length).trim()),
     },
     {
+      matches: input => input === '/invariants',
+      run: () =>
+        output.write(
+          memoryManager.enabled
+            ? formatInvariants(memoryManager.invariantsList())
+            : MEMORY_OFF_NOTICE,
+        ),
+    },
+    {
+      matches: input => input.startsWith('/invariant add '),
+      run: input => {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const added = memoryManager.addInvariant(input.slice('/invariant add '.length).trim());
+          output.write(
+            added === null
+              ? 'Инвариант пуст или уже задан.\n\n'
+              : `Инвариант добавлен: ${added}\n\n`,
+          );
+        }
+      },
+    },
+    {
+      matches: input => input.startsWith('/invariant delete '),
+      run: input => {
+        if (!memoryManager.enabled) {
+          output.write(MEMORY_OFF_NOTICE);
+        } else {
+          const indices = parseList(input.slice('/invariant delete '.length))
+            .map(Number)
+            .filter(Number.isInteger);
+          const removed = memoryManager.removeInvariants(indices);
+          output.write(
+            removed.length === 0
+              ? 'Нет таких инвариантов.\n\n'
+              : `Удалено: ${removed.map(item => `«${item}»`).join(', ')}\n\n`,
+          );
+        }
+      },
+    },
+    {
+      matches: input => input === '/invariant',
+      run: () =>
+        output.write(
+          memoryManager.enabled
+            ? formatInvariants(memoryManager.invariantsList())
+            : MEMORY_OFF_NOTICE,
+        ),
+    },
+    {
       matches: input => input === '/profiles',
       run: () =>
         output.write(
@@ -601,6 +657,33 @@ export async function runInteractive(
         memoryManager.declineProposal(proposed);
         if (isNegative(reply)) {
           output.write('Хорошо, без задачи.\n\n');
+        }
+      }
+      // Авто-предложение инварианта (если зафиксировано жёсткое ограничение) — до ответа,
+      // чтобы подтверждённый инвариант сразу попал в контекст этого хода.
+      const proposedInvariant = memoryManager.takeInvariantProposal();
+      if (proposedInvariant !== null) {
+        let reply: string;
+        try {
+          reply = (
+            await readlineInterface.question(
+              `Похоже на жёсткое ограничение. Сделать инвариантом «${proposedInvariant}»? (да/нет) `,
+              { signal: abortController.signal },
+            )
+          )
+            .trim()
+            .toLowerCase();
+        } catch {
+          break; // подтверждение прервано (Ctrl+C / EOF) — выходим
+        }
+        if (isAffirmative(reply)) {
+          memoryManager.addInvariant(proposedInvariant);
+          output.write(`Инвариант добавлен: ${proposedInvariant}\n\n`);
+        } else {
+          memoryManager.declineInvariant(proposedInvariant);
+          if (isNegative(reply)) {
+            output.write('Хорошо, без инварианта.\n\n');
+          }
         }
       }
       // Сборка контекста (короткая память + профиль + задача) и ответ.

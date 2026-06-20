@@ -131,6 +131,44 @@ describe('MemoryManager', () => {
     assert.ok(result.some(m => m.content.includes('Текущая задача: Сайт')));
   });
 
+  it('инварианты: add/list/remove, блок и директива в контексте', async t => {
+    const mgr = makeManager(t, () => ({ content: '{"task":[],"user":[]}', usage: undefined }));
+    assert.deepEqual(mgr.invariantsList(), []);
+    assert.equal(mgr.addInvariant('  только нативный TS  '), 'только нативный TS'); // обрезка
+    assert.equal(mgr.addInvariant('только нативный TS'), null); // дубль
+    mgr.addInvariant('без сборки');
+    assert.deepEqual(mgr.invariantsList(), ['только нативный TS', 'без сборки']);
+
+    const result = await mgr.prepare([sys, { role: 'user', content: 'привет' }]);
+    assert.ok(result.some(m => m.content.includes('ИНВАРИАНТЫ (нарушать нельзя)')));
+    assert.match(result[0].content, /сверь предложение с КАЖДЫМ инвариантом/i); // директива
+
+    assert.deepEqual(mgr.removeInvariants([5]), []); // вне диапазона
+    assert.deepEqual(mgr.removeInvariants([1]), ['только нативный TS']);
+    assert.deepEqual(mgr.invariantsList(), ['без сборки']);
+  });
+
+  it('инварианты: авто-предложение; отклонённый и уже добавленный не предлагаются', async t => {
+    let invariantField = 'только PostgreSQL';
+    const mgr = makeManager(t, () => ({
+      content: JSON.stringify({ task: [], user: [], invariant: invariantField }),
+      usage: undefined,
+    }));
+
+    await mgr.prepare([sys, { role: 'user', content: 'a' }]);
+    assert.equal(mgr.takeInvariantProposal(), 'только PostgreSQL'); // все условия выполнены
+    assert.equal(mgr.takeInvariantProposal(), null); // забрали — очистилось
+
+    mgr.declineInvariant('только PostgreSQL');
+    await mgr.prepare([sys, { role: 'user', content: 'b' }]);
+    assert.equal(mgr.takeInvariantProposal(), null); // отклонённый не предлагаем
+
+    invariantField = 'только Redis';
+    mgr.addInvariant('только Redis'); // уже добавлен (и не отклонён)
+    await mgr.prepare([sys, { role: 'user', content: 'c' }]);
+    assert.equal(mgr.takeInvariantProposal(), null); // уже есть — не предлагаем
+  });
+
   it('prepare: профиль обрезается по бюджету', async t => {
     const mgr = makeManager(t, () => ({ content: '{"task":[],"user":[]}', usage: undefined }));
     // Заполним профиль вручную через извлечение крупной строки.
