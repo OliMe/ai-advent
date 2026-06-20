@@ -259,6 +259,61 @@ describe('runPipeline', () => {
     assert.equal(result.stage, 'completion');
   });
 
+  it('нарушение инварианта решающим агентом → пауза этапа (контролёр)', async t => {
+    const run = createRun('Задача', { idSuffix: 'iv' });
+    // Контролёр всегда находит нарушение; решающие агенты отвечают штатно.
+    const make = (systemPrompt: string) => {
+      const reply = systemPrompt.includes('контролёр')
+        ? '{"ok":false,"violations":["нарушает выбранную архитектуру"]}'
+        : content()[stageOf(systemPrompt)]();
+      return new Conversation(
+        clientWith(t, async () => ({ content: reply, usage: undefined })),
+        {
+          systemPrompt,
+          temperature: 0.5,
+          contextTokens: 8192,
+          requestTimeoutMs: 5000,
+        },
+      );
+    };
+    let fatal: string[] | null = null;
+    const result = await runPipeline(run, {
+      store: fakeStore(),
+      makeConversation: make,
+      signal: idle,
+      invariants: () => ['всё на нативном TS'],
+      hooks: {
+        confirmCompletion: async () => ({ approved: true }),
+        onInvariantViolation: info => {
+          if (info.fatal) fatal = info.violations;
+        },
+      },
+    });
+    assert.equal(result.status, 'paused');
+    assert.equal(result.stage, 'planning'); // первый решающий этап
+    assert.deepEqual(fatal, ['нарушает выбранную архитектуру']);
+  });
+
+  it('не-инвариантная ошибка этапа пробрасывается наружу', async t => {
+    const run = createRun('Задача', { idSuffix: 'er' });
+    const make = (systemPrompt: string) =>
+      new Conversation(
+        clientWith(t, async () => {
+          throw new Error('сбой планировщика');
+        }),
+        { systemPrompt, temperature: 0.5, contextTokens: 8192, requestTimeoutMs: 5000 },
+      );
+    await assert.rejects(
+      runPipeline(run, {
+        store: fakeStore(),
+        makeConversation: make,
+        signal: idle,
+        hooks: approve,
+      }),
+      /сбой планировщика/,
+    );
+  });
+
   it('отменённый signal → пауза на границе этапа, без вызова подтверждения', async t => {
     const run = createRun('Задача', { idSuffix: 'f' });
     const aborted = new AbortController();

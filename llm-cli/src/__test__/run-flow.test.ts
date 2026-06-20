@@ -565,6 +565,39 @@ describe('RunController', () => {
     assert.match(out.text(), /Исчерпан лимит циклов сбора требований \(1\)/);
   });
 
+  it('инвариант: контролёр блокирует решающий этап → пауза, нарушение названо', async t => {
+    const out = makeCollector();
+    // Контролёр всегда находит нарушение; аналитик завершает сразу; этапы — штатно.
+    const make: ConversationFactory = systemPrompt => {
+      const reply = systemPrompt.includes('контролёр')
+        ? '{"ok":false,"violations":["нарушает выбранную архитектуру"]}'
+        : systemPrompt.includes('аналитик')
+          ? '{"done":true}'
+          : content()[stageOf(systemPrompt)]();
+      return new Conversation(
+        clientWith(t, async () => ({ content: reply, usage: undefined })),
+        {
+          systemPrompt,
+          temperature: 0.5,
+          contextTokens: 8192,
+          requestTimeoutMs: 5000,
+        },
+      );
+    };
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: make,
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+      invariants: () => ['всё на нативном TS'],
+    });
+    await controller.start('Задача');
+    const text = out.text();
+    assert.match(text, /контролёр: нарушены инварианты — перегенерация/); // не-фатальное замечание
+    assert.match(text, /Инварианты нарушены и не исправлены/); // фатально → пауза
+  });
+
   it('edit сбрасывает счётчик проверок реализации', async t => {
     const run = createRun('Задача', { maxRetries: 2, idSuffix: 'er' });
     const out = makeCollector();

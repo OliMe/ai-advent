@@ -115,6 +115,8 @@ export interface RunControllerDeps {
   ask: (prompt: string) => Promise<string>;
   /** Связь прогона с задачей сессии (память на вход, итог на выход). */
   taskBridge: RunTaskBridge;
+  /** Глобальные инварианты для жёсткого контроля решающих агентов; пусто — контроль выключен. */
+  invariants?: () => string[];
   /** Пишет результат этапа в транскрипт основной сессии (если задан). */
   recordToSession?: (role: 'user' | 'assistant', content: string) => void;
 }
@@ -345,7 +347,15 @@ export class RunController {
         signal,
         // Провайдер: свежие требования (дописанные на этапе requirements) видны планированию.
         memoryContext: () => this.deps.taskBridge.memoryContext(),
+        invariants: this.deps.invariants,
         hooks: {
+          onInvariantViolation: ({ stage, violations, fatal }) =>
+            this.write(
+              fatal
+                ? `⛔ Инварианты нарушены и не исправлены на этапе «${stageLabel(stage)}»:\n` +
+                    `${violations.join('\n')}\nПрогон на паузе — /run edit или /run abort.`
+                : `↻ контролёр: нарушены инварианты — перегенерация:\n${violations.join('\n')}`,
+            ),
           gatherRequirements: ({ issues, cycle }) =>
             this.gatherRequirements(run.title, issues, cycle, signal),
           onStageStart: stage => this.write(`▸ ${stageLabel(stage)}…`),

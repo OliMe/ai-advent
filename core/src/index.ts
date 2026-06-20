@@ -78,6 +78,13 @@ export {
 export type { StageContext } from './pipeline-stages.ts';
 export { runPipeline } from './pipeline.ts';
 export type { PipelineHooks, PipelineDeps } from './pipeline.ts';
+export {
+  enforceInvariants,
+  parseInvariantCheck,
+  InvariantViolationError,
+  INVARIANT_CHECKER_SYSTEM,
+} from './invariant-guard.ts';
+export type { EnforceInvariantsOptions } from './invariant-guard.ts';
 export type {
   Role,
   ChatMessage,

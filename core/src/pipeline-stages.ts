@@ -25,6 +25,20 @@ export interface StageContext {
    * видны последующим этапам. Пусто — контекста нет.
    */
   memoryContext: () => string;
+  /**
+   * Защищённая генерация для РЕШАЮЩИХ этапов (planning/execution/completion): сверяет
+   * результат с инвариантами контролёром и при нарушении перегенерирует. Не задана —
+   * обычная генерация (инвариантов нет / контроль отключён).
+   */
+  enforce?: (produce: (feedback?: string) => Promise<string>) => Promise<string>;
+}
+
+/** Генерация с контролем инвариантов, если он задан; иначе — обычная. */
+function guarded(
+  ctx: StageContext,
+  produce: (feedback?: string) => Promise<string>,
+): Promise<string> {
+  return ctx.enforce ? ctx.enforce(produce) : produce();
 }
 
 // --- Ленивый разбор: JSON просим в промпте (без response_format, иначе z.ai/GLM
@@ -202,10 +216,11 @@ export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> 
   const correction = ctx.run.correction
     ? `\n\nУчти правку пользователя: ${ctx.run.correction}`
     : '';
-  const result = await conversation.ask(
-    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}${correction}`,
+  const prompt = `${memoryPrefix(ctx)}Задача: ${ctx.run.title}${correction}`;
+  const text = await guarded(ctx, feedback =>
+    conversation.ask(feedback ?? prompt).then(result => result.content),
   );
-  return parsePlanning(result.content);
+  return parsePlanning(text);
 }
 
 /** Выполнение: план (+проблемы проверки/правка) → результат; крупный текст в файл. */
@@ -220,8 +235,10 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
     `Критерии приёмки:\n${(plan?.criteria ?? []).join('\n')}` +
     (issues.length > 0 ? `\n\nИсправь замечания проверки:\n${issues.join('\n')}` : '') +
     (ctx.run.correction ? `\n\nУчти правку пользователя: ${ctx.run.correction}` : '');
-  const result = await conversation.ask(prompt);
-  const parsed = parseExecution(result.content);
+  const text = await guarded(ctx, feedback =>
+    conversation.ask(feedback ?? prompt).then(result => result.content),
+  );
+  const parsed = parseExecution(text);
   // Полный результат сохраняем файлом-артефактом (если хранилище доступно).
   const path = ctx.writeArtifact(`execution-${ctx.run.retries + 1}.md`, parsed.text);
   return { ...parsed, files: path === null ? [] : [path] };
@@ -257,6 +274,8 @@ export async function runCompletion(ctx: StageContext): Promise<CompletionArtifa
   const prompt =
     `Задача: ${ctx.run.title}\n\nПлан:\n${planning?.text ?? ''}\n\n` +
     `Результат:\n${execution?.summary ?? ''}\n\nПроверка: ${verification?.passed ? 'пройдена' : 'с замечаниями'}`;
-  const result = await conversation.ask(prompt);
-  return parseCompletion(result.content);
+  const text = await guarded(ctx, feedback =>
+    conversation.ask(feedback ?? prompt).then(result => result.content),
+  );
+  return parseCompletion(text);
 }

@@ -24,13 +24,15 @@ export { clientWith, clientWithStream } from '../../../core/src/__test__/helpers
  */
 export function taskRunClient(
   t: TestContext,
-  options: { extraction?: string; chat?: string } = {},
+  options: { extraction?: string; chat?: string; check?: string } = {},
 ): ChatCompletionClient {
   const extraction =
     options.extraction ?? '{"task":[],"user":[],"isNewTask":false,"proposedTitle":""}';
   const chat = options.chat ?? 'ОТВЕТ';
+  const check = options.check ?? '{"ok":true}'; // контролёр инвариантов: по умолчанию чисто
   const reply = (messages: ChatMessage[]): string => {
     const head = messages[0]?.content ?? '';
+    if (head.includes('контролёр')) return check;
     if (head.includes('аналитик')) return '{"questions":[]}';
     if (head.includes('планировщик'))
       return JSON.stringify({ steps: ['шаг'], criteria: ['критерий'], text: 'план' });

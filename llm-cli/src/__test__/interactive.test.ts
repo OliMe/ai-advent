@@ -971,6 +971,28 @@ describe('интерактив: команды слоистой памяти', (
     assert.match(implicit.text(), /Инвариантов нет/); // не добавлен
   });
 
+  it('инвариант: чат отказывается от решения, нарушающего инвариант', async t => {
+    // Контролёр всегда находит нарушение → перегенерации исчерпаны → отказ.
+    const client = taskRunClient(t, {
+      check: '{"ok":false,"violations":["нарушает архитектуру"]}',
+    });
+    const { finished, text } = driveInteractive(
+      client,
+      ['/invariant add только нативный TS', 'добавь webpack-сборку', '/exit'],
+      0.7,
+      makeConfig(),
+      false, // без стрима — проще
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /контролёр: ответ нарушает инварианты/); // перегенерация
+    assert.match(text(), /Не могу предложить решение: нарушает инвариант/); // отказ
+  });
+
   it('инвариант: прерывание ввода на подтверждении завершает чат', async t => {
     const client = taskRunClient(t, {
       extraction: '{"task":[],"user":[],"invariant":"только PostgreSQL"}',

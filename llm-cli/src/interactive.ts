@@ -12,6 +12,9 @@ import {
   createMemoryStrategy,
   MemoryManager,
   layerBudgets,
+  enforceInvariants,
+  InvariantViolationError,
+  INVARIANT_CHECKER_SYSTEM,
 } from '../../core/src/index.ts';
 import type {
   AppConfig,
@@ -180,9 +183,11 @@ export async function runInteractive(
 
   // Драйвер прогонов задач (пайплайн): свои диалоги-агенты, своё хранилище.
   // Мост связывает прогон с задачей сессии — память задачи идёт в этапы, итог обратно.
+  // Фабрика диалогов-агентов (этапы пайплайна, контролёр инвариантов): своя персона/температура.
+  const agentFactory = makeConversationFactory(client, config, disableThinking, temperature);
   const runController = new RunController({
     store: runStore,
-    makeConversation: makeConversationFactory(client, config, disableThinking, temperature),
+    makeConversation: agentFactory,
     output,
     ask: prompt => readlineInterface.question(prompt),
     taskBridge: new MemoryRunBridge({
@@ -190,6 +195,7 @@ export async function runInteractive(
       session: () => currentSession,
       saveSession: session => store?.save(session),
     }),
+    invariants: () => memoryManager.invariantsList(),
     // Результаты этапов прогона пишем в транскрипт сессии — видны в истории и идут в контекст.
     recordToSession: (role, content) => {
       currentSession.messages.push({ role, content });
@@ -691,37 +697,52 @@ export async function runInteractive(
         reportExtra(usage, memoryLabel),
       );
       try {
-        let answer: string;
         let usage: Usage | undefined;
-        if (stream) {
-          // Пустая строка-отступ, чтобы прелоадер/ответ не «прилипали» к строке «Вы: …».
-          output.write('\n');
-          const result = await streamAnswer(
-            client,
-            windowed,
-            config.requestTimeoutMs,
-            limits,
-            disableThinking,
-            temperature,
-            output,
-            () => output.write(`${ASSISTANT_LABEL}: `),
-          );
-          answer = result.content;
-          usage = result.usage;
-          output.write('\n\n');
-        } else {
+        // Один ход генерации (с учётом feedback контролёра при перегенерации).
+        const produce = async (feedback?: string): Promise<string> => {
+          const outgoing =
+            feedback === undefined
+              ? windowed
+              : [...windowed, { role: 'user' as const, content: feedback }];
+          if (stream) {
+            // Пустая строка-отступ, чтобы прелоадер/ответ не «прилипали» к строке «Вы: …».
+            output.write('\n');
+            const result = await streamAnswer(
+              client,
+              outgoing,
+              config.requestTimeoutMs,
+              limits,
+              disableThinking,
+              temperature,
+              output,
+              () => output.write(`${ASSISTANT_LABEL}: `),
+            );
+            usage = result.usage;
+            output.write('\n\n');
+            return result.content;
+          }
           const result = await askModel(
             client,
-            windowed,
+            outgoing,
             config.requestTimeoutMs,
             limits,
             disableThinking,
             temperature,
           );
-          answer = result.content;
           usage = result.usage;
-          output.write(`\n${ASSISTANT_LABEL}: ${answer}\n\n`);
-        }
+          output.write(`\n${ASSISTANT_LABEL}: ${result.content}\n\n`);
+          return result.content;
+        };
+        // Жёсткий контроль инвариантов: если их нет — обычная генерация без оверхеда.
+        const answer = await enforceInvariants({
+          invariants: memoryManager.invariantsList(),
+          makeChecker: () => agentFactory(INVARIANT_CHECKER_SYSTEM, undefined, 0),
+          produce,
+          onViolation: violations =>
+            output.write(
+              `↻ контролёр: ответ нарушает инварианты, перегенерирую:\n${violations.join('\n')}\n\n`,
+            ),
+        });
         currentSession.messages.push({ role: 'assistant', content: answer });
         // Сохраняем сессию после завершённого обмена (store=null при --ephemeral).
         currentSession.updatedAt = new Date().toISOString();
@@ -740,7 +761,14 @@ export async function runInteractive(
       } catch (error) {
         // Откатываем неудачный ход, чтобы история осталась согласованной.
         currentSession.messages.pop();
-        output.write(`\n[ошибка] ${describeError(error)}\n\n`);
+        if (error instanceof InvariantViolationError) {
+          // Контролёр не смог добиться соблюдения — отказываемся (решение не выдаём).
+          output.write(
+            `\n⛔ Не могу предложить решение: нарушает инвариант(ы):\n${error.violations.join('\n')}\n\n`,
+          );
+        } else {
+          output.write(`\n[ошибка] ${describeError(error)}\n\n`);
+        }
       }
     }
     // Консолидация профиля: устойчивые черты пользователя из всей сессии.
