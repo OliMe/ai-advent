@@ -371,6 +371,11 @@ export class RunController {
                     `${violations.join('\n')}\nПрогон на паузе — /run edit или /run abort.`
                 : `↻ контролёр: нарушены инварианты — перегенерация:\n${violations.join('\n')}`,
             ),
+          onStageRepair: (from, to) =>
+            this.write(
+              `↩ состояние не согласовано (этап «${stageLabel(from)}» без нужных артефактов) — ` +
+                `возвращён к «${stageLabel(to)}», перепрыгнуть этап нельзя`,
+            ),
           gatherRequirements: ({ issues, cycle }) =>
             this.gatherRequirements(run.title, issues, cycle, signal),
           onStageStart: stage => this.write(`▸ ${stageLabel(stage)}…`),

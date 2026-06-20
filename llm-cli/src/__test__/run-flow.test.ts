@@ -333,6 +333,28 @@ describe('RunController', () => {
     assert.match(out.text(), /Пауза на этапе «сбор требований»/);
   });
 
+  it('continue несогласованного прогона откатывает этап и сообщает (без проскока)', async t => {
+    const out = makeCollector();
+    // Повреждённый/правленый прогон: стоит на completion без артефактов.
+    const broken: TaskRun = {
+      ...createRun('Задача', { idSuffix: 'rep' }),
+      stage: 'completion',
+      status: 'paused',
+    };
+    const controller = new RunController({
+      store: fakeStore([broken]),
+      makeConversation: factory(t, content()),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+    });
+    await controller.continue(broken.id);
+    const text = out.text();
+    assert.match(text, /состояние не согласовано/);
+    assert.match(text, /перепрыгнуть этап нельзя/);
+    assert.match(text, /завершена и подтверждена/); // прошёл все этапы заново
+  });
+
   it('start без аргумента и без текущей задачи подсказывает', async t => {
     const out = makeCollector();
     const controller = new RunController({
