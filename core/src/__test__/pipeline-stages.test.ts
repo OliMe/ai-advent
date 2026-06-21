@@ -321,6 +321,25 @@ describe('раннеры этапов', () => {
     assert.deepEqual(written, [{ name: 'execution-1.md', content: 'Готово\nconst code = 1;' }]);
   });
 
+  it('runExecution: доработка требует ПОЛНЫЙ результат с предыдущим и правкой', async t => {
+    const run = createRun('Сайт');
+    run.artifacts.planning = { steps: ['s'], criteria: ['c'], text: 'план' };
+    // Прошлый результат есть, замечаний проверки нет, но есть правка пользователя (отказ).
+    run.artifacts.execution = {
+      summary: 'старое',
+      files: [],
+      log: [],
+      text: 'ПРЕДЫДУЩИЙ РЕЗУЛЬТАТ',
+    };
+    run.correction = 'добавь раздел метрик';
+    let prompt = '';
+    await runExecution(ctxWith(t, 'новый полный результат', run, p => (prompt = p)));
+    assert.match(prompt, /ПОЛНЫЙ итоговый результат ЦЕЛИКОМ/); // требуем целый результат, не дельту
+    assert.match(prompt, /ПРЕДЫДУЩИЙ РЕЗУЛЬТАТ/); // прошлый результат — для доработки
+    assert.match(prompt, /добавь раздел метрик/); // правка пользователя
+    assert.doesNotMatch(prompt, /Замечания проверки/); // замечаний нет — блок опущен
+  });
+
   it('runExecution: при пустых шагах подаёт план прозой из text', async t => {
     const run = createRun('Сайт');
     run.artifacts.planning = { steps: [], criteria: ['c'], text: 'план прозой словами' };
