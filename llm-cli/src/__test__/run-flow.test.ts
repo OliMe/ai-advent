@@ -333,6 +333,60 @@ describe('RunController', () => {
     assert.match(out.text(), /Пауза на этапе «сбор требований»/);
   });
 
+  it('многоагентное планирование: команда печатается, вклады в результате этапа', async t => {
+    const out = makeCollector();
+    // Диалоги отвечают по персоне: оркестратор → команда из 2 ролей, синтезатор → план.
+    const make: ConversationFactory = (systemPrompt, limits) => {
+      const client = clientWith(t, async () => {
+        if (systemPrompt.includes('аналитик')) {
+          return { content: '{"done":true}', usage: undefined };
+        }
+        if (systemPrompt.includes('оркестратор команды')) {
+          return {
+            content:
+              '{"roles":[{"name":"архитектор","focus":"структура"},' +
+              '{"name":"безопасность","focus":"риски"}],"rationale":"сложная система"}',
+            usage: undefined,
+          };
+        }
+        if (systemPrompt.includes('в команде планирования')) {
+          return { content: '- предложение роли', usage: undefined };
+        }
+        if (systemPrompt.includes('ведущий планировщик')) {
+          return { content: PLAN, usage: undefined };
+        }
+        if (systemPrompt.includes('исполнитель')) {
+          return { content: EXEC, usage: undefined };
+        }
+        if (systemPrompt.includes('проверяющий')) {
+          return { content: PASS, usage: undefined };
+        }
+        return { content: DONE, usage: undefined };
+      });
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: make,
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+      teamConfig: { maxAgents: 3, concurrency: 2 },
+    });
+    await controller.start('Сложная система');
+    const text = out.text();
+    assert.match(text, /Команда на этап «планирование»: архитектор \(структура\), безопасность/);
+    assert.match(text, /сложная система/); // обоснование оркестратора
+    assert.match(text, /План собрала команда:/); // вклады ролей в результате этапа
+    assert.match(text, /завершена и подтверждена/);
+  });
+
   it('continue несогласованного прогона откатывает этап и сообщает (без проскока)', async t => {
     const out = makeCollector();
     // Повреждённый/правленый прогон: стоит на completion без артефактов.

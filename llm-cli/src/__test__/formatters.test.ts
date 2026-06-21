@@ -12,6 +12,7 @@ import {
   formatRunStatus,
   formatRunList,
   formatRunContext,
+  formatTeam,
   stageLabel,
   statusLabel,
   newSession,
@@ -115,6 +116,27 @@ describe('форматирование прогонов задач', () => {
     assert.equal(statusLabel('paused'), 'на паузе');
   });
 
+  it('formatTeam: состав команды с фокусами и обоснованием', () => {
+    assert.equal(
+      formatTeam('planning', {
+        roles: [
+          { name: 'архитектор', focus: 'структура' },
+          { name: 'безопасность', focus: '' }, // без фокуса — только имя
+        ],
+        rationale: 'сложная система',
+      }),
+      '🧩 Команда на этап «планирование»: архитектор (структура), безопасность — сложная система',
+    );
+    // Без обоснования хвост «— …» опускается.
+    assert.equal(
+      formatTeam('planning', {
+        roles: [{ name: 'архитектор', focus: 'структура' }],
+        rationale: '',
+      }),
+      '🧩 Команда на этап «планирование»: архитектор (структура)',
+    );
+  });
+
   it('formatStageResult: полный читаемый результат по этапам и ветвям', () => {
     // requirements: список собранных пунктов; пусто — «уточнения не потребовались».
     assert.match(
@@ -134,6 +156,19 @@ describe('форматирование прогонов задач', () => {
     });
     assert.match(plan, /Шаги:\n {2}1\. собрать\n {2}2\. проверить/);
     assert.match(plan, /Критерии приёмки:\n {2}- тесты зелёные/);
+    // Если план собрала команда — её состав отмечается под планом.
+    const teamPlan = formatStageResult('planning', {
+      planning: {
+        steps: ['ш1'],
+        criteria: ['к1'],
+        text: 'п',
+        contributions: [
+          { role: 'архитектор', text: 'a' },
+          { role: 'безопасность', text: 'b' },
+        ],
+      },
+    });
+    assert.match(teamPlan, /План собрала команда:\n {2}- архитектор\n {2}- безопасность/);
     // Пустые шаги, но есть text → показываем план прозой под «План:».
     assert.equal(
       formatStageResult('planning', {

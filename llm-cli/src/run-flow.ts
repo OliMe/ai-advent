@@ -12,6 +12,7 @@ import {
   formatStageResult,
   formatRunList,
   formatRunStatus,
+  formatTeam,
   stageLabel,
   RUNS_EPHEMERAL_NOTICE,
 } from './formatters.ts';
@@ -120,6 +121,11 @@ export interface RunControllerDeps {
   taskBridge: RunTaskBridge;
   /** Глобальные инварианты для жёсткого контроля решающих агентов; пусто — контроль выключен. */
   invariants?: () => string[];
+  /**
+   * Конфиг команды агентов на этап (потолок ролей + конкурентность). Не задан —
+   * многоагентность выключена (однопроходный режим).
+   */
+  teamConfig?: { maxAgents: number; concurrency: number };
   /** Пишет результат этапа в транскрипт основной сессии (если задан). */
   recordToSession?: (role: 'user' | 'assistant', content: string) => void;
 }
@@ -363,7 +369,14 @@ export class RunController {
         // видны планированию/выполнению, чтобы агенты не нарушали ограничения изначально.
         memoryContext: () => this.invariantsBlock() + this.deps.taskBridge.memoryContext(),
         invariants: this.deps.invariants,
+        teamConfig: this.deps.teamConfig,
         hooks: {
+          // Печатаем решение оркестратора только когда подобрана команда (>1 роли).
+          onTeam: (stage, team) => {
+            if (team.roles.length > 1) {
+              this.write(formatTeam(stage, team));
+            }
+          },
           onInvariantViolation: ({ stage, violations, fatal }) =>
             this.write(
               fatal

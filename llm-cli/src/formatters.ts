@@ -9,6 +9,7 @@ import type {
   Task,
   TaskRun,
   TaskSummary,
+  TeamPlan,
 } from '../../core/src/index.ts';
 
 /** Бюджет (в токенах) на блок деталей задачи в контексте агентов пайплайна. */
@@ -149,6 +150,18 @@ function bulletList(header: string, items: string[]): string {
 }
 
 /**
+ * Решение оркестратора о составе команды на этап (для печати при многоагентном прогоне).
+ * Роль показывается с её фокусом; добавляется обоснование, если оно есть.
+ */
+export function formatTeam(stage: Stage, team: TeamPlan): string {
+  const roles = team.roles
+    .map(role => (role.focus ? `${role.name} (${role.focus})` : role.name))
+    .join(', ');
+  const why = team.rationale ? ` — ${team.rationale}` : '';
+  return `🧩 Команда на этап «${stageLabel(stage)}»: ${roles}${why}`;
+}
+
+/**
  * Полный читаемый результат этапа: то, что произвёл агент (план/результат/вердикт/
  * итог) целиком, без JSON. Печатается под лейблом этапа и пишется в транскрипт сессии.
  */
@@ -170,7 +183,12 @@ export function formatStageResult(stage: Stage, artifacts: StageArtifacts): stri
             ? `План:\n${planning.text}`
             : '';
       const criteria = bulletList('Критерии приёмки:', planning.criteria);
-      const blocks = [stepsBlock, criteria].filter(block => block.length > 0);
+      // Если план собрала команда — отметим её состав (роли) под планом.
+      const team = bulletList(
+        'План собрала команда:',
+        (planning.contributions ?? []).map(contribution => contribution.role),
+      );
+      const blocks = [stepsBlock, criteria, team].filter(block => block.length > 0);
       return blocks.length > 0 ? blocks.join('\n') : planning.text;
     }
     case 'execution': {

@@ -196,6 +196,11 @@ export async function runInteractive(
       saveSession: session => store?.save(session),
     }),
     invariants: () => memoryManager.invariantsList(),
+    // Команда агентов на этап: потолок ролей и конкурентность веера из конфига.
+    teamConfig: {
+      maxAgents: config.maxStageAgents,
+      concurrency: config.stageAgentConcurrency,
+    },
     // Результаты этапов прогона пишем в транскрипт сессии — видны в истории и идут в контекст.
     recordToSession: (role, content) => {
       currentSession.messages.push({ role, content });
