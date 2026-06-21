@@ -160,9 +160,14 @@ export class RunController {
     this.deps.output.write(`${text}\n\n`);
   }
 
-  /** Записывает реплику прогона в транскрипт основной сессии (если включено). */
-  private record(role: 'user' | 'assistant', content: string): void {
-    this.deps.recordToSession?.(role, content);
+  /**
+   * Записывает нарратив прогона (этапы/уведомления) в транскрипт основной сессии как
+   * реплику АССИСТЕНТА. Никогда не 'user': иначе содержимое прогона (ответы на уточнения,
+   * заголовок задачи) утекает в консолидацию ГЛОБАЛЬНОГО профиля как «предпочтения
+   * пользователя» — а это специфика задачи, не устойчивые черты.
+   */
+  private record(content: string): void {
+    this.deps.recordToSession?.('assistant', content);
   }
 
   /** Блок инвариантов для контекста агентов пайплайна (или пусто, если их нет). */
@@ -194,7 +199,7 @@ export class RunController {
     this.deps.store?.save(run);
     this.active = run;
     this.write(`Запущена задача «${task.title}» (${run.id}).`);
-    this.record('user', `Запуск задачи по этапам: «${task.title}»`);
+    this.record(`Запуск задачи по этапам: «${task.title}»`);
     await this.drive(run); // первый этап пайплайна — сбор требований
   }
 
@@ -226,7 +231,7 @@ export class RunController {
       this.deps.taskBridge.adopt(run.taskId);
     }
     this.write(`Продолжаем «${run.title}» с этапа «${stageLabel(run.stage)}».`);
-    this.record('user', `Продолжение прогона «${run.title}» с этапа «${stageLabel(run.stage)}»`);
+    this.record(`Продолжение прогона «${run.title}» с этапа «${stageLabel(run.stage)}»`);
     await this.drive(run); // продолжение — пайплайн возобновится с сохранённого этапа
   }
 
@@ -282,8 +287,10 @@ export class RunController {
       if (STOP_WORDS.has(raw.toLowerCase())) break; // ручной стоп
       const answer = raw === '' ? step.suggestion : raw; // пустой ответ — принимаем предложение
       if (answer) {
+        // Ответ идёт в память ЗАДАЧИ (детали) и в собранные требования (артефакт этапа
+        // печатается и пишется в транскрипт). В транскрипт как отдельную реплику НЕ
+        // дублируем — иначе утечёт в консолидацию профиля как «предпочтение пользователя».
         this.deps.taskBridge.addDetail(`Требование: ${step.question} → ${answer}`);
-        this.record('user', `${step.question} → ${answer}`);
         collected.push(`${step.question} → ${answer}`);
       }
       prompt =
@@ -396,7 +403,7 @@ export class RunController {
             // Полный читаемый результат этапа — в консоль и в транскрипт сессии.
             const result = formatStageResult(stage, artifacts);
             this.write(result);
-            this.record('assistant', `[${stageLabel(stage)}]\n${result}`);
+            this.record(`[${stageLabel(stage)}]\n${result}`);
           },
           onRetry: (attempt, reason) =>
             this.write(

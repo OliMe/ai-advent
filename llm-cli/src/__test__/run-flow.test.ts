@@ -460,10 +460,11 @@ describe('RunController', () => {
       recordToSession: (role, content) => recorded.push({ role, content }),
     });
     await controller.start('Задача');
-    // user-обрамление запуска + по ассистентскому сообщению на каждый из 5 этапов.
-    assert.equal(recorded[0]?.role, 'user');
-    assert.match(recorded[0].content, /Запуск задачи по этапам/);
-    const stages = recorded.filter(entry => entry.role === 'assistant');
+    // Весь нарратив прогона пишется как 'assistant' (никогда не 'user' — иначе утечёт
+    // в консолидацию профиля): уведомление о запуске + по сообщению на каждый из 5 этапов.
+    assert.ok(recorded.every(entry => entry.role === 'assistant'));
+    assert.match(recorded[0]?.content ?? '', /Запуск задачи по этапам/);
+    const stages = recorded.filter(entry => /^\[/.test(entry.content)); // записи этапов: «[метка]…»
     assert.equal(stages.length, 5);
     assert.match(stages[0].content, /\[сбор требований\]/);
     assert.match(stages[1].content, /\[планирование\]/);
