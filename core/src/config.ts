@@ -24,6 +24,13 @@ export interface AppConfig {
    * max_tokens (иначе подставляют 0 и отвергают запрос).
    */
   stageMaxTokens?: number;
+  /**
+   * Потолок числа агентов на этап (команда ролей). 1 — многоагентность выключена
+   * (оркестратор не вызывается, поведение однопроходное). По умолчанию 4.
+   */
+  maxStageAgents: number;
+  /** Максимум одновременных запросов роль-агентов внутри этапа. По умолчанию 2. */
+  stageAgentConcurrency: number;
 }
 
 const DEFAULT_TEMPERATURE = 0.7;
@@ -34,11 +41,19 @@ const DEFAULT_RETRY_BASE_MS = 500;
 const DEFAULT_CONTEXT_TOKENS = 8192;
 const DEFAULT_PRICE_PER_1M = 0;
 const DEFAULT_USD_RUB = 90;
+const DEFAULT_MAX_STAGE_AGENTS = 4;
+const DEFAULT_STAGE_AGENT_CONCURRENCY = 2;
 
 /** Конечное неотрицательное число из env или значение по умолчанию. */
 function nonNegativeNumber(raw: string | undefined, fallback: number): number {
   const value = Number(raw ?? fallback);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+/** Целое не меньше 1 из env или значение по умолчанию (для счётчиков агентов). */
+function positiveInteger(raw: string | undefined, fallback: number): number {
+  const value = Number(raw ?? fallback);
+  return Number.isInteger(value) && value >= 1 ? value : fallback;
 }
 
 /**
@@ -112,5 +127,11 @@ export function loadConfig(): AppConfig {
     usdToRub: Number.isFinite(usdToRub) && usdToRub > 0 ? usdToRub : DEFAULT_USD_RUB,
     // Потолок генерации этапов задаётся только если это положительное целое.
     ...(Number.isInteger(stageMaxTokens) && stageMaxTokens > 0 ? { stageMaxTokens } : {}),
+    // Команда агентов на этап: потолок ролей и конкурентность веера запросов.
+    maxStageAgents: positiveInteger(process.env.LLM_MAX_STAGE_AGENTS, DEFAULT_MAX_STAGE_AGENTS),
+    stageAgentConcurrency: positiveInteger(
+      process.env.LLM_STAGE_AGENT_CONCURRENCY,
+      DEFAULT_STAGE_AGENT_CONCURRENCY,
+    ),
   };
 }

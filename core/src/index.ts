@@ -60,6 +60,7 @@ export type {
   Stage,
   RunStatus,
   TransitionCheck,
+  AgentContribution,
   RequirementsArtifact,
   PlanningArtifact,
   ExecutionArtifact,
@@ -81,9 +82,17 @@ export {
   parseExecution,
   parseVerification,
   parseCompletion,
-  extractJsonObject,
 } from './pipeline-stages.ts';
 export type { StageContext } from './pipeline-stages.ts';
+export { extractJsonObject, parseJsonObject } from './json.ts';
+export {
+  ORCHESTRATOR_SYSTEM,
+  parseTeamPlan,
+  orchestrateTeam,
+  runRoleExperts,
+  mapWithConcurrency,
+} from './stage-team.ts';
+export type { AgentRole, TeamPlan, OrchestrateOptions, RoleExpertsOptions } from './stage-team.ts';
 export { runPipeline } from './pipeline.ts';
 export type { PipelineHooks, PipelineDeps } from './pipeline.ts';
 export {

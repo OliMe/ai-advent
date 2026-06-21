@@ -34,11 +34,19 @@ export interface RequirementsArtifact {
   text: string;
 }
 
+/** Вклад одного роль-агента команды этапа (роль + её результат). */
+export interface AgentContribution {
+  role: string;
+  text: string;
+}
+
 /** Артефакт планирования: шаги + критерии приёмки + читаемый текст. */
 export interface PlanningArtifact {
   steps: string[];
   criteria: string[];
   text: string;
+  /** Вклады роль-агентов, если план собрала команда (иначе не задано). */
+  contributions?: AgentContribution[];
 }
 
 /** Артефакт выполнения: краткое резюме, ссылки на файлы-результаты, лог, текст. */

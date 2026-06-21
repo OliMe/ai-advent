@@ -114,6 +114,24 @@ describe('runPipeline', () => {
     assert.ok(store.saved.length >= 4);
   });
 
+  it('teamConfig: оркестратор вызывается, решение команды сообщается хуком', async t => {
+    const run = createRun('Задача', { idSuffix: 'tc' });
+    const teams: Array<[Stage, number]> = [];
+    const result = await runPipeline(run, {
+      store: fakeStore(),
+      makeConversation: makeConversation(t, content()),
+      signal: idle,
+      teamConfig: { maxAgents: 3, concurrency: 2 },
+      hooks: {
+        confirmCompletion: async () => ({ approved: true }),
+        onTeam: (stage, team) => teams.push([stage, team.roles.length]),
+      },
+    });
+    assert.equal(result.status, 'completed');
+    // Оркестратор получил «не-командный» ответ → одиночная роль, планирование соло.
+    assert.deepEqual(teams, [['planning', 1]]);
+  });
+
   it('возобновление чинит несогласованное состояние откатом (без проскока этапа)', async t => {
     // Правленый/повреждённый прогон: стоит на completion, но артефактов нет —
     // перепрыгнуть этапы нельзя, должен откатиться к requirements и пройти всё заново.

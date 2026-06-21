@@ -19,6 +19,8 @@ const ENV_KEYS = [
   'LLM_PRICE_OUTPUT_PER_1M',
   'LLM_USD_RUB',
   'LLM_STAGE_MAX_TOKENS',
+  'LLM_MAX_STAGE_AGENTS',
+  'LLM_STAGE_AGENT_CONCURRENCY',
 ];
 
 describe('loadConfig', () => {
@@ -84,7 +86,35 @@ describe('loadConfig', () => {
     assert.equal(config.priceInputPer1M, 0);
     assert.equal(config.priceOutputPer1M, 0);
     assert.equal(config.usdToRub, 90);
+    assert.equal(config.maxStageAgents, 4); // дефолт: команда до 4 агентов на этап
+    assert.equal(config.stageAgentConcurrency, 2);
     assert.match(config.systemPrompt, /ассистент/i);
+  });
+
+  it('читает потолок и конкурентность команды агентов', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+    process.env.LLM_MAX_STAGE_AGENTS = '6';
+    process.env.LLM_STAGE_AGENT_CONCURRENCY = '3';
+
+    const config = loadConfig();
+
+    assert.equal(config.maxStageAgents, 6);
+    assert.equal(config.stageAgentConcurrency, 3);
+  });
+
+  it('откатывается к дефолтам команды агентов при невалидных значениях', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+    process.env.LLM_MAX_STAGE_AGENTS = '0'; // меньше 1 — недопустимо
+    process.env.LLM_STAGE_AGENT_CONCURRENCY = 'не-число';
+
+    const config = loadConfig();
+
+    assert.equal(config.maxStageAgents, 4);
+    assert.equal(config.stageAgentConcurrency, 2);
   });
 
   it('читает корректную температуру и системный промпт', () => {

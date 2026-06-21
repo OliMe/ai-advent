@@ -7,6 +7,9 @@ import type {
   TaskRun,
   VerificationArtifact,
 } from './task-run.ts';
+import { parseJsonObject } from './json.ts';
+import { orchestrateTeam, runRoleExperts } from './stage-team.ts';
+import type { AgentRole, TeamPlan } from './stage-team.ts';
 
 /** Контекст этапа: всё, что нужно раннеру для одного прогона этапа. */
 export interface StageContext {
@@ -31,6 +34,12 @@ export interface StageContext {
    * обычная генерация (инвариантов нет / контроль отключён).
    */
   enforce?: (produce: (feedback?: string) => Promise<string>) => Promise<string>;
+  /** Потолок числа агентов на этап (команда ролей). Не задан/≤1 — однопроходный режим. */
+  maxStageAgents?: number;
+  /** Максимум одновременных запросов роль-агентов внутри этапа (по умолчанию 1). */
+  stageAgentConcurrency?: number;
+  /** Сообщает драйверу состав команды этапа (для печати решения оркестратора). */
+  reportTeam?: (team: TeamPlan) => void;
 }
 
 /** Генерация с контролем инвариантов, если он задан; иначе — обычная. */
@@ -41,59 +50,8 @@ function guarded(
   return ctx.enforce ? ctx.enforce(produce) : produce();
 }
 
-// --- Ленивый разбор: JSON просим в промпте (без response_format, иначе z.ai/GLM
-// вырезает литерал «json» из ответа). Парсер устойчив к обёртке прозой. ---
-
-/** Извлекает первый сбалансированный объект `{…}` из текста (учёт строк и экранирования). */
-export function extractJsonObject(text: string): string | null {
-  const start = text.indexOf('{');
-  if (start === -1) {
-    return null;
-  }
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < text.length; index++) {
-    const character = text[index];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (character === '\\') {
-        escaped = true;
-      } else if (character === '"') {
-        inString = false;
-      }
-    } else if (character === '"') {
-      inString = true;
-    } else if (character === '{') {
-      depth++;
-    } else if (character === '}') {
-      depth--;
-      if (depth === 0) {
-        return text.slice(start, index + 1);
-      }
-    }
-  }
-  return null; // незакрытый объект
-}
-
-/** Парсит JSON-объект из ответа: целиком, иначе первый блок `{…}` в прозе; иначе null. */
-function parseObject(content: string): Record<string, unknown> | null {
-  for (const candidate of [content, extractJsonObject(content)]) {
-    if (candidate === null) {
-      continue;
-    }
-    try {
-      const parsed: unknown = JSON.parse(candidate);
-      if (typeof parsed === 'object' && parsed !== null) {
-        return parsed as Record<string, unknown>;
-      }
-    } catch {
-      // пробуем следующий кандидат
-    }
-  }
-  return null;
-}
+// Ленивый разбор JSON-артефактов вынесен в ./json.ts (extractJsonObject/parseJsonObject):
+// JSON просим в промпте без response_format, ответ устойчиво вынимается из прозы.
 
 /** Массив строк из значения (иначе пустой). */
 function asStrings(value: unknown): string[] {
@@ -117,7 +75,7 @@ function extractBullets(text: string): string[] {
 
 /** Разбирает артефакт планирования (C → фолбэк на текст/буллеты). */
 export function parsePlanning(content: string): PlanningArtifact {
-  const object = parseObject(content);
+  const object = parseJsonObject(content);
   if (object !== null) {
     return {
       steps: asStrings(object.steps),
@@ -148,7 +106,7 @@ export function parseExecution(content: string): Omit<ExecutionArtifact, 'files'
 
 /** Разбирает артефакт проверки (passed/issues; фолбэк ищет признак провала). */
 export function parseVerification(content: string): VerificationArtifact {
-  const object = parseObject(content);
+  const object = parseJsonObject(content);
   if (object !== null) {
     return {
       passed: object.passed === true,
@@ -167,7 +125,7 @@ export function parseVerification(content: string): VerificationArtifact {
 
 /** Разбирает артефакт завершения. */
 export function parseCompletion(content: string): CompletionArtifact {
-  const object = parseObject(content);
+  const object = parseJsonObject(content);
   if (object !== null) {
     return {
       summary: asString(object.summary) || content.split('\n')[0],
@@ -204,33 +162,130 @@ const COMPLETER_SYSTEM =
 /** Низкая температура проверяющего — для стабильного, воспроизводимого вердикта. */
 const VERIFIER_TEMPERATURE = 0;
 
+/** Персона роль-эксперта планирования: предложения со своего ракурса (без JSON). */
+function plannerRoleSystem(role: AgentRole): string {
+  return (
+    `Ты — ${role.name} в команде планирования.` +
+    (role.focus ? ` Твой фокус: ${role.focus}.` : '') +
+    ' Со своего ракурса предложи ключевые шаги реализации и критерии приёмки. Будь конкретен ' +
+    'и не выходи за рамки своей роли — общий план соберёт ведущий планировщик. Ответь кратко ' +
+    'по делу (можно списком); JSON не требуется.'
+  );
+}
+
+/** Персона синтезатора: свести предложения экспертов в один план (тот же JSON-формат). */
+const PLAN_SYNTHESIZER_SYSTEM =
+  'Ты — ведущий планировщик. Тебе даны предложения экспертов разных ролей. Сведи их в ОДИН ' +
+  'согласованный план без дублей и противоречий: объедини шаги (steps) и критерии приёмки ' +
+  '(criteria) — измеримые и проверяемые. И steps, и criteria ОБЯЗАТЕЛЬНЫ и не должны быть ' +
+  'пустыми. Ответь ТОЛЬКО объектом JSON: ' +
+  '{"steps":[...], "criteria":[...], "text": "краткий план словами"}.';
+
+/** Добор обязательных критериев приёмки при их отсутствии (план ушёл прозой). */
+const PLAN_CRITERIA_FOLLOWUP =
+  'Критерии приёмки обязательны и не должны быть пустыми. Верни их непустым массивом ' +
+  'в поле "criteria" (вместе со steps), в том же JSON-формате.';
+
 /** Контекстный префикс памяти задачи (или пусто). */
 function memoryPrefix(ctx: StageContext): string {
   const context = ctx.memoryContext();
   return context ? `${context}\n\n` : '';
 }
 
-/** Планирование: задача (+память +правка) → план с критериями. */
-export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> {
-  const conversation = ctx.makeConversation(PLANNER_SYSTEM);
+/** Безопасное имя файла из роли (не-буквы/цифры → дефис). */
+function fileSlug(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/(?:^-|-$)/g, '');
+}
+
+/** Базовое задание планировщику: задача с памятью и (опц.) правкой пользователя. */
+function planningBrief(ctx: StageContext): string {
   const correction = ctx.run.correction
     ? `\n\nУчти правку пользователя: ${ctx.run.correction}`
     : '';
-  const prompt = `${memoryPrefix(ctx)}Задача: ${ctx.run.title}${correction}`;
+  return `${memoryPrefix(ctx)}Задача: ${ctx.run.title}${correction}`;
+}
+
+/**
+ * Прогон решающего диалога планирования с обязательным добором критериев: если их нет
+ * (план ушёл прозой) — повторный запрос до 2 раз, иначе план «зависнет» на проверке.
+ */
+async function planFromConversation(
+  ctx: StageContext,
+  conversation: Conversation,
+  initialPrompt: string,
+): Promise<PlanningArtifact> {
   let artifact = parsePlanning(
-    await guarded(ctx, feedback => conversation.ask(feedback ?? prompt).then(r => r.content)),
+    await guarded(ctx, feedback =>
+      conversation.ask(feedback ?? initialPrompt).then(r => r.content),
+    ),
   );
-  // Критерии обязательны: если их нет (план ушёл прозой) — добираем повторным запросом
-  // (до 2 раз), иначе план «зависнет» на проверке пустых критериев.
-  const followUp =
-    'Критерии приёмки обязательны и не должны быть пустыми. Верни их непустым массивом ' +
-    'в поле "criteria" (вместе со steps), в том же JSON-формате.';
   for (let attempt = 0; artifact.criteria.length === 0 && attempt < 2; attempt++) {
     artifact = parsePlanning(
-      await guarded(ctx, feedback => conversation.ask(feedback ?? followUp).then(r => r.content)),
+      await guarded(ctx, feedback =>
+        conversation.ask(feedback ?? PLAN_CRITERIA_FOLLOWUP).then(r => r.content),
+      ),
     );
   }
   return artifact;
+}
+
+/** Одиночное планирование: один планировщик (исходный режим). */
+function planSolo(ctx: StageContext): Promise<PlanningArtifact> {
+  return planFromConversation(ctx, ctx.makeConversation(PLANNER_SYSTEM), planningBrief(ctx));
+}
+
+/**
+ * Командное планирование: роль-эксперты дают предложения (ограниченно-параллельно),
+ * синтезатор сводит их в единый план. Все эксперты упали → откат к одиночному режиму.
+ */
+async function planWithTeam(ctx: StageContext, team: TeamPlan): Promise<PlanningArtifact> {
+  const brief = planningBrief(ctx);
+  const contributions = await runRoleExperts({
+    roles: team.roles,
+    makeConversation: ctx.makeConversation,
+    buildSystem: plannerRoleSystem,
+    buildPrompt: () => brief,
+    concurrency: ctx.stageAgentConcurrency ?? 1,
+  });
+  if (contributions.length === 0) {
+    return planSolo(ctx);
+  }
+  // Вклады экспертов — файлами-артефактами (наблюдаемость) и в задание синтезатора.
+  contributions.forEach((contribution, index) =>
+    ctx.writeArtifact(
+      `planning-team-${index + 1}-${fileSlug(contribution.role)}.md`,
+      contribution.text,
+    ),
+  );
+  const briefing = contributions
+    .map(contribution => `### ${contribution.role}\n${contribution.text}`)
+    .join('\n\n');
+  const synthesizer = ctx.makeConversation(PLAN_SYNTHESIZER_SYSTEM);
+  const artifact = await planFromConversation(
+    ctx,
+    synthesizer,
+    `${brief}\n\nПредложения экспертов:\n${briefing}`,
+  );
+  return { ...artifact, contributions };
+}
+
+/**
+ * Планирование: оркестратор решает состав команды. Один агент → одиночный режим;
+ * команда ролей → эксперты + синтез в единый план. Память+правка идут в обе ветки.
+ */
+export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> {
+  const team = await orchestrateTeam({
+    makeConversation: ctx.makeConversation,
+    task: ctx.run.title,
+    context: ctx.memoryContext(),
+    stageLabel: 'планирование',
+    maxAgents: ctx.maxStageAgents ?? 1,
+  });
+  ctx.reportTeam?.(team);
+  return team.roles.length <= 1 ? planSolo(ctx) : planWithTeam(ctx, team);
 }
 
 /** Выполнение: план (+проблемы проверки/правка) → результат; крупный текст в файл. */

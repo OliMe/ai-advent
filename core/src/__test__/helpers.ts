@@ -19,6 +19,8 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     priceInputPer1M: 0,
     priceOutputPer1M: 0,
     usdToRub: 90,
+    maxStageAgents: 1,
+    stageAgentConcurrency: 2,
     ...overrides,
   };
 }

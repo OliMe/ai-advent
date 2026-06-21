@@ -3,6 +3,7 @@ import type { GenerationLimits } from './types.ts';
 import type { RunStore } from './run-store.ts';
 import type { CompletionArtifact, RunStatus, Stage, StageArtifacts, TaskRun } from './task-run.ts';
 import { applyTransition, repairStage } from './task-run.ts';
+import type { TeamPlan } from './stage-team.ts';
 import {
   runCompletion,
   runExecution,
@@ -48,6 +49,8 @@ export interface PipelineHooks {
    * (артефакты предыдущих этапов отсутствовали). Чтобы нельзя было «перепрыгнуть» этап.
    */
   onStageRepair?: (from: Stage, to: Stage) => void;
+  /** Оркестратор подобрал команду агентов на этап (для печати решения). */
+  onTeam?: (stage: Stage, team: TeamPlan) => void;
 }
 
 /** Зависимости запуска пайплайна. */
@@ -69,6 +72,11 @@ export interface PipelineDeps {
   memoryContext?: () => string;
   /** Инварианты для жёсткого контроля решающих агентов; пусто/не задан — контроль выключен. */
   invariants?: () => string[];
+  /**
+   * Конфиг команды агентов на этап: потолок ролей и конкурентность веера. Не задан —
+   * многоагентность выключена (однопроходный режим, оркестратор не вызывается).
+   */
+  teamConfig?: { maxAgents: number; concurrency: number };
 }
 
 /**
@@ -112,6 +120,9 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
     makeConversation: deps.makeConversation,
     writeArtifact: (name, content) => store?.writeArtifact(run.id, name, content) ?? null,
     memoryContext: deps.memoryContext ?? (() => ''),
+    maxStageAgents: deps.teamConfig?.maxAgents,
+    stageAgentConcurrency: deps.teamConfig?.concurrency,
+    reportTeam: team => hooks.onTeam?.(run.stage, team),
     // Защищённая генерация решающих этапов: контролёр сверяет результат с инвариантами.
     enforce: produce =>
       enforceInvariants({

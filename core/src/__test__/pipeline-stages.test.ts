@@ -14,7 +14,7 @@ import {
   Conversation,
   createRun,
 } from '../index.ts';
-import type { GenerationLimits, StageContext, TaskRun } from '../index.ts';
+import type { GenerationLimits, StageContext, TaskRun, TeamPlan } from '../index.ts';
 import { clientWith } from './helpers.ts';
 
 /** Фабрика диалога с подменённым клиентом: всегда отдаёт `content`; ловит промпт. */
@@ -370,5 +370,122 @@ describe('раннеры этапов', () => {
     let prompt = '';
     await runVerification(ctxWith(t, '{"passed":false,"issues":["x"]}', run, p => (prompt = p)));
     assert.match(prompt, /Результат на проверку:\n$/); // после заголовка пусто
+  });
+});
+
+describe('командное планирование (несколько агентов)', () => {
+  /** Диалог, отвечающий по роли системного промпта: оркестратор / эксперт / синтезатор. */
+  function teamConversation(
+    t: TestContext,
+    replies: { orchestrator: string; role: (system: string) => string; synthesizer: string },
+    capture?: (call: { system: string; temperature?: number }) => void,
+  ) {
+    return (system: string, limits?: GenerationLimits, temperature?: number) => {
+      const client = clientWith(t, async () => {
+        capture?.({ system, temperature });
+        if (system.includes('оркестратор команды')) {
+          return { content: replies.orchestrator, usage: undefined };
+        }
+        if (system.includes('в команде планирования')) {
+          return { content: replies.role(system), usage: undefined };
+        }
+        return { content: replies.synthesizer, usage: undefined }; // ведущий планировщик
+      });
+      return new Conversation(client, {
+        systemPrompt: system,
+        temperature: temperature ?? 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+  }
+
+  it('команда ролей → синтез единого плана и запись вкладов', async t => {
+    const run = createRun('Сложная система', { idSuffix: 'team' });
+    const written: Array<{ name: string }> = [];
+    const calls: Array<{ system: string; temperature?: number }> = [];
+    const teams: TeamPlan[] = [];
+    const ctx: StageContext = {
+      run,
+      makeConversation: teamConversation(
+        t,
+        {
+          orchestrator:
+            '{"roles":[{"name":"архитектор","focus":"структура","temperature":0.2},' +
+            '{"name":"безопасность","focus":"риски"}],"rationale":"сложно"}',
+          role: system => (system.includes('архитектор') ? '- модульность' : '- валидация'),
+          synthesizer: '{"steps":["s1","s2"],"criteria":["c1"],"text":"единый план"}',
+        },
+        call => calls.push(call),
+      ),
+      writeArtifact: name => {
+        written.push({ name });
+        return `/runs/${name}`;
+      },
+      memoryContext: () => '',
+      maxStageAgents: 4,
+      stageAgentConcurrency: 2,
+      reportTeam: team => teams.push(team),
+    };
+
+    const artifact = await runPlanning(ctx);
+
+    assert.deepEqual(artifact.steps, ['s1', 's2']);
+    assert.deepEqual(artifact.criteria, ['c1']);
+    assert.deepEqual(
+      artifact.contributions?.map(contribution => contribution.role),
+      ['архитектор', 'безопасность'],
+    );
+    // Вклады экспертов записаны файлами с безопасными именами.
+    assert.deepEqual(
+      written.map(file => file.name),
+      ['planning-team-1-архитектор.md', 'planning-team-2-безопасность.md'],
+    );
+    // Решение оркестратора сообщено драйверу.
+    assert.equal(teams.length, 1);
+    assert.equal(teams[0]?.roles.length, 2);
+    // Температура роли проброшена в её диалог (именно роль-эксперта, не оркестратора).
+    const architectCall = calls.find(
+      call => call.system.includes('в команде планирования') && call.system.includes('архитектор'),
+    );
+    assert.equal(architectCall?.temperature, 0.2);
+  });
+
+  it('все эксперты упали → откат к одиночному плану', async t => {
+    const run = createRun('Задача', { idSuffix: 'fb' });
+    const make = (system: string) => {
+      const client = clientWith(t, async () => {
+        if (system.includes('оркестратор команды')) {
+          return {
+            content: '{"roles":[{"name":"a","focus":""},{"name":"b","focus":""}],"rationale":""}',
+            usage: undefined,
+          };
+        }
+        if (system.includes('в команде планирования')) {
+          throw new Error('эксперт упал');
+        }
+        return { content: '{"steps":["solo"],"criteria":["c"],"text":"соло"}', usage: undefined };
+      });
+      return new Conversation(client, {
+        systemPrompt: system,
+        temperature: 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+      });
+    };
+    const ctx: StageContext = {
+      run,
+      makeConversation: make,
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      maxStageAgents: 3,
+      // stageAgentConcurrency не задан → дефолт (1) внутри раннера.
+    };
+
+    const artifact = await runPlanning(ctx);
+
+    assert.deepEqual(artifact.steps, ['solo']); // одиночный планировщик
+    assert.equal(artifact.contributions, undefined); // соло-путь без вкладов команды
   });
 });

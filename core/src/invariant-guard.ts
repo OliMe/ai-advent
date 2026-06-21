@@ -1,5 +1,5 @@
 import type { Conversation } from './conversation.ts';
-import { extractJsonObject } from './pipeline-stages.ts';
+import { extractJsonObject } from './json.ts';
 
 /** Персона агента-контролёра: сверяет ответ агента с инвариантами и называет нарушения. */
 export const INVARIANT_CHECKER_SYSTEM =
