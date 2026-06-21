@@ -33,7 +33,7 @@ export function taskRunClient(
   const reply = (messages: ChatMessage[]): string => {
     const head = messages[0]?.content ?? '';
     if (head.includes('контролёр')) return check;
-    if (head.includes('аналитик')) return '{"questions":[]}';
+    if (head.includes('аналитик требований')) return '{"questions":[]}';
     if (head.includes('планировщик'))
       return JSON.stringify({ steps: ['шаг'], criteria: ['критерий'], text: 'план' });
     if (head.includes('исполнитель'))

@@ -59,7 +59,7 @@ function factory(
   clarifier: string[] = ['{"done":true}'],
 ): ConversationFactory {
   return (systemPrompt, limits) => {
-    const isClarifier = systemPrompt.includes('аналитик');
+    const isClarifier = systemPrompt.includes('аналитик требований');
     const stage = stageOf(systemPrompt);
     let clarifierTurn = 0;
     const client = clientWith(t, async messages => {
@@ -285,7 +285,7 @@ describe('RunController', () => {
   it('сбой аналитика не блокирует прогон', async t => {
     const out = makeCollector();
     const make: ConversationFactory = (systemPrompt, limits) => {
-      const isClarifier = systemPrompt.includes('аналитик');
+      const isClarifier = systemPrompt.includes('аналитик требований');
       const client = clientWith(t, async () => {
         if (isClarifier) throw new Error('аналитик упал');
         return { content: content()[stageOf(systemPrompt)](), usage: undefined };
@@ -338,7 +338,9 @@ describe('RunController', () => {
     // Диалоги отвечают по персоне: оркестратор → команда из 2 ролей, синтезатор → план.
     const make: ConversationFactory = (systemPrompt, limits) => {
       const client = clientWith(t, async () => {
-        if (systemPrompt.includes('аналитик')) {
+        // Кларификатор — по полной фразе: «аналитик требований» (а не подстроке
+        // «аналитик», которая теперь встречается и в промпте оркестратора — «аналитика»).
+        if (systemPrompt.includes('аналитик требований')) {
           return { content: '{"done":true}', usage: undefined };
         }
         if (systemPrompt.includes('оркестратор команды')) {
@@ -383,7 +385,8 @@ describe('RunController', () => {
     const text = out.text();
     assert.match(text, /Команда на этап «планирование»: архитектор \(структура\), безопасность/);
     assert.match(text, /сложная система/); // обоснование оркестратора
-    assert.match(text, /План собрала команда:/); // вклады ролей в результате этапа
+    assert.match(text, /Вклады ролей команды:/); // вклады ролей в результате этапа
+    assert.match(text, /• архитектор:/); // виден вклад конкретной роли
     assert.match(text, /завершена и подтверждена/);
   });
 
@@ -647,7 +650,7 @@ describe('RunController', () => {
     const make: ConversationFactory = systemPrompt => {
       const reply = systemPrompt.includes('контролёр')
         ? '{"ok":false,"violations":["нарушает выбранную архитектуру"]}'
-        : systemPrompt.includes('аналитик')
+        : systemPrompt.includes('аналитик требований')
           ? '{"done":true}'
           : content()[stageOf(systemPrompt)]();
       return new Conversation(
@@ -679,7 +682,7 @@ describe('RunController', () => {
     let clarifierPrompt = '';
     let planPrompt = '';
     const make: ConversationFactory = systemPrompt => {
-      const isClarifier = systemPrompt.includes('аналитик');
+      const isClarifier = systemPrompt.includes('аналитик требований');
       const isPlanner = systemPrompt.includes('планировщик');
       const client = clientWith(t, async messages => {
         const last = messages.at(-1)?.content ?? '';

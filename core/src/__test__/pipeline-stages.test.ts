@@ -184,6 +184,65 @@ describe('раннеры этапов', () => {
     assert.deepEqual(artifact.criteria, ['к1']); // критерии добраны со второго раза
   });
 
+  it('runPlanning: добирает критерии для плана прозой (без шагов)', async t => {
+    const run = createRun('Сайт');
+    const replies = [
+      '{"steps":[],"criteria":[],"text":"Подробный план действий, описанный прозой."}', // прозой, без критериев
+      '{"criteria":["к1","к2"]}', // направленный добор критериев
+    ];
+    let index = 0;
+    const ctx: StageContext = {
+      run,
+      makeConversation: () =>
+        new Conversation(
+          clientWith(t, async () => ({
+            content: replies[Math.min(index++, replies.length - 1)],
+            usage: undefined,
+          })),
+          {
+            systemPrompt: 'планировщик',
+            temperature: 0.5,
+            contextTokens: 8192,
+            requestTimeoutMs: 5000,
+          },
+        ),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+    };
+    const artifact = await runPlanning(ctx);
+    assert.deepEqual(artifact.criteria, ['к1', 'к2']); // критерии добраны направленным запросом
+    assert.equal(artifact.steps.length, 0); // шаги остались в прозе (text)
+  });
+
+  it('runPlanning: критерии есть сразу → добор не запускается', async t => {
+    const run = createRun('Сайт');
+    let calls = 0;
+    const ctx: StageContext = {
+      run,
+      makeConversation: () =>
+        new Conversation(
+          clientWith(t, async () => {
+            calls++;
+            return {
+              content: JSON.stringify({ steps: [], criteria: ['к1'], text: 'план прозой' }),
+              usage: undefined,
+            };
+          }),
+          {
+            systemPrompt: 'планировщик',
+            temperature: 0.5,
+            contextTokens: 8192,
+            requestTimeoutMs: 5000,
+          },
+        ),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+    };
+    const artifact = await runPlanning(ctx);
+    assert.equal(calls, 1); // критерии уже есть — добора нет
+    assert.deepEqual(artifact.criteria, ['к1']);
+  });
+
   it('runPlanning: добор не помог → возвращаем план как есть', async t => {
     const run = createRun('Сайт');
     const ctx: StageContext = {

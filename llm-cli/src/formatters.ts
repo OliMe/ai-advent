@@ -183,11 +183,14 @@ export function formatStageResult(stage: Stage, artifacts: StageArtifacts): stri
             ? `План:\n${planning.text}`
             : '';
       const criteria = bulletList('Критерии приёмки:', planning.criteria);
-      // Если план собрала команда — отметим её состав (роли) под планом.
-      const team = bulletList(
-        'План собрала команда:',
-        (planning.contributions ?? []).map(contribution => contribution.role),
-      );
+      // Если план собрала команда — показываем вклад КАЖДОЙ роли (видно, что агенты отработали).
+      const contributions = planning.contributions ?? [];
+      const team =
+        contributions.length > 0
+          ? `Вклады ролей команды:\n${contributions
+              .map(contribution => `• ${contribution.role}:\n${contribution.text}`)
+              .join('\n\n')}`
+          : '';
       const blocks = [stepsBlock, criteria, team].filter(block => block.length > 0);
       return blocks.length > 0 ? blocks.join('\n') : planning.text;
     }
