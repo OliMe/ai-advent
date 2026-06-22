@@ -321,6 +321,28 @@ describe('раннеры этапов', () => {
     assert.deepEqual(written, [{ name: 'execution-1.md', content: 'Готово\nconst code = 1;' }]);
   });
 
+  it('runPlanning и runExecution подают явные требования прогона целиком', async t => {
+    const run = createRun('План');
+    run.artifacts.requirements = {
+      collected: [
+        'Список задач с оценкой времени в часах',
+        'Профиль исполнителя для каждой задачи',
+      ],
+      text: '',
+    };
+    let planPrompt = '';
+    await runPlanning(
+      ctxWith(t, '{"steps":["s"],"criteria":["c"],"text":"план"}', run, p => (planPrompt = p)),
+    );
+    assert.match(planPrompt, /оценкой времени в часах/); // требование к формату — в планировании
+    assert.match(planPrompt, /Профиль исполнителя/);
+
+    run.artifacts.planning = { steps: ['s'], criteria: ['c'], text: 'план' };
+    let execPrompt = '';
+    await runExecution(ctxWith(t, 'результат', run, p => (execPrompt = p)));
+    assert.match(execPrompt, /оценкой времени в часах/); // и в выполнении
+  });
+
   it('runExecution: доработка требует ПОЛНЫЙ результат с предыдущим и правкой', async t => {
     const run = createRun('Сайт');
     run.artifacts.planning = { steps: ['s'], criteria: ['c'], text: 'план' };
