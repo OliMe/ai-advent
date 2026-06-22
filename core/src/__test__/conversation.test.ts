@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Conversation } from '../index.ts';
 import type { ConversationConfig } from '../index.ts';
 import { ChatCompletionClient } from '../index.ts';
-import type { ChatMessage, CompleteOptions, StreamDelta } from '../index.ts';
+import type { ChatMessage, CompleteOptions, StreamDelta, Usage } from '../index.ts';
 import { clientWith, makeConfig } from './helpers.ts';
 
 const config: ConversationConfig = {
@@ -45,6 +45,21 @@ describe('Conversation', () => {
       completion_tokens: 2,
       total_tokens: 5,
     });
+  });
+
+  it('ask: вызывает onUsage с расходом токенов (учёт вложенных агентов)', async t => {
+    const seen: Usage[] = [];
+    const withUsage = clientWith(t, async () => ({
+      content: 'ответ',
+      usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 },
+    }));
+    await new Conversation(withUsage, { ...config, onUsage: u => seen.push(u) }).ask('привет');
+    assert.deepEqual(seen, [{ prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 }]);
+
+    // Без usage от провайдера onUsage не вызывается.
+    const noUsage = clientWith(t, async () => ({ content: 'x', usage: undefined }));
+    await new Conversation(noUsage, { ...config, onUsage: u => seen.push(u) }).ask('ещё');
+    assert.equal(seen.length, 1);
   });
 
   it('ask (стрим): пробрасывает видимый текст, игнорирует reasoning', async t => {

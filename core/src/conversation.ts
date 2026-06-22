@@ -17,6 +17,11 @@ export interface ConversationConfig {
   disableThinking?: boolean;
   /** Ограничения генерации (max_tokens, stop, response_format и т.п.). */
   limits?: GenerationLimits;
+  /**
+   * Колбэк расхода токенов на каждый `ask` (если провайдер прислал usage). Нужен, чтобы
+   * учитывать обращения вложенных агентов (этапы пайплайна, контролёр) в общем счёте сессии.
+   */
+  onUsage?: (usage: Usage) => void;
 }
 
 /**
@@ -81,6 +86,7 @@ export class Conversation {
         this.accumulated.prompt_tokens += result.usage.prompt_tokens;
         this.accumulated.completion_tokens += result.usage.completion_tokens;
         this.accumulated.total_tokens += result.usage.total_tokens;
+        this.config.onUsage?.(result.usage);
       }
       return result;
     } catch (error) {
