@@ -181,10 +181,38 @@ export async function runInteractive(
     reportExtra(report.usage, 'память');
   };
 
+  // Расход токенов текущего прогона (этапы пайплайна) — для сводки по прогону.
+  let pipelineUsage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  // Учёт обращений агентов пайплайна/контролёра: в итог сессии и в сводку прогона.
+  const accountForAgentUsage = (usage: Usage): void => {
+    totals.prompt_tokens += usage.prompt_tokens;
+    totals.completion_tokens += usage.completion_tokens;
+    totals.total_tokens += usage.total_tokens;
+    requestCount++;
+    pipelineUsage.prompt_tokens += usage.prompt_tokens;
+    pipelineUsage.completion_tokens += usage.completion_tokens;
+    pipelineUsage.total_tokens += usage.total_tokens;
+  };
   // Драйвер прогонов задач (пайплайн): свои диалоги-агенты, своё хранилище.
   // Мост связывает прогон с задачей сессии — память задачи идёт в этапы, итог обратно.
   // Фабрика диалогов-агентов (этапы пайплайна, контролёр инвариантов): своя персона/температура.
-  const agentFactory = makeConversationFactory(client, config, disableThinking, temperature);
+  const agentFactory = makeConversationFactory(
+    client,
+    config,
+    disableThinking,
+    temperature,
+    accountForAgentUsage,
+  );
+  // Прогон с печатью суммарного расхода токенов прогона (все обращения агентов этапов).
+  const runWithUsageReport = async (action: () => Promise<void>): Promise<void> => {
+    pipelineUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    await action();
+    if (pipelineUsage.total_tokens > 0) {
+      output.write(
+        `${formatUsageStats(pipelineUsage, historyTokens(currentSession.messages), config, 'прогон')}\n\n`,
+      );
+    }
+  };
   const runController = new RunController({
     store: runStore,
     makeConversation: agentFactory,
@@ -216,7 +244,7 @@ export async function runInteractive(
     currentSession.taskId = task.id;
     store?.save(currentSession);
     output.write(`Задача установлена: ${task.title}\n\n`);
-    await runController.start(''); // прогон текущей задачи сессии
+    await runWithUsageReport(() => runController.start('')); // прогон текущей задачи сессии
   };
 
   // Реестр интерактивных команд: первая подходящая по `matches` выполняет `run`.
@@ -435,7 +463,10 @@ export async function runInteractive(
     },
     {
       matches: input => input === '/run continue' || input.startsWith('/run continue '),
-      run: input => runController.continue(input.slice('/run continue'.length).trim()),
+      run: input =>
+        runWithUsageReport(() =>
+          runController.continue(input.slice('/run continue'.length).trim()),
+        ),
     },
     {
       matches: input => input.startsWith('/run edit '),
@@ -444,7 +475,8 @@ export async function runInteractive(
     { matches: input => input === '/run abort', run: () => runController.abort() },
     {
       matches: input => input === '/run' || input.startsWith('/run '),
-      run: input => runController.start(input.slice('/run'.length).trim()),
+      run: input =>
+        runWithUsageReport(() => runController.start(input.slice('/run'.length).trim())),
     },
     {
       matches: input => input === '/invariants',

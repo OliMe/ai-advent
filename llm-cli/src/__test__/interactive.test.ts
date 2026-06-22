@@ -1344,6 +1344,35 @@ describe('runInteractive — команды прогонов задач (/run)',
     assert.match(out, /✓ Задача .* завершена и подтверждена/);
   });
 
+  it('учитывает токены агентов прогона в сводке прогона и в итогах сессии', async t => {
+    const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+    const client = clientWith(t, async messages => {
+      const persona = messages[0]?.content ?? '';
+      if (persona.includes('планировщик')) return { content: PLAN, usage };
+      if (persona.includes('исполнитель')) return { content: EXEC, usage };
+      if (persona.includes('проверяющий')) return { content: PASS, usage };
+      return { content: DONE, usage };
+    });
+    const { finished, text } = driveInteractive(
+      client,
+      ['/run собери TODO-приложение', 'да', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+    );
+    await finished;
+    const out = text();
+    const run = out.match(/\[прогон · вход (\d+) · выход (\d+)/);
+    assert.ok(run, 'есть строка расхода токенов прогона');
+    assert.ok(Number(run[1]) > 0); // токены агентов прогона учтены
+    // В этой сессии нет чат-реплик → итог сессии равен расходу прогона (пайплайн учтён).
+    const session = out.match(/Итого за сессию: вход (\d+) · выход (\d+) · всего/);
+    assert.ok(session);
+    assert.equal(session[1], run[1]);
+    assert.equal(session[2], run[2]);
+  });
+
   it('Ctrl+C во время прогона ставит его на паузу, а не выходит', async t => {
     let captured: readline.Interface | undefined;
     const client = stageClient(t, persona => {

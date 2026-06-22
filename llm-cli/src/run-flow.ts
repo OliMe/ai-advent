@@ -7,6 +7,7 @@ import type {
   RunStore,
   Task,
   TaskRun,
+  Usage,
 } from '../../core/src/index.ts';
 import {
   formatStageResult,
@@ -67,12 +68,14 @@ export function parseClarifierStep(content: string): ClarifierStep {
   return { done: false, question, suggestion };
 }
 
-/** Строит фабрику диалогов для агентов пайплайна на базе клиента и конфигурации. */
+/** Строит фабрику диалогов для агентов пайплайна на базе клиента и конфигурации.
+ *  `onUsage` — учёт токенов каждого обращения агента (этапы пайплайна, контролёр). */
 export function makeConversationFactory(
   client: ChatCompletionClient,
   config: AppConfig,
   disableThinking: boolean,
   temperature: number,
+  onUsage?: (usage: Usage) => void,
 ): ConversationFactory {
   return (systemPrompt, limits, temperatureOverride) =>
     new Conversation(client, {
@@ -87,6 +90,7 @@ export function makeConversationFactory(
         config.stageMaxTokens === undefined
           ? limits
           : { ...limits, maxTokens: limits?.maxTokens ?? config.stageMaxTokens },
+      onUsage,
     });
 }
 
