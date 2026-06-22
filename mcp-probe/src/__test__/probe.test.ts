@@ -1,37 +1,50 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { probeTools } from '../index.ts';
-import type { ToolProbe } from '../index.ts';
+import { runProbe } from '../index.ts';
+import type { McpProbe } from '../index.ts';
 
-describe('probeTools', () => {
-  it('подключается, запрашивает инструменты и закрывает соединение', async () => {
+/** Заглушка клиента: журналирует вызовы; listTools/callTool отдают помеченный результат. */
+function fakeProbe(calls: string[], overrides: Partial<McpProbe> = {}): McpProbe {
+  return {
+    connect: async () => void calls.push('connect'),
+    listTools: async () => {
+      calls.push('list');
+      return { tools: [{ name: 'search' }] };
+    },
+    callTool: async (name, args) => {
+      calls.push(`call:${name}`);
+      return { name, args };
+    },
+    close: async () => void calls.push('close'),
+    ...overrides,
+  };
+}
+
+describe('runProbe', () => {
+  it('без действия — список инструментов, затем закрытие', async () => {
     const calls: string[] = [];
-    const probe: ToolProbe = {
-      connect: async () => void calls.push('connect'),
-      listTools: async () => {
-        calls.push('list');
-        return { tools: [{ name: 'tavily-search' }] };
-      },
-      close: async () => void calls.push('close'),
-    };
-
-    const tools = await probeTools(probe);
-
-    assert.deepEqual(tools, { tools: [{ name: 'tavily-search' }] });
-    assert.deepEqual(calls, ['connect', 'list', 'close']); // порядок и обязательное закрытие
+    const result = await runProbe(fakeProbe(calls), {});
+    assert.deepEqual(result, { tools: [{ name: 'search' }] });
+    assert.deepEqual(calls, ['connect', 'list', 'close']);
   });
 
-  it('закрывает соединение даже при ошибке запроса и пробрасывает ошибку', async () => {
+  it('с действием — вызов инструмента с аргументами, затем закрытие', async () => {
     const calls: string[] = [];
-    const probe: ToolProbe = {
-      connect: async () => void calls.push('connect'),
+    const result = await runProbe(fakeProbe(calls), {
+      tool: { name: 'search', arguments: { query: 'mcp' } },
+    });
+    assert.deepEqual(result, { name: 'search', args: { query: 'mcp' } });
+    assert.deepEqual(calls, ['connect', 'call:search', 'close']);
+  });
+
+  it('закрывает соединение даже при ошибке запроса и пробрасывает её', async () => {
+    const calls: string[] = [];
+    const probe = fakeProbe(calls, {
       listTools: async () => {
         throw new Error('сбой');
       },
-      close: async () => void calls.push('close'),
-    };
-
-    await assert.rejects(() => probeTools(probe), /сбой/);
+    });
+    await assert.rejects(() => runProbe(probe, {}), /сбой/);
     assert.deepEqual(calls, ['connect', 'close']); // close вызван в finally
   });
 });
