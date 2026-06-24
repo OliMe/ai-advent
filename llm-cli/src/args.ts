@@ -39,6 +39,8 @@ export interface ParsedArgs {
   keepRecent: number;
   /** Выключить слоистую память — профиль и задачу (`--no-memory`). */
   noMemory: boolean;
+  /** Выключить подключение MCP-серверов и инструменты агентов (`--no-mcp`). */
+  noMcp: boolean;
   /** Стартовая задача (`--task <текст>`). */
   task?: string;
   /** Активный профиль (персона) при старте (`--profile <имя>`). */
@@ -101,6 +103,7 @@ export function parseArgs(args: string[]): ParsedArgs {
   let memory: MemoryKind = 'window';
   let keepRecent = DEFAULT_KEEP_RECENT;
   let noMemory = false;
+  let noMcp = false;
   let task: string | undefined;
   let profile: string | undefined;
   let profileTokens: number | undefined;
@@ -130,6 +133,10 @@ export function parseArgs(args: string[]): ParsedArgs {
     }
     if (name === '--ephemeral') {
       ephemeral = true;
+      continue;
+    }
+    if (name === '--no-mcp') {
+      noMcp = true;
       continue;
     }
     if (name === '--no-memory') {
@@ -197,6 +204,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     contextTokens,
     stream,
     ephemeral,
+    noMcp,
     switchTo,
     branchName,
     files,

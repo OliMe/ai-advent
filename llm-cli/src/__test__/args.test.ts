@@ -47,6 +47,11 @@ describe('parseArgs', () => {
     assert.equal(parseArgs(['привет']).stream, true);
   });
 
+  it('--no-mcp булев; по умолчанию выключен', () => {
+    assert.equal(parseArgs(['--no-mcp']).noMcp, true);
+    assert.equal(parseArgs(['привет']).noMcp, false);
+  });
+
   it('--ephemeral булев; по умолчанию выключен, ветка не задана', () => {
     assert.equal(parseArgs(['--ephemeral']).ephemeral, true);
     const none = parseArgs(['привет']);

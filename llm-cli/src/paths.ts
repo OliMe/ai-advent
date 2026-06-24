@@ -16,6 +16,11 @@ export function profilePath(): string {
   return join(memoryBaseDir(), 'profile.json');
 }
 
+/** Путь к файлу конфигурации MCP-серверов. */
+export function mcpConfigPath(): string {
+  return join(memoryBaseDir(), 'mcp.json');
+}
+
 /** Путь к файлу глобальных инвариантов проекта. */
 export function invariantsPath(): string {
   return join(memoryBaseDir(), 'invariants.json');

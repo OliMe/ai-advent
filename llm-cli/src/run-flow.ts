@@ -7,6 +7,7 @@ import type {
   RunStore,
   Task,
   TaskRun,
+  ToolSet,
   Usage,
 } from '../../core/src/index.ts';
 import {
@@ -20,11 +21,12 @@ import {
 import { isAffirmative, isNegative } from './replies.ts';
 import { describeError } from './errors.ts';
 
-/** Фабрика диалога этапа: системный промпт, ограничения и (опц.) температура агента. */
+/** Фабрика диалога этапа: системный промпт, ограничения, температура и (опц.) инструменты. */
 export type ConversationFactory = (
   systemPrompt: string,
   limits?: GenerationLimits,
   temperature?: number,
+  tools?: ToolSet,
 ) => Conversation;
 
 /** Максимум вопросов аналитика за один сбор требований (страховка от зацикливания). */
@@ -69,15 +71,16 @@ export function parseClarifierStep(content: string): ClarifierStep {
 }
 
 /** Строит фабрику диалогов для агентов пайплайна на базе клиента и конфигурации.
- *  `onUsage` — учёт токенов каждого обращения агента (этапы пайплайна, контролёр). */
+ *  `onUsage` — учёт токенов каждого обращения; `onToolCall` — печать вызовов инструментов. */
 export function makeConversationFactory(
   client: ChatCompletionClient,
   config: AppConfig,
   disableThinking: boolean,
   temperature: number,
   onUsage?: (usage: Usage) => void,
+  onToolCall?: (name: string, args: Record<string, unknown>) => void,
 ): ConversationFactory {
-  return (systemPrompt, limits, temperatureOverride) =>
+  return (systemPrompt, limits, temperatureOverride, tools) =>
     new Conversation(client, {
       systemPrompt,
       // Этап может задать свою температуру (напр. проверяющий — низкую); иначе общая.
@@ -91,6 +94,8 @@ export function makeConversationFactory(
           ? limits
           : { ...limits, maxTokens: limits?.maxTokens ?? config.stageMaxTokens },
       onUsage,
+      tools,
+      onToolCall,
     });
 }
 
@@ -130,6 +135,8 @@ export interface RunControllerDeps {
    * многоагентность выключена (однопроходный режим).
    */
   teamConfig?: { maxAgents: number; concurrency: number };
+  /** Инструменты (MCP) для планировщика и исполнителя; не задан — без инструментов. */
+  tools?: ToolSet;
   /** Пишет результат этапа в транскрипт основной сессии (если задан). */
   recordToSession?: (role: 'user' | 'assistant', content: string) => void;
 }
@@ -381,6 +388,7 @@ export class RunController {
         memoryContext: () => this.invariantsBlock() + this.deps.taskBridge.memoryContext(),
         invariants: this.deps.invariants,
         teamConfig: this.deps.teamConfig,
+        tools: this.deps.tools,
         hooks: {
           // Печатаем решение оркестратора только когда подобрана команда (>1 роли).
           onTeam: (stage, team) => {

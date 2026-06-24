@@ -10,7 +10,7 @@
     "build:binary": "bun build ./src/cli.ts --compile --minify --bytecode --outfile dist/llm-cli",
     "build:binary:all": "bun build ./src/cli.ts --compile --minify --bytecode --target=bun-linux-x64 --outfile dist/llm-cli-linux-x64 && bun build ./src/cli.ts --compile --minify --bytecode --target=bun-darwin-arm64 --outfile dist/llm-cli-macos-arm64 && bun build ./src/cli.ts --compile --minify --bytecode --target=bun-windows-x64 --outfile dist/llm-cli-windows-x64.exe",
     "typecheck": "tsc",
-    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/cli.ts' --test-coverage-exclude='src/__test__/**' --test-coverage-exclude='../core/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/cli.ts' --test-coverage-exclude='src/__test__/**' --test-coverage-exclude='../core/**' --test-coverage-exclude='../mcp-client/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
     "lint-prettier": "prettier \"src/**/*.ts\" --check",
     "write-prettier": "prettier \"src/**/*.ts\" --write"
   },
