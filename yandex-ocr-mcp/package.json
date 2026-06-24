@@ -7,8 +7,9 @@
   "description": "MCP-сервер распознавания текста на изображениях через Yandex Vision OCR.",
   "scripts": {
     "start": "node src/cli.ts",
+    "start:http": "node src/http.ts",
     "typecheck": "tsc",
-    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/cli.ts' --test-coverage-exclude='src/server.ts' --test-coverage-exclude='src/__test__/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/cli.ts' --test-coverage-exclude='src/server.ts' --test-coverage-exclude='src/http.ts' --test-coverage-exclude='src/__test__/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
     "lint-prettier": "prettier \"src/**/*.ts\" --check",
     "write-prettier": "prettier \"src/**/*.ts\" --write"
   },
@@ -17,9 +18,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^5.0.0",
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",
     "prettier": "^3.8.1",
     "typescript": "^5.7.0"

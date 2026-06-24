@@ -15,7 +15,7 @@ Node.js + TypeScript для работы с LLM через OpenAI-совмест
 | `task-solver/` | Решение задачи четырьмя стилями промптинга + оценка GLM. |
 | `hf-multi/` | Параллельный вызов нескольких моделей HuggingFace на один промпт. |
 | `mcp-probe/` | Песочница-исследование MCP: клиент к любому серверу (stdio/Streamable HTTP, настройка через `.env`), печать списка инструментов или результата вызова инструмента. **Исключение**: использует официальный `@modelcontextprotocol/sdk`. |
-| `yandex-ocr-mcp/` | MCP-**сервер** распознавания текста (Yandex Vision OCR): инструмент `recognize-text` (файл/URL/base64), конфиг из `.env`. **Исключение**: официальный `@modelcontextprotocol/sdk` + `zod`. Тонкие `server.ts`/`cli.ts` исключены из покрытия. |
+| `yandex-ocr-mcp/` | MCP-**сервер** распознавания текста (Yandex Vision OCR): инструмент `recognize-text` (файл/URL/base64), конфиг из `.env`. Два транспорта: stdio (`cli.ts`) и Streamable HTTP (`http.ts`, express + bearer-auth `auth.ts`) для деплоя на VPS (Dockerfile + systemd). **Исключение**: `@modelcontextprotocol/sdk` + `zod` + `express`. Тонкие `server.ts`/`cli.ts`/`http.ts` вне покрытия. |
 | `mcp-client/` | Адаптер MCP-серверов к абстракции `ToolSet` ядра: подключение (stdio/HTTP), агрегирование инструментов (неймспейс `сервер__инструмент`), рантайм add/remove. **Исключение**: официальный `@modelcontextprotocol/sdk`; тонкий `connection.ts` вне покрытия. |
 
 Глубоко проработаны `core` и `llm-cli` — остальные пакеты самостоятельны и проще.

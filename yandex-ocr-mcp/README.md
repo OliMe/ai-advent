@@ -76,9 +76,45 @@ npm run write-prettier  # форматирование
 | `src/image-source.ts` | Резолв источника (path/url/base64) → base64 + MIME; `inferMimeType`    |
 | `src/yandex-ocr.ts`   | Вызов Yandex OCR (`recognizeText`) и разбор ответа (`parseOcrResponse`)|
 | `src/recognize-tool.ts`| `runRecognizeText`: источник → OCR → MCP-ответ                        |
+| `src/auth.ts`         | Bearer-авторизация HTTP (чистая логика, покрыта тестами)               |
 | `src/server.ts`       | Тонкая обвязка: `McpServer` + регистрация инструмента                  |
-| `src/cli.ts`          | Точка входа: `.env`, `StdioServerTransport`                            |
+| `src/cli.ts`          | Точка входа (stdio): `.env`, `StdioServerTransport`                    |
+| `src/http.ts`         | Точка входа (Streamable HTTP): express + bearer-auth, для VPS          |
 | `src/index.ts`        | Barrel — реэкспорт логики                                             |
+
+## Деплой на VPS (Streamable HTTP)
+
+По умолчанию сервер работает по **stdio** (локально, клиент запускает процесс рядом). Для
+удалённого доступа есть **HTTP-режим** (Streamable HTTP) с проверкой bearer-токена:
+
+```bash
+PORT=3000 MCP_BEARER_TOKEN=<секрет> YANDEX_OCR_API_KEY=<ключ> npm run start:http
+```
+
+- Эндпоинт: `POST /mcp`. Без верного `Authorization: Bearer <токен>` — `401`.
+- `MCP_BEARER_TOKEN` **обязателен** для публичного VPS (иначе любой сможет тратить твою
+  квоту Yandex). Пусто — авторизация выключена (только за доверенным прокси).
+
+**Docker:**
+
+```bash
+docker build -t yandex-ocr-mcp .
+docker run -p 3000:3000 \
+  -e YANDEX_OCR_API_KEY=<ключ> -e MCP_BEARER_TOKEN=<секрет> \
+  yandex-ocr-mcp
+```
+
+**systemd:** юнит — `deploy/yandex-ocr-mcp.service` (секреты в `EnvironmentFile`). Перед
+публичным доступом поставь TLS-реверс-прокси (nginx/Caddy) и держи app на `127.0.0.1`.
+
+**Подключение клиента** (`~/.llm-cli/mcp.json` или `mcp-probe`):
+
+```json
+{ "mcpServers": { "yandex": { "url": "https://your-host/mcp", "headers": { "Authorization": "Bearer <секрет>" } } } }
+```
+
+> Безопасность: сервер не логирует ключи; bearer-проверка — в `src/auth.ts` (покрыта тестами).
+> HTTP-обвязка (`src/http.ts`) тонкая и исключена из покрытия, как `cli.ts`/`server.ts`.
 
 ## Дальше (не в v1)
 
