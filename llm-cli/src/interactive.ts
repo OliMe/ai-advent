@@ -31,7 +31,7 @@ import type {
   MemoryKind,
   MemoryWriteReport,
 } from '../../core/src/index.ts';
-import { askModel, streamAnswer } from './chat.ts';
+import { askModel, streamAnswer, completeWithTools } from './chat.ts';
 import { newSession, branchNameTaken, resolveBranch } from './session-flow.ts';
 import { makeConversationFactory, RunController } from './run-flow.ts';
 import { MemoryRunBridge } from './run-task-bridge.ts';
@@ -834,6 +834,23 @@ export async function runInteractive(
             feedback === undefined
               ? windowed
               : [...windowed, { role: 'user' as const, content: feedback }];
+          // С подключёнными MCP-инструментами чат идёт агентным циклом (без стрима).
+          if (mcp !== null && mcp.toolSet.specs().length > 0) {
+            output.write('\n');
+            const result = await completeWithTools(
+              client,
+              outgoing,
+              mcp.toolSet,
+              config.requestTimeoutMs,
+              limits,
+              disableThinking,
+              temperature,
+              reportToolCall,
+            );
+            usage = result.usage;
+            output.write(`${ASSISTANT_LABEL}: ${result.content}\n\n`);
+            return result.content;
+          }
           if (stream) {
             // Пустая строка-отступ, чтобы прелоадер/ответ не «прилипали» к строке «Вы: …».
             output.write('\n');

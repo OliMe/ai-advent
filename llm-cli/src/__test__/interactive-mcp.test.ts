@@ -132,6 +132,47 @@ describe('интерактив — команды /mcp', () => {
     assert.ok((out.match(/🔌 MCP «ok» подключён/g) ?? []).length >= 2); // ещё раз при reload
   });
 
+  it('чат с подключёнными инструментами вызывает MCP-инструмент', async t => {
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round === 1
+        ? {
+            content: '',
+            toolCalls: [
+              {
+                id: 'c1',
+                type: 'function',
+                function: { name: 'srv__echo', arguments: '{"q":"hi"}' },
+              },
+            ],
+            usage: undefined,
+          }
+        : { content: 'Готово: hi', usage: undefined };
+    });
+    const mcp = {
+      toolSet: new McpToolSet(fakeConnect),
+      store: memoryStore(new Map([['srv', STDIO]])),
+    };
+    const { finished, text } = driveInteractive(
+      client,
+      ['распознай', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      undefined,
+      'window',
+      6,
+      undefined,
+      mcp,
+    );
+    await finished;
+    const out = text();
+    assert.match(out, /🔧 инструмент srv__echo/); // чат вызвал инструмент
+    assert.match(out, /Готово: hi/); // финальный ответ чата
+  });
+
   it('агент в прогоне вызывает MCP-инструмент (печатается)', async t => {
     let plannerCalls = 0;
     const client = clientWith(t, async messages => {

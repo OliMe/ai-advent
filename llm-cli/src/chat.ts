@@ -5,7 +5,90 @@ import type {
   ChatMessage,
   CompletionResult,
   GenerationLimits,
+  ToolCall,
+  ToolDefinition,
+  ToolSet,
+  Usage,
 } from '../../core/src/index.ts';
+
+/** Максимум раундов «модель ↔ инструменты» за один ход чата (защита от зацикливания). */
+const DEFAULT_MAX_TOOL_ROUNDS = 6;
+
+/** Описания инструментов для запроса (OpenAI function-calling формат). */
+function toToolDefinitions(toolSet: ToolSet): ToolDefinition[] {
+  return toolSet.specs().map(spec => ({
+    type: 'function' as const,
+    function: { name: spec.name, description: spec.description, parameters: spec.parameters },
+  }));
+}
+
+/** Исполняет один вызов инструмента; ошибку отдаёт текстом, чтобы модель могла её учесть. */
+async function runToolCall(
+  toolSet: ToolSet,
+  call: ToolCall,
+  onToolCall?: (name: string, args: Record<string, unknown>) => void,
+): Promise<string> {
+  try {
+    const args = (call.function.arguments ? JSON.parse(call.function.arguments) : {}) as Record<
+      string,
+      unknown
+    >;
+    onToolCall?.(call.function.name, args);
+    return await toolSet.call(call.function.name, args);
+  } catch (error) {
+    return `Ошибка инструмента «${call.function.name}»: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/**
+ * Агентный цикл для чата: запрашивает модель с инструментами, исполняет запрошенные вызовы,
+ * возвращает их результаты модели и так до финального ответа. Расход токенов суммируется по
+ * всем раундам. Без стрима (tool_calls в потоке усложняют разбор); лимит раундов — защита.
+ */
+export async function completeWithTools(
+  client: ChatCompletionClient,
+  messages: ChatMessage[],
+  toolSet: ToolSet,
+  requestTimeoutMs: number,
+  limits: GenerationLimits,
+  disableThinking: boolean,
+  temperature: number,
+  onToolCall?: (name: string, args: Record<string, unknown>) => void,
+  maxRounds: number = DEFAULT_MAX_TOOL_ROUNDS,
+): Promise<CompletionResult> {
+  const working = [...messages];
+  const tools = toToolDefinitions(toolSet);
+  const total: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  let hasUsage = false;
+  for (let round = 0; round < maxRounds; round++) {
+    const result = await client.completeWithUsage(working, {
+      signal: AbortSignal.timeout(requestTimeoutMs),
+      disableThinking,
+      temperature,
+      ...limits,
+      tools,
+    });
+    if (result.usage !== undefined) {
+      total.prompt_tokens += result.usage.prompt_tokens;
+      total.completion_tokens += result.usage.completion_tokens;
+      total.total_tokens += result.usage.total_tokens;
+      hasUsage = true;
+    }
+    const toolCalls = result.toolCalls;
+    if (!toolCalls?.length) {
+      return { content: result.content, usage: hasUsage ? total : undefined };
+    }
+    working.push({ role: 'assistant', content: result.content, tool_calls: toolCalls });
+    for (const call of toolCalls) {
+      working.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: await runToolCall(toolSet, call, onToolCall),
+      });
+    }
+  }
+  throw new Error(`Превышен лимит раундов вызова инструментов (${maxRounds}).`);
+}
 
 /** Запускает один запрос с таймаутом и ограничениями; возвращает ответ и usage. */
 export async function askModel(

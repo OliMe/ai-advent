@@ -2,7 +2,14 @@ import { describe, it } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough, Writable } from 'node:stream';
-import { askModel, runOnce, createSpinner, streamAnswer, augmentSystemPrompt } from '../index.ts';
+import {
+  askModel,
+  runOnce,
+  createSpinner,
+  streamAnswer,
+  augmentSystemPrompt,
+  completeWithTools,
+} from '../index.ts';
 import { clientWith, clientWithStream, makeCollector } from './helpers.ts';
 import { ChatCompletionClient } from '../../../core/src/index.ts';
 import {
@@ -16,6 +23,7 @@ import type {
   CompletionResult,
   GenerationLimits,
   StreamDelta,
+  ToolSet,
   Usage,
 } from '../../../core/src/index.ts';
 
@@ -218,5 +226,102 @@ describe('augmentSystemPrompt', () => {
 
   it('не меняет промпт без ограничения формата', () => {
     assert.equal(augmentSystemPrompt('Базовый промпт.', {}), 'Базовый промпт.');
+  });
+});
+
+describe('completeWithTools', () => {
+  const messages: ChatMessage[] = [
+    { role: 'system', content: 'sys' },
+    { role: 'user', content: 'привет' },
+  ];
+  const toolCall = (name: string, args: string) => ({
+    id: 'c1',
+    type: 'function' as const,
+    function: { name, arguments: args },
+  });
+
+  it('без вызовов инструментов возвращает ответ и суммирует usage', async t => {
+    const usage: Usage = { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 };
+    const tools: ToolSet = {
+      specs: () => [{ name: 't', description: 'd', parameters: {} }],
+      call: async () => '',
+    };
+    const client = clientWith(t, async () => ({ content: 'готово', usage }));
+    const result = await completeWithTools(client, messages, tools, 5000, {}, false, 0.5);
+    assert.equal(result.content, 'готово');
+    assert.deepEqual(result.usage, usage);
+  });
+
+  it('исполняет инструмент, возвращает результат модели и финальный ответ; суммирует usage', async t => {
+    const usage: Usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const reported: string[] = [];
+    const tools: ToolSet = {
+      specs: () => [{ name: 'echo', description: 'd', parameters: {} }],
+      call: async (name, args) => {
+        calls.push({ name, args });
+        return 'результат-инструмента';
+      },
+    };
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round === 1
+        ? { content: '', toolCalls: [toolCall('echo', '{"q":1}')], usage }
+        : { content: 'финальный ответ', usage };
+    });
+    const result = await completeWithTools(
+      client,
+      messages,
+      tools,
+      5000,
+      {},
+      false,
+      0.5,
+      (name, args) => reported.push(`${name}:${JSON.stringify(args)}`),
+    );
+    assert.equal(result.content, 'финальный ответ');
+    assert.deepEqual(calls, [{ name: 'echo', args: { q: 1 } }]);
+    assert.deepEqual(reported, ['echo:{"q":1}']);
+    assert.deepEqual(result.usage, { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 });
+  });
+
+  it('ошибка инструмента и пустые аргументы — текст ошибки модели, без usage если его нет', async t => {
+    const tools: ToolSet = {
+      specs: () => [{ name: 'bad', description: 'd', parameters: {} }],
+      call: async () => {
+        throw new Error('сломалось');
+      },
+    };
+    let round = 0;
+    const messagesSeen: ChatMessage[][] = [];
+    const client = clientWith(t, async (sent: ChatMessage[]) => {
+      messagesSeen.push(sent);
+      round++;
+      return round === 1
+        ? { content: '', toolCalls: [toolCall('bad', '')], usage: undefined }
+        : { content: 'готово', usage: undefined };
+    });
+    const result = await completeWithTools(client, messages, tools, 5000, {}, false, 0.5);
+    assert.equal(result.content, 'готово');
+    assert.equal(result.usage, undefined); // провайдер usage не прислал
+    const toolMessage = messagesSeen[1].find(m => m.role === 'tool');
+    assert.match(toolMessage?.content ?? '', /Ошибка инструмента «bad»: сломалось/);
+  });
+
+  it('превышение лимита раундов → ошибка', async t => {
+    const tools: ToolSet = {
+      specs: () => [{ name: 'loop', description: 'd', parameters: {} }],
+      call: async () => 'ещё',
+    };
+    const client = clientWith(t, async () => ({
+      content: '',
+      toolCalls: [toolCall('loop', '{}')],
+      usage: undefined,
+    }));
+    await assert.rejects(
+      () => completeWithTools(client, messages, tools, 5000, {}, false, 0.5, undefined, 2),
+      /Превышен лимит раундов/,
+    );
   });
 });
