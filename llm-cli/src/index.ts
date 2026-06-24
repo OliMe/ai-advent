@@ -25,6 +25,7 @@ import {
 } from './paths.ts';
 import { FileMcpStore } from './mcp-store.ts';
 import { McpToolSet, createConnection } from '../../mcp-client/src/index.ts';
+import { macClipboardImageReader } from './clipboard-image.ts';
 import { runInteractive, type MemorySettings } from './interactive.ts';
 
 // Публичный API пакета собран из модулей (barrel) — тесты импортируют отсюда.
@@ -41,6 +42,9 @@ export * from './replies.ts';
 export * from './run-flow.ts';
 export * from './run-task-bridge.ts';
 export * from './mcp-store.ts';
+export * from './local-image.ts';
+export * from './recognize-local.ts';
+export * from './clipboard-image.ts';
 export * from './interactive.ts';
 
 /** Точка входа: выбирает режим работы по аргументам командной строки. */
@@ -125,6 +129,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       memorySettings,
       runStore,
       mcp,
+      macClipboardImageReader,
     );
   }
 }

@@ -38,6 +38,8 @@ import { MemoryRunBridge } from './run-task-bridge.ts';
 import { parseServerSpec } from './mcp-store.ts';
 import type { McpStore } from './mcp-store.ts';
 import type { McpServerConfig, McpToolSet } from '../../mcp-client/src/index.ts';
+import { LocalImageRecognizingToolSet, recognizeTextDirective } from './recognize-local.ts';
+import { installClipboardPaste, type ClipboardImageReader } from './clipboard-image.ts';
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import {
   helpText,
@@ -106,8 +108,17 @@ export async function runInteractive(
   runStore: RunStore | null = null,
   // Инструменты MCP (набор + хранилище конфигурации); null — MCP выключен (--no-mcp).
   mcp: { toolSet: McpToolSet; store: McpStore } | null = null,
+  // Источник картинки из буфера обмена (Ctrl+V); null — перехват выключен (напр. в тестах).
+  clipboard: ClipboardImageReader | null = null,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
+  // Инструменты агентам (чат + пайплайн): обёртка делает recognize-text с локальным путём
+  // распознаваемым — читает файл на стороне CLI и шлёт серверу как base64.
+  const chatTools = mcp === null ? null : new LocalImageRecognizingToolSet(mcp.toolSet);
+  // Перехват Ctrl+V: картинка из буфера → временный файл → путь вставляется в строку ввода.
+  if (clipboard !== null) {
+    installClipboardPaste(input, readlineInterface, output, clipboard);
+  }
   // Активная сессия (команды /branch, /switch, /reset могут её сменить).
   // Полный транскрипт храним в currentSession.messages; в модель уходит окно.
   let currentSession = session;
@@ -235,8 +246,8 @@ export async function runInteractive(
       saveSession: session => store?.save(session),
     }),
     invariants: () => memoryManager.invariantsList(),
-    // Инструменты MCP — планировщику и исполнителю (если MCP включён).
-    tools: mcp?.toolSet,
+    // Инструменты MCP — планировщику и исполнителю (с поддержкой локальных путей).
+    tools: chatTools ?? undefined,
     // Команда агентов на этап: потолок ролей и конкурентность веера из конфига.
     teamConfig: {
       maxAgents: config.maxStageAgents,
@@ -835,12 +846,18 @@ export async function runInteractive(
               ? windowed
               : [...windowed, { role: 'user' as const, content: feedback }];
           // С подключёнными MCP-инструментами чат идёт агентным циклом (без стрима).
-          if (mcp !== null && mcp.toolSet.specs().length > 0) {
+          if (chatTools !== null && chatTools.specs().length > 0) {
             output.write('\n');
+            // Директива про распознавание (локальные пути + ответ при неудаче), если есть recognize-text.
+            const directive = recognizeTextDirective(chatTools.specs());
+            const withTools =
+              directive === null
+                ? outgoing
+                : [{ role: 'system' as const, content: directive }, ...outgoing];
             const result = await completeWithTools(
               client,
-              outgoing,
-              mcp.toolSet,
+              withTools,
+              chatTools,
               config.requestTimeoutMs,
               limits,
               disableThinking,
