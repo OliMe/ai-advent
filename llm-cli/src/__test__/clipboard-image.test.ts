@@ -53,38 +53,44 @@ describe('clipboard-image — чтение буфера', () => {
 });
 
 describe('clipboard-image — перехват Ctrl+V', () => {
-  function harness(clipboardResult: string | null) {
+  function harness(reads: (string | null)[]) {
     const input = new EventEmitter();
     let line = '';
-    let out = '';
-    installClipboardPaste(
+    let index = 0;
+    const controller = installClipboardPaste(
       input as never,
       { write: data => (line += data) },
-      { write: data => (out += data) },
-      { read: () => clipboardResult },
+      { read: () => reads[index++] ?? null },
     );
-    return { input, line: () => line, out: () => out };
+    const pasteCtrlV = () => input.emit('keypress', '\x16', { ctrl: true, name: 'v' });
+    return { input, controller, pasteCtrlV, line: () => line };
   }
 
-  it('Ctrl+V с картинкой → путь в строку и пометка', () => {
-    const h = harness('/tmp/x.png');
-    h.input.emit('keypress', '\x16', { ctrl: true, name: 'v' });
-    assert.equal(h.line(), '/tmp/x.png ');
-    assert.match(h.out(), /📎 путь к изображению из буфера вставлен: \/tmp\/x\.png/);
+  it('несколько Ctrl+V → плейсхолдеры [Image #N]; consume подставляет пути и сбрасывает счётчик', () => {
+    const h = harness(['/tmp/a.png', '/tmp/b.png', '/tmp/c.png']);
+    h.pasteCtrlV();
+    h.pasteCtrlV();
+    assert.equal(h.line(), '[Image #1] [Image #2] ');
+    assert.equal(
+      h.controller.consume('сравни [Image #1] и [Image #2]'),
+      'сравни /tmp/a.png и /tmp/b.png',
+    );
+    // после consume счётчик сброшен — следующая вставка снова [Image #1]
+    h.pasteCtrlV();
+    assert.equal(h.line(), '[Image #1] [Image #2] [Image #1] ');
   });
 
-  it('Ctrl+V без картинки → пометка, строка не меняется', () => {
-    const h = harness(null);
-    h.input.emit('keypress', '\x16', { ctrl: true, name: 'v' });
+  it('Ctrl+V без картинки → ничего не вставляется; consume без плейсхолдеров не меняет текст', () => {
+    const h = harness([null]);
+    h.pasteCtrlV();
     assert.equal(h.line(), '');
-    assert.match(h.out(), /в буфере обмена нет изображения/);
+    assert.equal(h.controller.consume('просто текст'), 'просто текст');
   });
 
   it('другая клавиша и пустой key игнорируются', () => {
-    const h = harness('/tmp/x.png');
+    const h = harness(['/tmp/x.png']);
     h.input.emit('keypress', 'a', { ctrl: false, name: 'a' });
     h.input.emit('keypress', '', undefined);
     assert.equal(h.line(), '');
-    assert.equal(h.out(), '');
   });
 });

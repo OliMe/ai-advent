@@ -73,28 +73,52 @@ export const macClipboardImageReader: ClipboardImageReader = {
   read: () => readClipboardImage(),
 };
 
+/** Контроллер вставок из буфера: разрешает плейсхолдеры [Image #N] в текст текущего промпта. */
+export interface ClipboardPasteController {
+  /**
+   * Заменяет плейсхолдеры [Image #N] на пути к их временным файлам и сбрасывает счётчик
+   * (начало нового промпта). Текст без плейсхолдеров возвращается как есть.
+   */
+  consume(text: string): string;
+}
+
 /**
- * Вешает на ввод перехват Ctrl+V: читает картинку из буфера, вставляет путь к временному файлу
- * в текущую строку ввода (как будто напечатан) и печатает пометку. Нет картинки — пометка об
- * этом. В терминале readline эмитит события «keypress»; в тестах их можно подать вручную.
+ * Вешает на ввод перехват Ctrl+V: читает картинку из буфера во временный файл и вставляет в
+ * строку ввода плейсхолдер [Image #N] (N — номер картинки в текущем промпте), без пометок ниже.
+ * В одном промпте можно вставить несколько изображений (N растёт). Нет картинки — ничего не
+ * вставляется. Возвращает контроллер, который на отправке меняет плейсхолдеры на пути к файлам.
+ * В терминале readline эмитит события «keypress»; в тестах их можно подать вручную.
  */
 export function installClipboardPaste(
   input: { on(event: 'keypress', listener: (sequence: string, key: KeyEvent) => void): unknown },
   lineWriter: { write(data: string): unknown },
-  output: { write(data: string): unknown },
   clipboard: ClipboardImageReader,
-): void {
+): ClipboardPasteController {
+  let imageCount = 0;
+  let pathByPlaceholder = new Map<string, string>();
   input.on('keypress', (_sequence, key) => {
     if (key?.ctrl && key.name === 'v') {
       const path = clipboard.read();
       if (path === null) {
-        output.write('\n📋 в буфере обмена нет изображения\n');
         return;
       }
-      lineWriter.write(`${path} `);
-      output.write(`\n📎 путь к изображению из буфера вставлен: ${path}\n`);
+      imageCount += 1;
+      const placeholder = `[Image #${imageCount}]`;
+      pathByPlaceholder.set(placeholder, path);
+      lineWriter.write(`${placeholder} `);
     }
   });
+  return {
+    consume(text) {
+      let resolved = text;
+      for (const [placeholder, path] of pathByPlaceholder) {
+        resolved = resolved.replaceAll(placeholder, path);
+      }
+      imageCount = 0;
+      pathByPlaceholder = new Map();
+      return resolved;
+    },
+  };
 }
 
 /** Сведения о клавише из событий readline «keypress» (минимум, что нам нужен). */

@@ -115,10 +115,10 @@ export async function runInteractive(
   // Инструменты агентам (чат + пайплайн): обёртка делает recognize-text с локальным путём
   // распознаваемым — читает файл на стороне CLI и шлёт серверу как base64.
   const chatTools = mcp === null ? null : new LocalImageRecognizingToolSet(mcp.toolSet);
-  // Перехват Ctrl+V: картинка из буфера → временный файл → путь вставляется в строку ввода.
-  if (clipboard !== null) {
-    installClipboardPaste(input, readlineInterface, output, clipboard);
-  }
+  // Перехват Ctrl+V: картинка из буфера → временный файл → плейсхолдер [Image #N] в строку.
+  // Контроллер на отправке меняет плейсхолдеры на пути к файлам (их распознаёт агент).
+  const paste =
+    clipboard === null ? null : installClipboardPaste(input, readlineInterface, clipboard);
   // Активная сессия (команды /branch, /switch, /reset могут её сменить).
   // Полный транскрипт храним в currentSession.messages; в модель уходит окно.
   let currentSession = session;
@@ -763,6 +763,10 @@ export async function runInteractive(
       } catch {
         // question отклонён из-за Ctrl+C / закрытия ввода — выходим без ошибки.
         break;
+      }
+      // Плейсхолдеры [Image #N] (вставки Ctrl+V) → пути к временным файлам для этого промпта.
+      if (paste !== null) {
+        userInput = paste.consume(userInput);
       }
       if (!userInput) continue;
       if (userInput === '/exit' || userInput === '/quit') break;
