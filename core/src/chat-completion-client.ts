@@ -6,6 +6,8 @@ import type {
   ChatCompletionResponse,
   ChatMessage,
   GenerationLimits,
+  ToolCall,
+  ToolDefinition,
   Usage,
 } from './types.ts';
 
@@ -13,6 +15,8 @@ import type {
 export interface CompletionResult {
   content: string;
   usage?: Usage;
+  /** Запрошенные моделью вызовы инструментов (если есть). */
+  toolCalls?: ToolCall[];
 }
 
 /** Порция потокового ответа: дельта видимого текста и/или «рассуждений». */
@@ -37,6 +41,8 @@ export interface CompleteOptions extends GenerationLimits {
   disableThinking?: boolean;
   /** Температура для этого запроса; если не задана — берётся из конфигурации. */
   temperature?: number;
+  /** Инструменты, доступные модели в этом запросе (function-calling). */
+  tools?: ToolDefinition[];
 }
 
 /** Сообщение об ответе, обрезанном по лимиту до появления видимого текста. */
@@ -107,11 +113,14 @@ export class ChatCompletionClient {
     );
     const data = (await response.json()) as ChatCompletionResponse;
     const choice = data.choices?.[0];
-    const content = choice?.message?.content;
-    if (!content) {
+    const content = choice?.message?.content ?? '';
+    const toolCalls = choice?.message?.tool_calls;
+    const hasToolCalls = toolCalls !== undefined && toolCalls.length > 0;
+    // Пустой content допустим, если модель запросила инструменты вместо текста.
+    if (!content && !hasToolCalls) {
       throw emptyContentError(choice?.finish_reason);
     }
-    return { content, usage: data.usage };
+    return { content, usage: data.usage, ...(hasToolCalls ? { toolCalls } : {}) };
   }
 
   /**
@@ -246,6 +255,10 @@ export class ChatCompletionClient {
     }
     if (options.disableThinking) {
       body.thinking = { type: 'disabled' };
+    }
+    if (options.tools !== undefined && options.tools.length > 0) {
+      body.tools = options.tools;
+      body.tool_choice = 'auto';
     }
     return body;
   }

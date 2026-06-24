@@ -1,10 +1,27 @@
 /** Роль участника диалога в формате OpenAI-совместимого API. */
-export type Role = 'system' | 'user' | 'assistant';
+export type Role = 'system' | 'user' | 'assistant' | 'tool';
+
+/** Запрошенный моделью вызов инструмента (в ответе/сообщении ассистента). */
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+/** Описание инструмента для модели (OpenAI function-calling формат). */
+export interface ToolDefinition {
+  type: 'function';
+  function: { name: string; description?: string; parameters: Record<string, unknown> };
+}
 
 /** Одно сообщение в истории диалога. */
 export interface ChatMessage {
   role: Role;
   content: string;
+  /** Вызовы инструментов, запрошенные ассистентом (роль assistant). */
+  tool_calls?: ToolCall[];
+  /** Идентификатор вызова, на который отвечает это сообщение (роль tool). */
+  tool_call_id?: string;
 }
 
 /** Описание строгой JSON-схемы для структурированного ответа. */
@@ -52,6 +69,10 @@ export interface ChatCompletionRequest {
   stream_options?: { include_usage: boolean };
   /** Управление «рассуждениями» (специфично для GLM/z.ai; другие провайдеры игнорируют). */
   thinking?: { type: 'enabled' | 'disabled' };
+  /** Доступные модели инструменты (function-calling). */
+  tools?: ToolDefinition[];
+  /** Стратегия выбора инструмента: auto/none/required. */
+  tool_choice?: 'auto' | 'none' | 'required';
 }
 
 /** Один вариант ответа модели (не потоковый режим). */

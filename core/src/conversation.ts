@@ -1,6 +1,10 @@
 import type { ChatCompletionClient, CompletionResult } from './chat-completion-client.ts';
-import type { ChatMessage, GenerationLimits, Usage } from './types.ts';
+import type { ChatMessage, GenerationLimits, ToolCall, Usage } from './types.ts';
+import type { ToolSet } from './tool-set.ts';
 import { historyBudgetTokens, trimHistoryToBudget } from './tokens.ts';
+
+/** Максимум раундов «модель ↔ инструменты» за один `ask` (защита от зацикливания). */
+const DEFAULT_MAX_TOOL_ROUNDS = 6;
 
 /**
  * Параметры одного диалога (агента), независимые от глобального конфига: каждый
@@ -22,6 +26,15 @@ export interface ConversationConfig {
    * учитывать обращения вложенных агентов (этапы пайплайна, контролёр) в общем счёте сессии.
    */
   onUsage?: (usage: Usage) => void;
+  /**
+   * Набор инструментов агента (function-calling). Задан и непуст — `ask` идёт агентным
+   * циклом: модель может вызывать инструменты, результаты возвращаются ей до финального ответа.
+   */
+  tools?: ToolSet;
+  /** Максимум раундов вызова инструментов за `ask` (по умолчанию 6). */
+  maxToolRounds?: number;
+  /** Уведомление о вызове инструмента (имя + аргументы) — для наблюдаемости. */
+  onToolCall?: (name: string, args: Record<string, unknown>) => void;
 }
 
 /**
@@ -49,49 +62,112 @@ export class Conversation {
   }
 
   /**
-   * Один ход: добавляет реплику пользователя, шлёт окно истории модели, добавляет
-   * ответ в транскрипт и возвращает его. При `onDelta` идёт в потоковом режиме
-   * (видимый текст — по кускам). При ошибке откатывает добавленную реплику.
+   * Один ход: добавляет реплику пользователя и возвращает ответ модели. Без инструментов —
+   * один запрос (с `onDelta` потоково). С инструментами — агентный цикл: модель может вызвать
+   * инструменты, их результаты возвращаются ей до финального ответа. При ошибке весь ход
+   * откатывается (транскрипт остаётся согласованным).
    */
   async ask(userInput: string, onDelta?: (text: string) => void): Promise<CompletionResult> {
+    const mark = this.messages.length;
     this.messages.push({ role: 'user', content: userInput });
-    const windowed = trimHistoryToBudget(
+    try {
+      return this.config.tools && this.config.tools.specs().length > 0
+        ? await this.runWithTools()
+        : await this.runOnce(onDelta);
+    } catch (error) {
+      this.messages.length = mark; // откатываем весь ход (реплика + tool-сообщения)
+      throw error;
+    }
+  }
+
+  /** Окно истории, обрезанное под контекст модели. */
+  private windowed(): ChatMessage[] {
+    return trimHistoryToBudget(
       this.messages,
       historyBudgetTokens(this.config.contextTokens, this.config.limits?.maxTokens),
     );
-    try {
-      const result = onDelta
-        ? await this.client.streamWithUsage(
-            windowed,
-            {
-              idleTimeoutMs: this.config.requestTimeoutMs,
-              disableThinking: this.config.disableThinking,
-              temperature: this.config.temperature,
-              ...this.config.limits,
-            },
-            delta => {
-              if (delta.content) {
-                onDelta(delta.content);
-              }
-            },
-          )
-        : await this.client.completeWithUsage(windowed, {
-            signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+  }
+
+  /** Учитывает расход токенов в итогах и колбэке наблюдаемости. */
+  private accountUsage(usage: Usage | undefined): void {
+    if (usage !== undefined) {
+      this.accumulated.prompt_tokens += usage.prompt_tokens;
+      this.accumulated.completion_tokens += usage.completion_tokens;
+      this.accumulated.total_tokens += usage.total_tokens;
+      this.config.onUsage?.(usage);
+    }
+  }
+
+  /** Один запрос к модели (без инструментов): потоково при `onDelta`, иначе обычный. */
+  private async runOnce(onDelta?: (text: string) => void): Promise<CompletionResult> {
+    const result = onDelta
+      ? await this.client.streamWithUsage(
+          this.windowed(),
+          {
+            idleTimeoutMs: this.config.requestTimeoutMs,
             disableThinking: this.config.disableThinking,
             temperature: this.config.temperature,
             ...this.config.limits,
-          });
-      this.messages.push({ role: 'assistant', content: result.content });
-      if (result.usage !== undefined) {
-        this.accumulated.prompt_tokens += result.usage.prompt_tokens;
-        this.accumulated.completion_tokens += result.usage.completion_tokens;
-        this.accumulated.total_tokens += result.usage.total_tokens;
-        this.config.onUsage?.(result.usage);
+          },
+          delta => {
+            if (delta.content) {
+              onDelta(delta.content);
+            }
+          },
+        )
+      : await this.client.completeWithUsage(this.windowed(), {
+          signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+          disableThinking: this.config.disableThinking,
+          temperature: this.config.temperature,
+          ...this.config.limits,
+        });
+    this.messages.push({ role: 'assistant', content: result.content });
+    this.accountUsage(result.usage);
+    return result;
+  }
+
+  /** Агентный цикл: запрашивает модель с инструментами, исполняет вызовы, до финального ответа. */
+  private async runWithTools(): Promise<CompletionResult> {
+    const tools = this.config.tools!;
+    const definitions = tools.specs().map(spec => ({
+      type: 'function' as const,
+      function: { name: spec.name, description: spec.description, parameters: spec.parameters },
+    }));
+    const maxRounds = this.config.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
+    for (let round = 0; round < maxRounds; round++) {
+      const result = await this.client.completeWithUsage(this.windowed(), {
+        signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+        disableThinking: this.config.disableThinking,
+        temperature: this.config.temperature,
+        ...this.config.limits,
+        tools: definitions,
+      });
+      this.accountUsage(result.usage);
+      const toolCalls = result.toolCalls;
+      if (!toolCalls?.length) {
+        this.messages.push({ role: 'assistant', content: result.content });
+        return result;
       }
-      return result;
+      this.messages.push({ role: 'assistant', content: result.content, tool_calls: toolCalls });
+      for (const call of toolCalls) {
+        const output = await this.runToolCall(call);
+        this.messages.push({ role: 'tool', tool_call_id: call.id, content: output });
+      }
+    }
+    throw new Error(`Превышен лимит раундов вызова инструментов (${maxRounds}).`);
+  }
+
+  /** Исполняет один вызов инструмента; ошибку отдаёт текстом, чтобы модель могла её учесть. */
+  private async runToolCall(call: ToolCall): Promise<string> {
+    try {
+      const args = (call.function.arguments ? JSON.parse(call.function.arguments) : {}) as Record<
+        string,
+        unknown
+      >;
+      this.config.onToolCall?.(call.function.name, args);
+      return await this.config.tools!.call(call.function.name, args);
     } catch (error) {
-      this.messages.pop(); // откатываем неудачный ход — транскрипт остаётся согласованным
-      throw error;
+      return `Ошибка инструмента «${call.function.name}»: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 }

@@ -60,6 +60,55 @@ describe('ChatCompletionClient.complete', () => {
     assert.deepEqual(body.response_format, { type: 'json_object' });
   });
 
+  it('инструменты: кладёт tools/tool_choice; пустой список не добавляется', async t => {
+    const tools = [
+      {
+        type: 'function' as const,
+        function: { name: 'add', description: 'сумма', parameters: { type: 'object' } },
+      },
+    ];
+    const bodies: Array<Record<string, unknown>> = [];
+    const client = clientWithFetch(t, async (_url, init) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return completionResponse('ок');
+    });
+
+    await client.complete([{ role: 'user', content: 'hi' }], { tools });
+    await client.complete([{ role: 'user', content: 'hi' }], { tools: [] });
+
+    assert.deepEqual(bodies[0].tools, tools);
+    assert.equal(bodies[0].tool_choice, 'auto');
+    assert.equal(bodies[1].tools, undefined); // пустой список инструментов не отправляем
+  });
+
+  it('инструменты: возвращает tool_calls и не падает при пустом/отсутствующем content', async t => {
+    const client = clientWithFetch(
+      t,
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                index: 0,
+                finish_reason: 'tool_calls',
+                message: {
+                  role: 'assistant',
+                  tool_calls: [
+                    { id: 'c1', type: 'function', function: { name: 'add', arguments: '{"a":1}' } },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+    );
+
+    const result = await client.completeWithUsage([{ role: 'user', content: 'hi' }], {});
+    assert.equal(result.content, ''); // content отсутствовал → пустая строка, без ошибки
+    assert.equal(result.toolCalls?.[0]?.function.name, 'add');
+  });
+
   it('нормализует одиночную стоп-строку в массив', async t => {
     let capturedInit: RequestInit | undefined;
     const client = clientWithFetch(t, async (_url, init) => {

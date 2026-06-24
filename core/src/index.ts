@@ -40,6 +40,7 @@ export { MemoryManager, layerBudgets } from './memory-manager.ts';
 export type { LayerBudgets, MemoryManagerOptions, MemoryWriteReport } from './memory-manager.ts';
 export { Conversation } from './conversation.ts';
 export type { ConversationConfig } from './conversation.ts';
+export type { ToolSet, ToolSpec } from './tool-set.ts';
 export {
   RUN_VERSION,
   DEFAULT_MAX_RETRIES,
@@ -105,6 +106,8 @@ export type { EnforceInvariantsOptions } from './invariant-guard.ts';
 export type {
   Role,
   ChatMessage,
+  ToolCall,
+  ToolDefinition,
   ResponseFormat,
   JsonSchemaSpec,
   GenerationLimits,

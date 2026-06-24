@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Conversation } from '../index.ts';
 import type { ConversationConfig } from '../index.ts';
 import { ChatCompletionClient } from '../index.ts';
-import type { ChatMessage, CompleteOptions, StreamDelta, Usage } from '../index.ts';
+import type { ChatMessage, CompleteOptions, StreamDelta, ToolSet, Usage } from '../index.ts';
 import { clientWith, makeConfig } from './helpers.ts';
 
 const config: ConversationConfig = {
@@ -141,6 +141,134 @@ describe('Conversation', () => {
     assert.deepEqual(
       conversation.messages.map(m => m.role),
       ['system'], // транскрипт не «завис» с висящей репликой
+    );
+  });
+});
+
+describe('Conversation — агентный цикл (инструменты)', () => {
+  const toolCall = (name: string, args: string) => ({
+    id: 'c1',
+    type: 'function' as const,
+    function: { name, arguments: args },
+  });
+
+  it('вызывает инструмент, возвращает результат модели и финальный ответ', async t => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const reported: string[] = [];
+    const tools: ToolSet = {
+      specs: () => [{ name: 'add', description: 'сумма', parameters: { type: 'object' } }],
+      call: async (name, args) => {
+        calls.push({ name, args });
+        return '3';
+      },
+    };
+    let round = 0;
+    const usage: Usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+    const client = clientWith(t, async () => {
+      round++;
+      return round === 1
+        ? { content: '', toolCalls: [toolCall('add', '{"a":1,"b":2}')], usage }
+        : { content: 'Сумма равна 3', usage };
+    });
+    const conversation = new Conversation(client, {
+      ...config,
+      tools,
+      onToolCall: name => reported.push(name),
+    });
+
+    const result = await conversation.ask('сложи 1 и 2');
+
+    assert.equal(result.content, 'Сумма равна 3');
+    assert.deepEqual(calls, [{ name: 'add', args: { a: 1, b: 2 } }]); // аргументы разобраны
+    assert.deepEqual(reported, ['add']); // вызов инструмента сообщён
+    assert.deepEqual(
+      conversation.messages.map(m => m.role),
+      ['system', 'user', 'assistant', 'tool', 'assistant'],
+    );
+    assert.equal(conversation.messages[3].tool_call_id, 'c1');
+    assert.equal(conversation.messages[3].content, '3');
+    assert.deepEqual(conversation.totals, {
+      prompt_tokens: 2,
+      completion_tokens: 2,
+      total_tokens: 4,
+    });
+  });
+
+  it('ошибка инструмента и пустые аргументы: возвращает текст ошибки модели, цикл идёт дальше', async t => {
+    const tools: ToolSet = {
+      specs: () => [{ name: 'bad', description: 'x', parameters: {} }],
+      call: async () => {
+        throw new Error('сломалось');
+      },
+    };
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round === 1
+        ? { content: '', toolCalls: [toolCall('bad', '')], usage: undefined } // пустые аргументы
+        : { content: 'готово', usage: undefined };
+    });
+    const conversation = new Conversation(client, { ...config, tools });
+
+    const result = await conversation.ask('сделай');
+
+    assert.equal(result.content, 'готово');
+    const toolMessage = conversation.messages.find(message => message.role === 'tool');
+    assert.match(toolMessage?.content ?? '', /Ошибка инструмента «bad»: сломалось/);
+  });
+
+  it('не-Error из инструмента тоже превращается в текст ошибки', async t => {
+    const tools: ToolSet = {
+      specs: () => [{ name: 'x', description: '', parameters: {} }],
+      call: async () => {
+        throw 'строковый сбой'; // брошено не-Error значение
+      },
+    };
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round === 1
+        ? { content: '', toolCalls: [toolCall('x', '{}')], usage: undefined }
+        : { content: 'ок', usage: undefined };
+    });
+    const conversation = new Conversation(client, { ...config, tools });
+
+    await conversation.ask('go');
+
+    const toolMessage = conversation.messages.find(message => message.role === 'tool');
+    assert.match(toolMessage?.content ?? '', /строковый сбой/);
+  });
+
+  it('инструменты заданы, но список пуст → обычный одиночный запрос', async t => {
+    const tools: ToolSet = { specs: () => [], call: async () => '' };
+    const client = clientWith(t, async () => ({ content: 'обычный ответ', usage: undefined }));
+    const conversation = new Conversation(client, { ...config, tools });
+
+    const result = await conversation.ask('привет');
+
+    assert.equal(result.content, 'обычный ответ');
+    assert.deepEqual(
+      conversation.messages.map(m => m.role),
+      ['system', 'user', 'assistant'], // tool-сообщений нет
+    );
+  });
+
+  it('превышение лимита раундов инструментов → ошибка и откат хода', async t => {
+    const tools: ToolSet = {
+      specs: () => [{ name: 'loop', description: 'x', parameters: {} }],
+      call: async () => 'ещё',
+    };
+    const client = clientWith(t, async () => ({
+      content: '',
+      toolCalls: [toolCall('loop', '{}')],
+      usage: undefined,
+    }));
+    const conversation = new Conversation(client, { ...config, tools, maxToolRounds: 2 });
+
+    await assert.rejects(() => conversation.ask('зацикли'), /Превышен лимит раундов/);
+    assert.deepEqual(
+      conversation.messages.map(m => m.role),
+      ['system'], // ход полностью откатан
     );
   });
 });
