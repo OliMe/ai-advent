@@ -10,15 +10,17 @@ import type {
 import { parseJsonObject } from './json.ts';
 import { orchestrateTeam, runRoleExperts } from './stage-team.ts';
 import type { AgentRole, TeamPlan } from './stage-team.ts';
+import type { ToolSet } from './tool-set.ts';
 
 /** Контекст этапа: всё, что нужно раннеру для одного прогона этапа. */
 export interface StageContext {
   run: TaskRun;
-  /** Фабрика диалога для агента этапа (свой системный промпт, ограничения и температура). */
+  /** Фабрика диалога для агента этапа (промпт, ограничения, температура, опц. инструменты). */
   makeConversation: (
     systemPrompt: string,
     limits?: GenerationLimits,
     temperature?: number,
+    tools?: ToolSet,
   ) => Conversation;
   /** Пишет файл-артефакт прогона; null — хранилище отключено (--ephemeral). */
   writeArtifact: (name: string, content: string) => string | null;
@@ -40,6 +42,8 @@ export interface StageContext {
   stageAgentConcurrency?: number;
   /** Сообщает драйверу состав команды этапа (для печати решения оркестратора). */
   reportTeam?: (team: TeamPlan) => void;
+  /** Инструменты (function-calling) для решающих агентов планирования и выполнения. */
+  tools?: ToolSet;
 }
 
 /** Генерация с контролем инвариантов, если он задан; иначе — обычная. */
@@ -285,7 +289,11 @@ async function planFromConversation(
 
 /** Одиночное планирование: один планировщик (исходный режим). */
 function planSolo(ctx: StageContext): Promise<PlanningArtifact> {
-  return planFromConversation(ctx, ctx.makeConversation(PLANNER_SYSTEM), planningBrief(ctx));
+  return planFromConversation(
+    ctx,
+    ctx.makeConversation(PLANNER_SYSTEM, undefined, undefined, ctx.tools),
+    planningBrief(ctx),
+  );
 }
 
 /**
@@ -314,7 +322,12 @@ async function planWithTeam(ctx: StageContext, team: TeamPlan): Promise<Planning
   const briefing = contributions
     .map(contribution => `### ${contribution.role}\n${contribution.text}`)
     .join('\n\n');
-  const synthesizer = ctx.makeConversation(PLAN_SYNTHESIZER_SYSTEM);
+  const synthesizer = ctx.makeConversation(
+    PLAN_SYNTHESIZER_SYSTEM,
+    undefined,
+    undefined,
+    ctx.tools,
+  );
   const artifact = await planFromConversation(
     ctx,
     synthesizer,
@@ -345,7 +358,7 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
   const issues = ctx.run.artifacts.verification?.issues ?? [];
   // Предыдущий результат — чтобы доработать его целиком, а не пересоздавать с нуля.
   const previous = ctx.run.artifacts.execution?.text ?? '';
-  const conversation = ctx.makeConversation(EXECUTOR_SYSTEM);
+  const conversation = ctx.makeConversation(EXECUTOR_SYSTEM, undefined, undefined, ctx.tools);
   // Шаги, а если их нет — план прозой (модель иногда кладёт план в text).
   const planBody = plan?.steps.length ? plan.steps.join('\n') : (plan?.text ?? '');
   // Доработка (после провала проверки или отказа): требуем ПОЛНЫЙ результат, а не дельту,

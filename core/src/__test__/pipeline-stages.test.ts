@@ -14,7 +14,7 @@ import {
   Conversation,
   createRun,
 } from '../index.ts';
-import type { GenerationLimits, StageContext, TaskRun, TeamPlan } from '../index.ts';
+import type { GenerationLimits, StageContext, TaskRun, TeamPlan, ToolSet } from '../index.ts';
 import { clientWith } from './helpers.ts';
 
 /** Фабрика диалога с подменённым клиентом: всегда отдаёт `content`; ловит промпт. */
@@ -144,6 +144,46 @@ describe('разбор артефактов (C + фолбэк D)', () => {
 });
 
 describe('раннеры этапов', () => {
+  it('инструменты идут планировщику и исполнителю, но не проверяющему/завершающему', async t => {
+    const tools: ToolSet = { specs: () => [], call: async () => '' };
+    const seen = new Map<string, boolean>(); // персона (первые слова) → переданы ли инструменты
+    const make: StageContext['makeConversation'] = (systemPrompt, limits, temperature, toolset) => {
+      const persona = systemPrompt.split(' ').slice(0, 3).join(' ');
+      if (!seen.has(persona)) {
+        seen.set(persona, toolset !== undefined);
+      }
+      const client = clientWith(t, async () => ({
+        content: '{"steps":["s"],"criteria":["c"],"text":"п","passed":true,"summary":"и"}',
+        usage: undefined,
+      }));
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: temperature ?? 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+    const run = createRun('Задача');
+    const ctx: StageContext = {
+      run,
+      makeConversation: make,
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      tools,
+    };
+
+    run.artifacts.planning = await runPlanning(ctx);
+    run.artifacts.execution = await runExecution(ctx);
+    run.artifacts.verification = await runVerification(ctx);
+    await runCompletion(ctx);
+
+    assert.equal(seen.get('Ты — планировщик.'), true);
+    assert.equal(seen.get('Ты — исполнитель.'), true);
+    assert.equal(seen.get('Ты — проверяющий.'), false);
+    assert.equal(seen.get('Ты — завершающий.'), false);
+  });
+
   it('runPlanning: учитывает правку пользователя в промпте', async t => {
     const run = { ...createRun('Сайт'), correction: 'добавь тёмную тему' };
     let prompt = '';

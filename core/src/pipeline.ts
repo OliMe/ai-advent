@@ -4,6 +4,7 @@ import type { RunStore } from './run-store.ts';
 import type { CompletionArtifact, RunStatus, Stage, StageArtifacts, TaskRun } from './task-run.ts';
 import { applyTransition, repairStage } from './task-run.ts';
 import type { TeamPlan } from './stage-team.ts';
+import type { ToolSet } from './tool-set.ts';
 import {
   runCompletion,
   runExecution,
@@ -61,6 +62,7 @@ export interface PipelineDeps {
     systemPrompt: string,
     limits?: GenerationLimits,
     temperature?: number,
+    tools?: ToolSet,
   ) => Conversation;
   /** Кооперативная отмена/пауза: проверяется между этапами. */
   signal: AbortSignal;
@@ -77,6 +79,8 @@ export interface PipelineDeps {
    * многоагентность выключена (однопроходный режим, оркестратор не вызывается).
    */
   teamConfig?: { maxAgents: number; concurrency: number };
+  /** Инструменты (function-calling) для решающих агентов планирования/выполнения. */
+  tools?: ToolSet;
 }
 
 /**
@@ -123,6 +127,7 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
     maxStageAgents: deps.teamConfig?.maxAgents,
     stageAgentConcurrency: deps.teamConfig?.concurrency,
     reportTeam: team => hooks.onTeam?.(run.stage, team),
+    tools: deps.tools,
     // Защищённая генерация решающих этапов: контролёр сверяет результат с инвариантами.
     enforce: produce =>
       enforceInvariants({
