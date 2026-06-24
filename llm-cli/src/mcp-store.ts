@@ -10,6 +10,18 @@ export interface McpStore {
   save(servers: Map<string, McpServerConfig>): void;
 }
 
+/** Разбирает «команда [аргументы] | URL» из команды `/mcp add` в конфиг сервера. */
+export function parseServerSpec(tokens: string[]): McpServerConfig {
+  const [first, ...rest] = tokens;
+  if (first === undefined || first === '') {
+    throw new Error('Укажите команду запуска (stdio) или URL (http) сервера.');
+  }
+  if (/^https?:\/\//.test(first)) {
+    return { transport: 'http', url: first };
+  }
+  return { transport: 'stdio', command: first, args: rest };
+}
+
 /** Сериализует конфиг сервера обратно в запись mcpServers. */
 function toEntry(config: McpServerConfig): Record<string, unknown> {
   return config.transport === 'http'

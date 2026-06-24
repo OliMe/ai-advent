@@ -10,6 +10,7 @@ import type {
   TaskRun,
   TaskSummary,
   TeamPlan,
+  ToolSpec,
 } from '../../core/src/index.ts';
 
 /** Бюджет (в токенах) на блок деталей задачи в контексте агентов пайплайна. */
@@ -65,6 +66,20 @@ export function formatInvariants(invariants: string[]): string {
   }
   const lines = invariants.map((item, index) => `  ${index + 1}. ${item}`);
   return `Инварианты (нарушать нельзя):\n${lines.join('\n')}\n\n`;
+}
+
+/** Форматирует подключённые MCP-серверы и их инструменты для команды /mcp. */
+export function formatMcpTools(serverNames: string[], specs: ToolSpec[]): string {
+  if (serverNames.length === 0) {
+    return 'MCP-серверы не подключены. Добавить: /mcp add <имя> <команда | URL>\n\n';
+  }
+  const lines = serverNames.map(server => {
+    const tools = specs
+      .filter(spec => spec.name.startsWith(`${server}__`))
+      .map(spec => spec.name.slice(server.length + 2));
+    return `  • ${server}: ${tools.length > 0 ? tools.join(', ') : '(нет инструментов)'}`;
+  });
+  return `MCP-серверы:\n${lines.join('\n')}\n\n`;
 }
 
 /** Форматирует список профилей (с пометкой активного) для команды /profiles. */

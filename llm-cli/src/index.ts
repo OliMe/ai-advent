@@ -21,7 +21,10 @@ import {
   tasksDirectory,
   runsDirectory,
   invariantsPath,
+  mcpConfigPath,
 } from './paths.ts';
+import { FileMcpStore } from './mcp-store.ts';
+import { McpToolSet, createConnection } from '../../mcp-client/src/index.ts';
 import { runInteractive, type MemorySettings } from './interactive.ts';
 
 // Публичный API пакета собран из модулей (barrel) — тесты импортируют отсюда.
@@ -59,6 +62,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     memory,
     keepRecent,
     noMemory,
+    noMcp,
     task,
     profile,
     profileTokens,
@@ -100,6 +104,10 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     };
     // Хранилище прогонов задач (пайплайн); --ephemeral держит прогон только в памяти.
     const runStore = ephemeral ? null : new FileRunStore(runsDirectory());
+    // MCP-инструменты агентам: набор поверх реального SDK + конфиг mcp.json (если не --no-mcp).
+    const mcp = noMcp
+      ? null
+      : { toolSet: new McpToolSet(createConnection), store: new FileMcpStore(mcpConfigPath()) };
     await runInteractive(
       client,
       interactiveConfig,
@@ -116,6 +124,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       readline.createInterface,
       memorySettings,
       runStore,
+      mcp,
     );
   }
 }

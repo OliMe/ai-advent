@@ -3,8 +3,29 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FileMcpStore } from '../index.ts';
+import { FileMcpStore, parseServerSpec } from '../index.ts';
 import type { McpServerConfig } from '../../../mcp-client/src/index.ts';
+
+describe('parseServerSpec', () => {
+  it('stdio: команда и аргументы', () => {
+    assert.deepEqual(parseServerSpec(['npx', '-y', 'tavily-mcp']), {
+      transport: 'stdio',
+      command: 'npx',
+      args: ['-y', 'tavily-mcp'],
+    });
+  });
+
+  it('http: по URL', () => {
+    assert.deepEqual(parseServerSpec(['https://h/mcp']), {
+      transport: 'http',
+      url: 'https://h/mcp',
+    });
+  });
+
+  it('пусто → ошибка', () => {
+    assert.throws(() => parseServerSpec([]), /команду запуска/);
+  });
+});
 
 describe('FileMcpStore', () => {
   let dir: string;

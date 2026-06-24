@@ -102,6 +102,17 @@ describe('main', () => {
     assert.match(output.text(), /До встречи!/);
   });
 
+  it('интерактивный режим с --no-mcp (MCP выключен, ветвь без набора инструментов)', async () => {
+    const input = new PassThrough();
+    const output = makeCollector();
+
+    const finished = main(['node', 'cli.ts', '--no-mcp'], input, output.stream);
+    input.write('/exit\n');
+    await finished;
+
+    assert.match(output.text(), /До встречи!/);
+  });
+
   it('принимает флаг --context-tokens в интерактивном режиме', async () => {
     const input = new PassThrough();
     const output = makeCollector();

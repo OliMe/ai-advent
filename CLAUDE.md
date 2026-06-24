@@ -115,7 +115,15 @@ npm --prefix llm-cli start             # запустить CLI (node src/cli.ts
 - `interactive.ts` — цикл readline + **реестр команд** (`{matches, run}`, первая
   подходящая по `matches`; порядок важен: точные перед префиксными). Команды: `/help`,
   `/sessions`, `/branch`, `/switch`, `/reset`, `/system`, `/file`, `/temp`, `/task*`,
-  `/profile*`, `/run*`. Собирает `MemoryManager`, мост к задачам и `RunController`.
+  `/profile*`, `/run*`, `/mcp*`. Собирает `MemoryManager`, мост к задачам и `RunController`.
+- MCP-инструменты агентам (Фаза 3a): `mcp-store.ts` (`FileMcpStore` над `~/.llm-cli/mcp.json`)
+  + `McpToolSet` из пакета `mcp-client` собираются в `main()` (если не `--no-mcp`) и передаются
+  в `runInteractive`. Инструменты идут **планировщику и исполнителю** (через `ConversationFactory`
+  → `StageContext.tools`); вызовы печатаются (`onToolCall`). Команды `/mcp`, `/mcp add <имя>
+  <команда|URL>`, `/mcp remove <имя>`, `/mcp reload` — живое подключение/отключение + запись в
+  `mcp.json`; серверы подключаются на старте, закрываются на выходе (сбой сервера не валит app).
+  Tool-use ядра — в `core` (`ToolSet`, агентный цикл `Conversation`), провайдеро-независимо.
+  Чат пока без инструментов (стрим + контролёр — отдельная Фаза 3b).
 - `chat.ts` — `askModel`/`streamAnswer` (+ спиннер «думает…»), `runOnce`.
 - `run-flow.ts` — `RunController` (драйвер `/run`): фабрика диалогов агентов,
   сбор требований, прогон пайплайна с печатью этапов и подтверждением, пауза по Ctrl+C.

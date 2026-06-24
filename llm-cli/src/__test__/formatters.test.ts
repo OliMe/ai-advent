@@ -6,6 +6,7 @@ import {
   formatProfile,
   formatProfileList,
   formatInvariants,
+  formatMcpTools,
   helpText,
   formatSessionList,
   formatStageResult,
@@ -46,6 +47,19 @@ describe('format helpers (задачи и профиль)', () => {
     assert.match(formatProfile(['любит кратко', 'TypeScript'], 'работа'), /Профиль «работа»:/);
     assert.match(formatProfile(['любит кратко', 'TypeScript'], 'работа'), /1\. любит кратко/);
     assert.match(formatProfile(['любит кратко', 'TypeScript'], 'работа'), /2\. TypeScript/);
+  });
+
+  it('formatMcpTools: пусто, серверы с инструментами и без', () => {
+    assert.match(formatMcpTools([], []), /не подключены/);
+    const text = formatMcpTools(
+      ['srv', 'empty'],
+      [
+        { name: 'srv__search', description: 'd', parameters: {} },
+        { name: 'srv__fetch', description: 'd', parameters: {} },
+      ],
+    );
+    assert.match(text, /• srv: search, fetch/);
+    assert.match(text, /• empty: \(нет инструментов\)/);
   });
 
   it('formatInvariants: пусто и нумерованный список', () => {

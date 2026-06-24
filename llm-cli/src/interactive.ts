@@ -35,6 +35,9 @@ import { askModel, streamAnswer } from './chat.ts';
 import { newSession, branchNameTaken, resolveBranch } from './session-flow.ts';
 import { makeConversationFactory, RunController } from './run-flow.ts';
 import { MemoryRunBridge } from './run-task-bridge.ts';
+import { parseServerSpec } from './mcp-store.ts';
+import type { McpStore } from './mcp-store.ts';
+import type { McpServerConfig, McpToolSet } from '../../mcp-client/src/index.ts';
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import {
   helpText,
@@ -44,6 +47,7 @@ import {
   formatProfile,
   formatProfileList,
   formatInvariants,
+  formatMcpTools,
   EPHEMERAL_NOTICE,
   MEMORY_OFF_NOTICE,
 } from './formatters.ts';
@@ -100,6 +104,8 @@ export async function runInteractive(
   memorySettings: MemorySettings = { enabled: false, profileStore: null, taskStore: null },
   // Хранилище прогонов задач (пайплайн); null — в памяти (--ephemeral).
   runStore: RunStore | null = null,
+  // Инструменты MCP (набор + хранилище конфигурации); null — MCP выключен (--no-mcp).
+  mcp: { toolSet: McpToolSet; store: McpStore } | null = null,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
   // Активная сессия (команды /branch, /switch, /reset могут её сменить).
@@ -193,6 +199,10 @@ export async function runInteractive(
     pipelineUsage.completion_tokens += usage.completion_tokens;
     pipelineUsage.total_tokens += usage.total_tokens;
   };
+  // Печать вызова инструмента агентом (наблюдаемость tool-use).
+  const reportToolCall = (name: string, args: Record<string, unknown>): void => {
+    output.write(`🔧 инструмент ${name} ${JSON.stringify(args)}\n`);
+  };
   // Драйвер прогонов задач (пайплайн): свои диалоги-агенты, своё хранилище.
   // Мост связывает прогон с задачей сессии — память задачи идёт в этапы, итог обратно.
   // Фабрика диалогов-агентов (этапы пайплайна, контролёр инвариантов): своя персона/температура.
@@ -202,6 +212,7 @@ export async function runInteractive(
     disableThinking,
     temperature,
     accountForAgentUsage,
+    reportToolCall,
   );
   // Прогон с печатью суммарного расхода токенов прогона (все обращения агентов этапов).
   const runWithUsageReport = async (action: () => Promise<void>): Promise<void> => {
@@ -224,6 +235,8 @@ export async function runInteractive(
       saveSession: session => store?.save(session),
     }),
     invariants: () => memoryManager.invariantsList(),
+    // Инструменты MCP — планировщику и исполнителю (если MCP включён).
+    tools: mcp?.toolSet,
     // Команда агентов на этап: потолок ролей и конкурентность веера из конфига.
     teamConfig: {
       maxAgents: config.maxStageAgents,
@@ -236,6 +249,69 @@ export async function runInteractive(
       store?.save(currentSession);
     },
   });
+
+  // Подключает один MCP-сервер с печатью статуса (сбой не валит остальное).
+  const connectMcpServer = async (name: string, serverConfig: McpServerConfig): Promise<void> => {
+    try {
+      const count = await mcp!.toolSet.addServer(name, serverConfig);
+      output.write(`🔌 MCP «${name}» подключён (инструментов: ${count}).\n`);
+    } catch (error) {
+      output.write(`⚠ MCP «${name}» не подключён: ${describeError(error)}\n`);
+    }
+  };
+
+  // Команды управления MCP-серверами (доступны только при включённом MCP).
+  const listMcp = (): void => {
+    if (mcp === null) {
+      output.write('MCP выключен (--no-mcp).\n\n');
+      return;
+    }
+    output.write(formatMcpTools(mcp.toolSet.serverNames(), mcp.toolSet.specs()));
+  };
+  const addMcp = async (rest: string): Promise<void> => {
+    if (mcp === null) {
+      output.write('MCP выключен (--no-mcp).\n\n');
+      return;
+    }
+    const tokens = rest.split(/\s+/).filter(Boolean);
+    const name = tokens[0]; // ввод обрезан и совпал с «/mcp add », поэтому имя есть
+    try {
+      const serverConfig = parseServerSpec(tokens.slice(1));
+      const count = await mcp.toolSet.addServer(name, serverConfig);
+      const servers = mcp.store.load();
+      servers.set(name, serverConfig);
+      mcp.store.save(servers);
+      output.write(`MCP «${name}» подключён и сохранён (инструментов: ${count}).\n\n`);
+    } catch (error) {
+      output.write(`Не удалось добавить MCP-сервер: ${describeError(error)}\n\n`);
+    }
+  };
+  const removeMcp = async (name: string): Promise<void> => {
+    if (mcp === null) {
+      output.write('MCP выключен (--no-mcp).\n\n');
+      return;
+    }
+    const removed = await mcp.toolSet.removeServer(name);
+    if (!removed) {
+      output.write(`MCP-сервер не найден: ${name}\n\n`);
+      return;
+    }
+    const servers = mcp.store.load();
+    servers.delete(name);
+    mcp.store.save(servers);
+    output.write(`MCP «${name}» отключён и удалён из конфигурации.\n\n`);
+  };
+  const reloadMcp = async (): Promise<void> => {
+    if (mcp === null) {
+      output.write('MCP выключен (--no-mcp).\n\n');
+      return;
+    }
+    await mcp.toolSet.close();
+    for (const [name, serverConfig] of mcp.store.load()) {
+      await connectMcpServer(name, serverConfig);
+    }
+    output.write('\n');
+  };
 
   // Создаёт новую задачу, делает её текущей задачей сессии и сразу запускает её
   // исполнение пайплайном (запуск выполнения совмещён с созданием задачи).
@@ -255,6 +331,16 @@ export async function runInteractive(
     run: (input: string) => void | Promise<void>;
   }[] = [
     { matches: input => input === '/help', run: () => output.write(helpText()) },
+    { matches: input => input === '/mcp' || input === '/mcp list', run: () => listMcp() },
+    { matches: input => input === '/mcp reload', run: () => reloadMcp() },
+    {
+      matches: input => input.startsWith('/mcp add '),
+      run: input => addMcp(input.slice('/mcp add '.length).trim()),
+    },
+    {
+      matches: input => input.startsWith('/mcp remove '),
+      run: input => removeMcp(input.slice('/mcp remove '.length).trim()),
+    },
     {
       matches: input => input === '/reset',
       run: () => {
@@ -649,6 +735,13 @@ export async function runInteractive(
       'Сообщение — текст; команды — /help; выход — /exit или Ctrl+C.\n',
   );
 
+  // Подключаем MCP-серверы из конфигурации на старте (сбой одного не мешает остальным).
+  if (mcp !== null) {
+    for (const [name, serverConfig] of mcp.store.load()) {
+      await connectMcpServer(name, serverConfig);
+    }
+  }
+
   try {
     while (true) {
       let userInput: string;
@@ -819,6 +912,7 @@ export async function runInteractive(
     }
     output.write('\nДо встречи!\n');
   } finally {
+    await mcp?.toolSet.close(); // закрываем все MCP-подключения
     readlineInterface.close();
   }
 }
