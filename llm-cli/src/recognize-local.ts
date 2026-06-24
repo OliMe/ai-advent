@@ -5,7 +5,7 @@ import { readLocalImageAsBase64, nodeFileReader, type LocalFileReader } from './
 const RECOGNIZE_TOOL_SUFFIX = 'recognize-text';
 
 /** Подходит ли инструмент под распознавание текста (по суффиксу имени). */
-function isRecognizeTool(name: string): boolean {
+export function isRecognizeTool(name: string): boolean {
   return name.endsWith(RECOGNIZE_TOOL_SUFFIX);
 }
 

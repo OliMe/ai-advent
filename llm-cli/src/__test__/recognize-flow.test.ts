@@ -72,7 +72,8 @@ describe('интерактив — распознавание локальног
       );
       await finished;
       const out = text();
-      assert.match(out, /🔧 инструмент srv__recognize-text/); // печатается с путём
+      assert.match(out, /🔍 Читаю текст с картинок…/); // дружелюбная строка, без пути
+      assert.doesNotMatch(out, /yandex__recognize-text \{/); // технический лог не печатается
       assert.match(out, /Распознано: AI ADVENT 2026/);
     } finally {
       rmSync(imagePath, { force: true });

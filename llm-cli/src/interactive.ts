@@ -38,7 +38,11 @@ import { MemoryRunBridge } from './run-task-bridge.ts';
 import { parseServerSpec } from './mcp-store.ts';
 import type { McpStore } from './mcp-store.ts';
 import type { McpServerConfig, McpToolSet } from '../../mcp-client/src/index.ts';
-import { LocalImageRecognizingToolSet, recognizeTextDirective } from './recognize-local.ts';
+import {
+  LocalImageRecognizingToolSet,
+  recognizeTextDirective,
+  isRecognizeTool,
+} from './recognize-local.ts';
 import { installClipboardPaste, type ClipboardImageReader } from './clipboard-image.ts';
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import {
@@ -210,8 +214,13 @@ export async function runInteractive(
     pipelineUsage.completion_tokens += usage.completion_tokens;
     pipelineUsage.total_tokens += usage.total_tokens;
   };
-  // Печать вызова инструмента агентом (наблюдаемость tool-use).
+  // Печать вызова инструмента агентом (наблюдаемость tool-use). Для распознавания —
+  // дружелюбная строка без технического пути; для прочих — имя инструмента и аргументы.
   const reportToolCall = (name: string, args: Record<string, unknown>): void => {
+    if (isRecognizeTool(name)) {
+      output.write('🔍 Читаю текст с картинок…\n');
+      return;
+    }
     output.write(`🔧 инструмент ${name} ${JSON.stringify(args)}\n`);
   };
   // Драйвер прогонов задач (пайплайн): свои диалоги-агенты, своё хранилище.
