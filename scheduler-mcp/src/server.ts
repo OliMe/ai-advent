@@ -57,15 +57,19 @@ export function createServer(scheduler: Scheduler): McpServer {
     {
       title: 'Запланировать задачу',
       description:
-        'Создаёт фоновую задачу. kind: "http_check" (нужен url — пинговать и мерить доступность) ' +
-        'или "note" (нужен text — заметка/напоминание). schedule: {type:"interval",everySeconds} | ' +
-        '{type:"daily",at:"HH:MM",tzOffsetMinutes} | {type:"once",atIso:"ISO"}. tzOffsetMinutes — ' +
-        'смещение пояса в минутах (GMT+5 = 300).',
+        'Создаёт фоновую задачу. kind: "http_check" (нужен url — пинговать и мерить доступность); ' +
+        '"note" (нужен text — заметка/напоминание); "agent" (нужна instruction — инструкция на ' +
+        'естественном языке, её исполнит LLM на сервере с инструментами get_weather/http_get; ' +
+        'координаты для погоды передавай прямо в instruction). schedule: {type:"interval",everySeconds} ' +
+        '| {type:"daily",at:"HH:MM",tzOffsetMinutes} | {type:"once",atIso:"ISO"}. tzOffsetMinutes — ' +
+        'смещение пояса в минутах (GMT+5 = 300). deliver:"telegram" — присылать результат в Telegram.',
       inputSchema: {
         title: z.string(),
-        kind: z.enum(['http_check', 'note']),
+        kind: z.enum(['http_check', 'note', 'agent']),
         url: z.string().optional(),
         text: z.string().optional(),
+        instruction: z.string().optional(),
+        deliver: z.enum(['inbox', 'telegram']).optional(),
         schedule: z.object(scheduleShape),
       },
     },
@@ -76,6 +80,8 @@ export function createServer(scheduler: Scheduler): McpServer {
           kind: args.kind,
           url: args.url,
           text: args.text,
+          instruction: args.instruction,
+          deliver: args.deliver,
           schedule: toSchedule(args.schedule),
         }),
       ),

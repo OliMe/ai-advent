@@ -77,6 +77,7 @@ describe('Scheduler — список и поиск', () => {
           title: 'ранее',
           kind: 'note',
           text: 't',
+          deliver: 'inbox',
           schedule: { type: 'interval', everySeconds: 10 },
           status: 'active',
           createdAt: '2026-06-25T00:00:00.000Z',
@@ -260,5 +261,48 @@ describe('Scheduler.getHistory', () => {
       await scheduler.runNow(task.id);
     }
     assert.equal(scheduler.getHistory({ taskId: task.id, limit: 1000 }).length, 200);
+  });
+});
+
+describe('Scheduler — доставка и agent', () => {
+  it('после запуска вызывает доставку с результатом и задачей', async () => {
+    const calls: { taskId: string; deliver: string }[] = [];
+    const scheduler = makeScheduler({
+      deliver: async (run, task) => {
+        calls.push({ taskId: run.taskId, deliver: task.deliver });
+      },
+    });
+    const task = scheduler.scheduleTask({
+      title: 'A',
+      kind: 'note',
+      text: 'a',
+      deliver: 'telegram',
+      schedule: { type: 'interval', everySeconds: 5 },
+    });
+    await scheduler.runNow(task.id);
+    assert.deepEqual(calls, [{ taskId: task.id, deliver: 'telegram' }]);
+  });
+
+  it('agent: требует instruction; создаётся с instruction и каналом', () => {
+    const scheduler = makeScheduler();
+    assert.throws(
+      () =>
+        scheduler.scheduleTask({
+          title: 'x',
+          kind: 'agent',
+          schedule: { type: 'interval', everySeconds: 5 },
+        }),
+      /agent нужна непустая instruction/,
+    );
+    const task = scheduler.scheduleTask({
+      title: 'погода',
+      kind: 'agent',
+      instruction: 'прогноз и рекомендации',
+      deliver: 'telegram',
+      schedule: { type: 'daily', at: '08:00', tzOffsetMinutes: 300 },
+    });
+    assert.equal(task.kind, 'agent');
+    assert.equal(task.instruction, 'прогноз и рекомендации');
+    assert.equal(task.deliver, 'telegram');
   });
 });

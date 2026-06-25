@@ -19,6 +19,7 @@ function executors(): Record<TaskKind, Executor> {
   return {
     http_check: async () => ({ ok: false, summary: 'недоступен', details: {} }),
     note: async task => ({ ok: true, summary: task.text ?? '', details: {} }),
+    agent: async task => ({ ok: true, summary: `итог: ${task.instruction ?? ''}`, details: {} }),
   };
 }
 

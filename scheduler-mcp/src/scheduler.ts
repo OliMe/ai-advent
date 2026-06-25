@@ -1,4 +1,11 @@
-import type { SchedulerState, Task, TaskKind, TaskRun, Schedule } from './types.ts';
+import type {
+  SchedulerState,
+  Task,
+  TaskKind,
+  TaskRun,
+  Schedule,
+  DeliveryChannel,
+} from './types.ts';
 import type { TaskStore } from './task-store.ts';
 import type { Executor } from './executors.ts';
 import { nextFireTime, validateSchedule } from './schedule.ts';
@@ -12,15 +19,21 @@ export interface ScheduleTaskInput {
   kind: TaskKind;
   url?: string;
   text?: string;
+  instruction?: string;
+  deliver?: DeliveryChannel;
   schedule: Schedule;
 }
 
-/** Зависимости движка: хранилище, исполнители, часы и генератор идентификаторов. */
+/** Доставка результата запуска во внешний канал (best-effort, ошибки не бросает). */
+export type DeliverFn = (run: TaskRun, task: Task) => Promise<void>;
+
+/** Зависимости движка: хранилище, исполнители, часы, генератор id и (опц.) доставка. */
 export interface SchedulerDeps {
   store: TaskStore;
   executors: Record<TaskKind, Executor>;
   now: () => number;
   idFactory: () => string;
+  deliver?: DeliverFn;
 }
 
 /** ISO-строка из epoch-мс. */
@@ -50,18 +63,23 @@ export class Scheduler {
     if (input.kind === 'note' && !input.text?.trim()) {
       throw new Error('Для note нужен непустой text.');
     }
+    if (input.kind === 'agent' && !input.instruction?.trim()) {
+      throw new Error('Для agent нужна непустая instruction.');
+    }
     validateSchedule(input.schedule);
     const nowMs = this.deps.now();
     const task: Task = {
       id: this.deps.idFactory(),
       title: input.title,
       kind: input.kind,
+      deliver: input.deliver ?? 'inbox',
       schedule: input.schedule,
       status: 'active',
       createdAt: toIso(nowMs),
       nextFireAt: toIso(nextFireTime(input.schedule, nowMs)),
       ...(input.url !== undefined ? { url: input.url } : {}),
       ...(input.text !== undefined ? { text: input.text } : {}),
+      ...(input.instruction !== undefined ? { instruction: input.instruction } : {}),
     };
     this.state.tasks.push(task);
     this.persist();
@@ -168,6 +186,9 @@ export class Scheduler {
     };
     this.appendRun(run);
     task.lastRunAt = toIso(firedMs);
+    if (this.deps.deliver !== undefined) {
+      await this.deps.deliver(run, task);
+    }
     return run;
   }
 

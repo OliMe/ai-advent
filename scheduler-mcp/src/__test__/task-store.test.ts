@@ -18,6 +18,7 @@ const sampleState: SchedulerState = {
       title: 'тест',
       kind: 'note',
       text: 'привет',
+      deliver: 'inbox',
       schedule: { type: 'interval', everySeconds: 10 },
       status: 'active',
       createdAt: '2026-06-25T00:00:00.000Z',

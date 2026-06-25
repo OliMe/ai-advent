@@ -7,8 +7,11 @@ export type Schedule =
   | { type: 'daily'; at: string; tzOffsetMinutes: number }
   | { type: 'once'; atIso: string };
 
-/** Что делает задача при срабатывании (Фаза 1 — без LLM). */
-export type TaskKind = 'http_check' | 'note';
+/** Что делает задача при срабатывании. agent — NL-инструкция исполняется LLM (Фаза 2). */
+export type TaskKind = 'http_check' | 'note' | 'agent';
+
+/** Канал доставки результата запуска. inbox — только в историю; telegram — ещё и в Telegram. */
+export type DeliveryChannel = 'inbox' | 'telegram';
 
 /** Состояние задачи в жизненном цикле. */
 export type TaskStatus = 'active' | 'paused' | 'completed';
@@ -25,6 +28,10 @@ export interface Task {
   url?: string;
   /** Текст для note. */
   text?: string;
+  /** Инструкция на естественном языке для kind=agent. */
+  instruction?: string;
+  /** Канал доставки результата (по умолчанию inbox). */
+  deliver: DeliveryChannel;
   /** Расписание срабатываний. */
   schedule: Schedule;
   /** Текущее состояние. */

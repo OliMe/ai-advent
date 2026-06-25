@@ -19,10 +19,17 @@ export interface RunOutcome {
 /** Исполнитель одной задачи. */
 export type Executor = (task: Task) => Promise<RunOutcome>;
 
-/** Зависимости исполнителей: HTTP-клиент и часы (для латентности). */
+/** Раннер LLM-инструкции (server-side агент); реализуется поверх core.Conversation. */
+export interface AgentRunner {
+  /** Исполняет инструкцию на естественном языке и возвращает финальный текст. */
+  run(instruction: string): Promise<string>;
+}
+
+/** Зависимости исполнителей: HTTP-клиент, часы и (опц.) LLM-раннер для kind=agent. */
 export interface ExecutorDeps {
   fetchFn: FetchLike;
   now: () => number;
+  agentRunner?: AgentRunner;
 }
 
 /** Текст ошибки из неизвестного значения. */
@@ -61,5 +68,24 @@ export function makeExecutors(deps: ExecutorDeps): Record<TaskKind, Executor> {
       summary: task.text ?? '',
       details: {},
     }),
+    agent: async task => {
+      if (deps.agentRunner === undefined) {
+        return {
+          ok: false,
+          summary: 'LLM-исполнитель не настроен на сервере (нет LLM_* в .env).',
+          details: {},
+        };
+      }
+      try {
+        const text = await deps.agentRunner.run(task.instruction ?? '');
+        return { ok: true, summary: text.split('\n')[0], details: { text } };
+      } catch (error) {
+        return {
+          ok: false,
+          summary: `ошибка исполнения: ${errorMessage(error)}`,
+          details: { error: errorMessage(error) },
+        };
+      }
+    },
   };
 }

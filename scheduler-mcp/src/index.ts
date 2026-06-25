@@ -1,4 +1,12 @@
-export type { Schedule, TaskKind, TaskStatus, Task, TaskRun, SchedulerState } from './types.ts';
+export type {
+  Schedule,
+  TaskKind,
+  TaskStatus,
+  DeliveryChannel,
+  Task,
+  TaskRun,
+  SchedulerState,
+} from './types.ts';
 export { validateSchedule, nextFireTime } from './schedule.ts';
 export { FileTaskStore } from './task-store.ts';
 export type { TaskStore } from './task-store.ts';
@@ -6,12 +14,19 @@ export { makeExecutors } from './executors.ts';
 export type {
   Executor,
   ExecutorDeps,
+  AgentRunner,
   FetchLike,
   HttpResponseLike,
   RunOutcome,
 } from './executors.ts';
+export { fetchWeather, parseForecast } from './weather.ts';
+export type { WeatherForecast, WeatherFetch } from './weather.ts';
+export { BuiltinToolSet } from './builtin-tools.ts';
+export type { BuiltinFetch } from './builtin-tools.ts';
+export { loadTelegramConfig, sendTelegramMessage } from './telegram.ts';
+export type { TelegramConfig, TelegramFetch, DeliveryResult } from './telegram.ts';
 export { Scheduler } from './scheduler.ts';
-export type { SchedulerDeps, ScheduleTaskInput } from './scheduler.ts';
+export type { SchedulerDeps, ScheduleTaskInput, DeliverFn } from './scheduler.ts';
 export {
   describeSchedule,
   handleScheduleTask,

@@ -1,5 +1,5 @@
 import { Scheduler } from '../index.ts';
-import type { Executor, SchedulerState, TaskKind, TaskStore } from '../index.ts';
+import type { DeliverFn, Executor, SchedulerState, TaskKind, TaskStore } from '../index.ts';
 
 /** Хранилище состояния в памяти (для тестов). */
 export function memoryStore(initial?: SchedulerState): {
@@ -47,6 +47,7 @@ export function trivialExecutors(): Record<TaskKind, Executor> {
   return {
     http_check: async () => ({ ok: true, summary: 'ok', details: {} }),
     note: async task => ({ ok: true, summary: task.text ?? '', details: {} }),
+    agent: async task => ({ ok: true, summary: `agent: ${task.instruction ?? ''}`, details: {} }),
   };
 }
 
@@ -57,6 +58,7 @@ export function makeScheduler(
     executors?: Record<TaskKind, Executor>;
     now?: () => number;
     idFactory?: () => string;
+    deliver?: DeliverFn;
   } = {},
 ): Scheduler {
   return new Scheduler({
@@ -64,5 +66,6 @@ export function makeScheduler(
     executors: options.executors ?? trivialExecutors(),
     now: options.now ?? fixedClock().now,
     idFactory: options.idFactory ?? counterIds(),
+    deliver: options.deliver,
   });
 }

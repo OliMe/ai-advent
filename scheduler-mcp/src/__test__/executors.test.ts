@@ -8,6 +8,7 @@ function task(overrides: Partial<Task> = {}): Task {
     id: 't1',
     title: 'тест',
     kind: 'http_check',
+    deliver: 'inbox',
     schedule: { type: 'interval', everySeconds: 10 },
     status: 'active',
     createdAt: '2026-06-25T00:00:00.000Z',
@@ -62,6 +63,68 @@ describe('makeExecutors — http_check', () => {
     const executors = makeExecutors({ fetchFn, now: sequenceClock([0, 0]) });
     const outcome = await executors.http_check(task({ url: 'https://e/' }));
     assert.match(outcome.summary, /недоступен: строковый сбой/);
+  });
+});
+
+describe('makeExecutors — agent', () => {
+  const baseDeps = {
+    fetchFn: (async () => ({ status: 200, ok: true })) as FetchLike,
+    now: () => 0,
+  };
+
+  it('с раннером: успех — первая строка в summary, полный текст в details', async () => {
+    let received = 'нетронуто';
+    const executors = makeExecutors({
+      ...baseDeps,
+      agentRunner: {
+        run: async instruction => {
+          received = instruction;
+          return 'Рекомендация\nподробности';
+        },
+      },
+    });
+    const outcome = await executors.agent(task({ kind: 'agent', instruction: 'одеться?' }));
+    assert.equal(received, 'одеться?');
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.summary, 'Рекомендация');
+    assert.equal(outcome.details.text, 'Рекомендация\nподробности');
+  });
+
+  it('без instruction раннер получает пустую строку', async () => {
+    let received = 'нетронуто';
+    const executors = makeExecutors({
+      ...baseDeps,
+      agentRunner: {
+        run: async instruction => {
+          received = instruction;
+          return 'ок';
+        },
+      },
+    });
+    await executors.agent(task({ kind: 'agent' }));
+    assert.equal(received, '');
+  });
+
+  it('раннер бросил → ok:false с текстом ошибки', async () => {
+    const executors = makeExecutors({
+      ...baseDeps,
+      agentRunner: {
+        run: async () => {
+          throw new Error('модель упала');
+        },
+      },
+    });
+    const outcome = await executors.agent(task({ kind: 'agent', instruction: 'x' }));
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.summary, /ошибка исполнения: модель упала/);
+    assert.equal(outcome.details.error, 'модель упала');
+  });
+
+  it('без раннера → сообщает, что LLM не настроен', async () => {
+    const executors = makeExecutors(baseDeps);
+    const outcome = await executors.agent(task({ kind: 'agent', instruction: 'x' }));
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.summary, /LLM-исполнитель не настроен/);
   });
 });
 
