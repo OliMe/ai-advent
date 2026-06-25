@@ -43,6 +43,8 @@ import {
   recognizeTextDirective,
   isRecognizeTool,
 } from './recognize-local.ts';
+import { CompositeToolSet } from './composite-tool-set.ts';
+import { LocationToolSet } from './location.ts';
 import { installClipboardPaste, type ClipboardImageReader } from './clipboard-image.ts';
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import {
@@ -116,9 +118,15 @@ export async function runInteractive(
   clipboard: ClipboardImageReader | null = null,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
-  // Инструменты агентам (чат + пайплайн): обёртка делает recognize-text с локальным путём
-  // распознаваемым — читает файл на стороне CLI и шлёт серверу как base64.
-  const chatTools = mcp === null ? null : new LocalImageRecognizingToolSet(mcp.toolSet);
+  // Инструменты агентам (чат + пайплайн): MCP-инструменты с локальной обработкой путей
+  // (recognize-text) плюс клиентский get_my_location (геолокация для задач вроде погоды).
+  const chatTools =
+    mcp === null
+      ? null
+      : new CompositeToolSet([
+          new LocalImageRecognizingToolSet(mcp.toolSet),
+          new LocationToolSet(),
+        ]);
   // Перехват Ctrl+V: картинка из буфера → временный файл → плейсхолдер [Image #N] в строку.
   // Контроллер на отправке меняет плейсхолдеры на пути к файлам (их распознаёт агент).
   const paste =
@@ -858,8 +866,9 @@ export async function runInteractive(
             feedback === undefined
               ? windowed
               : [...windowed, { role: 'user' as const, content: feedback }];
-          // С подключёнными MCP-инструментами чат идёт агентным циклом (без стрима).
-          if (chatTools !== null && chatTools.specs().length > 0) {
+          // С подключённым MCP чат идёт агентным циклом (без стрима): доступны инструменты
+          // MCP и клиентский get_my_location (набор непуст всегда, когда MCP включён).
+          if (chatTools !== null) {
             output.write('\n');
             // Директива про распознавание (локальные пути + ответ при неудаче), если есть recognize-text.
             const directive = recognizeTextDirective(chatTools.specs());

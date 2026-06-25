@@ -44,6 +44,8 @@ export * from './run-task-bridge.ts';
 export * from './mcp-store.ts';
 export * from './local-image.ts';
 export * from './recognize-local.ts';
+export * from './composite-tool-set.ts';
+export * from './location.ts';
 export * from './clipboard-image.ts';
 export * from './interactive.ts';
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeFileSync, rmSync } from 'node:fs';
-import { driveInteractive, clientWith, clientWithStream } from './helpers.ts';
+import { driveInteractive, clientWith } from './helpers.ts';
 import { McpToolSet } from '../../../mcp-client/src/index.ts';
 import type { ConnectFn, McpServerConfig } from '../../../mcp-client/src/index.ts';
 import type { McpStore, ClipboardImageReader } from '../index.ts';
@@ -105,8 +105,10 @@ describe('интерактив — распознавание локальног
     assert.match(text(), /До встречи/);
   });
 
-  it('MCP включён, но серверов нет → обычный чат без инструментов', async t => {
-    const client = clientWithStream(t, async () => 'обычный ответ');
+  it('MCP включён без серверов → агентный путь (доступен только get_my_location)', async t => {
+    // С подключённым MCP набор инструментов непуст всегда (клиентский get_my_location),
+    // поэтому идём агентным циклом; модель не вызывает инструмент и сразу отвечает.
+    const client = clientWith(t, async () => ({ content: 'обычный ответ', usage: undefined }));
     const mcp = {
       toolSet: new McpToolSet(async () => ({
         name: 'n',
