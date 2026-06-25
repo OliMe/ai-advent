@@ -11,6 +11,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { loadOcrConfig } from './config.ts';
 import { createServer } from './server.ts';
 import { authorize, requiredBearerToken } from './auth.ts';
+import { RequestCounter } from './request-counter.ts';
 
 function main(): void {
   try {
@@ -21,16 +22,22 @@ function main(): void {
   const config = loadOcrConfig(process.env); // упадёт, если нет креденшелов Yandex
   const token = requiredBearerToken(process.env);
   const port = Number(process.env.PORT) || 3000;
+  const counter = new RequestCounter(new Date().toISOString());
 
   const app = express();
   app.use(express.json({ limit: '25mb' })); // изображения в base64 могут быть крупными
+
+  // Метрики использования (число распознаваний) — без авторизации, для мониторинга.
+  app.get('/metrics', (_request, response) => {
+    response.json(counter.snapshot());
+  });
 
   app.post('/mcp', async (request, response) => {
     if (!authorize(request.headers.authorization, token)) {
       response.status(401).json({ error: 'Требуется корректный Authorization: Bearer <токен>.' });
       return;
     }
-    const server = createServer(config);
+    const server = createServer(config, counter);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     response.on('close', () => {
       void transport.close();

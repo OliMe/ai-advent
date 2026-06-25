@@ -7,3 +7,5 @@ export type { FetchLike, HttpResponse, OcrRequest, OcrResult } from './yandex-oc
 export { runRecognizeText } from './recognize-tool.ts';
 export type { RecognizeArgs, RecognizeDeps, ToolResult } from './recognize-tool.ts';
 export { requiredBearerToken, authorize } from './auth.ts';
+export { RequestCounter } from './request-counter.ts';
+export type { RequestCounterSnapshot } from './request-counter.ts';

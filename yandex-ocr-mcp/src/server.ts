@@ -8,6 +8,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { OcrConfig } from './config.ts';
 import type { ImageReaders } from './image-source.ts';
+import type { RequestCounter } from './request-counter.ts';
 import { runRecognizeText } from './recognize-tool.ts';
 
 /** Реальные читатели изображения: локальный файл и загрузка по URL. */
@@ -26,7 +27,7 @@ function realReaders(): ImageReaders {
 }
 
 /** Создаёт MCP-сервер Yandex OCR с зарегистрированным инструментом recognize-text. */
-export function createServer(config: OcrConfig): McpServer {
+export function createServer(config: OcrConfig, counter?: RequestCounter): McpServer {
   const server = new McpServer({ name: 'yandex-ocr-mcp', version: '1.0.0' });
   const deps = { config, readers: realReaders(), fetchFn: fetch };
   server.registerTool(
@@ -46,6 +47,7 @@ export function createServer(config: OcrConfig): McpServer {
       },
     },
     async args => {
+      counter?.increment();
       const result = await runRecognizeText(deps, args);
       return { content: result.content };
     },
