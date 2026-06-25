@@ -262,6 +262,24 @@ describe('Scheduler.getHistory', () => {
     }
     assert.equal(scheduler.getHistory({ taskId: task.id, limit: 1000 }).length, 200);
   });
+
+  it('pollResults: все или только новее курсора', async () => {
+    const clock = fixedClock(1_000);
+    const scheduler = makeScheduler({ now: clock.now, idFactory: counterIds() });
+    const task = scheduler.scheduleTask({
+      title: 'A',
+      kind: 'note',
+      text: 'a',
+      schedule: { type: 'interval', everySeconds: 5 },
+    });
+    await scheduler.runNow(task.id); // firedAt = iso(1000)
+    clock.set(2_000);
+    await scheduler.runNow(task.id); // firedAt = iso(2000)
+    assert.equal(scheduler.pollResults().length, 2);
+    const newer = scheduler.pollResults(new Date(1_000).toISOString());
+    assert.equal(newer.length, 1);
+    assert.equal(newer[0].firedAt, new Date(2_000).toISOString());
+  });
 });
 
 describe('Scheduler — доставка и agent', () => {

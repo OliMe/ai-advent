@@ -47,6 +47,9 @@ export * from './recognize-local.ts';
 export * from './composite-tool-set.ts';
 export * from './location.ts';
 export * from './clipboard-image.ts';
+export * from './inbox-poller.ts';
+export * from './notify.ts';
+export * from './watch.ts';
 export * from './interactive.ts';
 
 /** Точка входа: выбирает режим работы по аргументам командной строки. */

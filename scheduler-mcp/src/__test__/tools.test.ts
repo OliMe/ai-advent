@@ -10,6 +10,7 @@ import {
   handleResumeTask,
   handleRunNow,
   handleGetHistory,
+  handlePollResults,
 } from '../index.ts';
 import type { Executor, TaskKind } from '../index.ts';
 import { makeScheduler, fixedClock, counterIds } from './helpers.ts';
@@ -159,6 +160,33 @@ describe('handleCancelTask / Pause / Resume / RunNow', () => {
       schedule: { type: 'interval', everySeconds: 5 },
     });
     assert.match(await handleRunNow(scheduler, task.id), /Полный ответ: рекомендации/);
+  });
+});
+
+describe('handlePollResults', () => {
+  it('возвращает JSON с новыми запусками; text = полный для agent, сводка для прочих', async () => {
+    const scheduler = makeScheduler({ executors: executors() });
+    const note = scheduler.scheduleTask({
+      title: 'N',
+      kind: 'note',
+      text: 'заметка',
+      schedule: { type: 'interval', everySeconds: 5 },
+    });
+    const agent = scheduler.scheduleTask({
+      title: 'A',
+      kind: 'agent',
+      instruction: 'привет',
+      schedule: { type: 'interval', everySeconds: 5 },
+    });
+    await scheduler.runNow(note.id);
+    await scheduler.runNow(agent.id);
+    const parsed = JSON.parse(handlePollResults(scheduler, {})) as {
+      runs: { taskTitle: string; text: string }[];
+    };
+    assert.equal(parsed.runs.length, 2);
+    const byTitle = Object.fromEntries(parsed.runs.map(run => [run.taskTitle, run.text]));
+    assert.equal(byTitle.N, 'заметка'); // нет details.text → сводка
+    assert.match(byTitle.A, /Полный ответ: привет/); // есть details.text → полный текст
   });
 });
 

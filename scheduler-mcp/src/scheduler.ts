@@ -145,6 +145,13 @@ export class Scheduler {
     return run;
   }
 
+  /** Запуски новее курсора (ISO firedAt), в хронологическом порядке — для поллинга клиентом. */
+  pollResults(since?: string): TaskRun[] {
+    return since === undefined
+      ? [...this.state.runs]
+      : this.state.runs.filter(run => run.firedAt > since);
+  }
+
   /** История запусков (новые первыми), опц. по задаче и с ограничением количества. */
   getHistory(filter: { taskId?: string; limit?: number } = {}): TaskRun[] {
     const limit = filter.limit ?? 50;

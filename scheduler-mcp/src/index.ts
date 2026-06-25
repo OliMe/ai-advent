@@ -37,6 +37,7 @@ export {
   handleResumeTask,
   handleRunNow,
   handleGetHistory,
+  handlePollResults,
 } from './tools.ts';
 export { loadSchedulerConfig } from './config.ts';
 export type { SchedulerConfig } from './config.ts';

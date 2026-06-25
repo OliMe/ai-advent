@@ -15,6 +15,7 @@ import {
   handleResumeTask,
   handleRunNow,
   handleGetHistory,
+  handlePollResults,
 } from './tools.ts';
 
 /** Оборачивает текст в ответ MCP-инструмента. */
@@ -155,6 +156,18 @@ export function createServer(scheduler: Scheduler): McpServer {
       inputSchema: { taskId: z.string().optional(), limit: z.number().optional() },
     },
     async args => text(handleGetHistory(scheduler, { taskId: args.taskId, limit: args.limit })),
+  );
+
+  server.registerTool(
+    'poll_results',
+    {
+      title: 'Новые результаты',
+      description:
+        'Для клиента-поллера: JSON с запусками новее курсора (since, ISO firedAt). Без since — все. ' +
+        'Используется для системных уведомлений, а не для чтения человеком.',
+      inputSchema: { since: z.string().optional() },
+    },
+    async args => text(handlePollResults(scheduler, { since: args.since })),
   );
 
   return server;

@@ -84,6 +84,18 @@ export async function handleRunNow(scheduler: Scheduler, id: string): Promise<st
   return run === null ? `Задача не найдена: ${id}` : `Выполнено: ${describeRun(run)}`;
 }
 
+/** Поллинг новых результатов клиентом: JSON с запусками новее курсора (для уведомлений). */
+export function handlePollResults(scheduler: Scheduler, filter: { since?: string }): string {
+  const runs = scheduler.pollResults(filter.since).map(run => ({
+    firedAt: run.firedAt,
+    taskId: run.taskId,
+    taskTitle: run.taskTitle,
+    ok: run.ok,
+    text: typeof run.details.text === 'string' ? run.details.text : run.summary,
+  }));
+  return JSON.stringify({ runs });
+}
+
 /** История запусков (инбокс). */
 export function handleGetHistory(
   scheduler: Scheduler,
