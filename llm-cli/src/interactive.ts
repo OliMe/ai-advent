@@ -45,6 +45,7 @@ import {
 } from './recognize-local.ts';
 import { CompositeToolSet } from './composite-tool-set.ts';
 import { LocationToolSet } from './location.ts';
+import { currentTimeContext } from './current-time.ts';
 import { installClipboardPaste, type ClipboardImageReader } from './clipboard-image.ts';
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import {
@@ -870,12 +871,14 @@ export async function runInteractive(
           // MCP и клиентский get_my_location (набор непуст всегда, когда MCP включён).
           if (chatTools !== null) {
             output.write('\n');
-            // Директива про распознавание (локальные пути + ответ при неудаче), если есть recognize-text.
+            // Ведущие system-подсказки: текущее время (для относительных сроков) и, если есть
+            // recognize-text, директива про распознавание (локальные пути + ответ при неудаче).
+            const leading = [{ role: 'system' as const, content: currentTimeContext(new Date()) }];
             const directive = recognizeTextDirective(chatTools.specs());
-            const withTools =
-              directive === null
-                ? outgoing
-                : [{ role: 'system' as const, content: directive }, ...outgoing];
+            if (directive !== null) {
+              leading.push({ role: 'system' as const, content: directive });
+            }
+            const withTools = [...leading, ...outgoing];
             const result = await completeWithTools(
               client,
               withTools,

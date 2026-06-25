@@ -25,6 +25,7 @@ export { collectSystemMetrics } from './system-metrics.ts';
 export type { SystemMetrics, SystemReaders } from './system-metrics.ts';
 export { aggregateMetrics, formatReport } from './aggregate.ts';
 export type { MetricsAggregate } from './aggregate.ts';
+export { formatPromisesDigest } from './digest.ts';
 export { BuiltinToolSet } from './builtin-tools.ts';
 export type { BuiltinFetch } from './builtin-tools.ts';
 export { loadTelegramConfig, sendTelegramMessage } from './telegram.ts';

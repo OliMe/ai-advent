@@ -27,6 +27,7 @@ function executors(): Record<TaskKind, Executor> {
     }),
     system_metrics: async () => ({ ok: true, summary: 'metrics', details: {} }),
     report: async () => ({ ok: true, summary: 'report', details: { text: 'отчёт' } }),
+    digest: async () => ({ ok: true, summary: 'digest', details: { text: 'дайджест' } }),
   };
 }
 

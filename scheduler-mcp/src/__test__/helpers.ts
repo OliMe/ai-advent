@@ -54,6 +54,7 @@ export function trivialExecutors(): Record<TaskKind, Executor> {
       details: { memoryUsedPercent: 50 },
     }),
     report: async () => ({ ok: true, summary: 'report', details: { text: 'отчёт' } }),
+    digest: async () => ({ ok: true, summary: 'digest', details: { text: 'дайджест' } }),
   };
 }
 

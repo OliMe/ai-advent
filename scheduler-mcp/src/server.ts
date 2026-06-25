@@ -66,10 +66,11 @@ export function createServer(scheduler: Scheduler): McpServer {
         'смещение пояса в минутах (GMT+5 = 300). deliver:"telegram" — присылать результат в Telegram. ' +
         'Ещё виды: "system_metrics" (снимок метрик VPS; опц. url — доступность/латентность; опц. ' +
         'metricsUrl — эндпоинт счётчика, напр. https://smartnfree.ru/metrics, число запросов); ' +
-        '"report" (нужен targetTaskId — агрегирует историю задачи-сборщика метрик в сводку).',
+        '"report" (нужен targetTaskId — агрегирует историю задачи-сборщика метрик в сводку); ' +
+        '"digest" (дайджест незакрытых обещаний — список активных задач-напоминаний note).',
       inputSchema: {
         title: z.string(),
-        kind: z.enum(['http_check', 'note', 'agent', 'system_metrics', 'report']),
+        kind: z.enum(['http_check', 'note', 'agent', 'system_metrics', 'report', 'digest']),
         url: z.string().optional(),
         metricsUrl: z.string().optional(),
         text: z.string().optional(),

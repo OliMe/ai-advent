@@ -300,6 +300,28 @@ describe('makeExecutors — report', () => {
   });
 });
 
+describe('makeExecutors — digest', () => {
+  it('собирает дайджест из активных note-задач', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true }),
+      now: () => 0,
+      activeTasks: () => [task({ kind: 'note', text: 'позвонить маме' })],
+    });
+    const outcome = await executors.digest(task({ kind: 'digest' }));
+    assert.equal(outcome.ok, true);
+    assert.match(String(outcome.details.text), /позвонить маме/);
+  });
+
+  it('без activeTasks → пустой дайджест', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true }),
+      now: () => 0,
+    });
+    const outcome = await executors.digest(task({ kind: 'digest' }));
+    assert.match(String(outcome.details.text), /Незакрытых обещаний нет/);
+  });
+});
+
 describe('makeExecutors — note', () => {
   it('возвращает свой текст', async () => {
     const executors = makeExecutors({

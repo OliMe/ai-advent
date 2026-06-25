@@ -95,6 +95,7 @@ export function createDefaultScheduler(storePath: string): Scheduler {
     agentRunner: tryLoadAgentRunner(),
     systemReaders: nodeSystemReaders,
     history: taskId => scheduler.getTask(taskId)?.runs ?? [],
+    activeTasks: () => scheduler.listTasks(),
   });
   scheduler = new Scheduler({
     store,

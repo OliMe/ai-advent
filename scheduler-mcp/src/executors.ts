@@ -1,6 +1,7 @@
 import type { Task, TaskKind, TaskRun } from './types.ts';
 import { collectSystemMetrics, type SystemReaders } from './system-metrics.ts';
 import { aggregateMetrics, formatReport } from './aggregate.ts';
+import { formatPromisesDigest } from './digest.ts';
 
 /** Минимальный ответ HTTP, нужный исполнителям (json — для чтения /metrics). */
 export interface HttpResponseLike {
@@ -37,6 +38,8 @@ export interface ExecutorDeps {
   systemReaders?: SystemReaders;
   /** Доступ к истории запусков задачи для kind=report. */
   history?: (taskId: string) => TaskRun[];
+  /** Текущие задачи (для kind=digest — дайджест незакрытых обещаний). */
+  activeTasks?: () => Task[];
 }
 
 /** Текст ошибки из неизвестного значения. */
@@ -142,6 +145,11 @@ export function makeExecutors(deps: ExecutorDeps): Record<TaskKind, Executor> {
         summary: `отчёт: ${aggregate.count} замер(ов)`,
         details: { text: formatReport(aggregate) },
       };
+    },
+    digest: async () => {
+      const tasks = deps.activeTasks === undefined ? [] : deps.activeTasks();
+      const text = formatPromisesDigest(tasks);
+      return { ok: true, summary: text.split('\n')[0], details: { text } };
     },
   };
 }

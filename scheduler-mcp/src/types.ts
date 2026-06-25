@@ -12,7 +12,7 @@ export type Schedule =
  * system_metrics — снимок метрик VPS (+ опц. доступность url); report — агрегат по серии
  * метрик другой задачи (targetTaskId) (Фаза 3).
  */
-export type TaskKind = 'http_check' | 'note' | 'agent' | 'system_metrics' | 'report';
+export type TaskKind = 'http_check' | 'note' | 'agent' | 'system_metrics' | 'report' | 'digest';
 
 /** Канал доставки результата запуска. inbox — только в историю; telegram — ещё и в Telegram. */
 export type DeliveryChannel = 'inbox' | 'telegram';
