@@ -38,7 +38,14 @@ describe('aggregateMetrics', () => {
       peakCpuPercent: 30,
       diskFreePercent: 65,
       avgLatencyMs: 150,
+      maxRequests: null,
     });
+  });
+
+  it('число запросов OCR попадает в сводку (макс)', () => {
+    const aggregate = aggregateMetrics([run({ requests: 10 }), run({ requests: 42 })]);
+    assert.equal(aggregate.maxRequests, 42);
+    assert.match(formatReport(aggregate), /запросов к OCR \(макс\.\): 42/);
   });
 
   it('пустая серия → нули/null и отчёт «нет данных»', () => {
@@ -50,6 +57,7 @@ describe('aggregateMetrics', () => {
       peakCpuPercent: null,
       diskFreePercent: null,
       avgLatencyMs: null,
+      maxRequests: null,
     });
     assert.match(formatReport(aggregate), /Данных для отчёта пока нет/);
   });

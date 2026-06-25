@@ -2,10 +2,11 @@ import type { Task, TaskKind, TaskRun } from './types.ts';
 import { collectSystemMetrics, type SystemReaders } from './system-metrics.ts';
 import { aggregateMetrics, formatReport } from './aggregate.ts';
 
-/** Минимальный ответ HTTP, нужный исполнителю http_check. */
+/** Минимальный ответ HTTP, нужный исполнителям (json — для чтения /metrics). */
 export interface HttpResponseLike {
   status: number;
   ok: boolean;
+  json?(): Promise<unknown>;
 }
 
 /** Функция HTTP-запроса (шов для тестов; реальная — глобальный fetch). */
@@ -112,6 +113,17 @@ export function makeExecutors(deps: ExecutorDeps): Record<TaskKind, Executor> {
           details.latencyMs = deps.now() - startedAt;
           details.error = errorMessage(error);
           availabilityNote = `, ${task.url} недоступен`;
+        }
+      }
+      if (task.metricsUrl) {
+        try {
+          const response = await deps.fetchFn(task.metricsUrl, { method: 'GET' });
+          const data = (await response.json?.()) as { requests?: unknown } | undefined;
+          if (data !== undefined && typeof data.requests === 'number') {
+            details.requests = data.requests;
+          }
+        } catch {
+          // метрики недоступны — пропускаем
         }
       }
       return {

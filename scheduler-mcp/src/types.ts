@@ -30,6 +30,8 @@ export interface Task {
   kind: TaskKind;
   /** Цель для http_check (URL). */
   url?: string;
+  /** URL эндпоинта метрик (например /metrics OCR) для system_metrics — читаем поле requests. */
+  metricsUrl?: string;
   /** Текст для note. */
   text?: string;
   /** Инструкция на естественном языке для kind=agent. */

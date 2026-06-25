@@ -324,6 +324,17 @@ describe('Scheduler — доставка и agent', () => {
     assert.equal(task.deliver, 'telegram');
   });
 
+  it('system_metrics с metricsUrl сохраняет его', () => {
+    const task = makeScheduler().scheduleTask({
+      title: 'Метрики',
+      kind: 'system_metrics',
+      url: 'https://smartnfree.ru/mcp',
+      metricsUrl: 'https://smartnfree.ru/metrics',
+      schedule: { type: 'interval', everySeconds: 600 },
+    });
+    assert.equal(task.metricsUrl, 'https://smartnfree.ru/metrics');
+  });
+
   it('report: требует targetTaskId; создаётся с ним', () => {
     const scheduler = makeScheduler();
     assert.throws(

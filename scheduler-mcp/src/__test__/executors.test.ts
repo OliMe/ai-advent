@@ -201,6 +201,57 @@ describe('makeExecutors — system_metrics', () => {
     assert.equal(outcome.ok, false);
     assert.match(outcome.summary, /не настроен/);
   });
+
+  it('metricsUrl: число requests попадает в details', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true, json: async () => ({ requests: 7 }) }),
+      now: () => 0,
+      systemReaders,
+    });
+    const outcome = await executors.system_metrics(
+      task({ kind: 'system_metrics', metricsUrl: 'https://e/metrics' }),
+    );
+    assert.equal(outcome.details.requests, 7);
+  });
+
+  it('metricsUrl: нечисловой requests игнорируется', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true, json: async () => ({ requests: 'x' }) }),
+      now: () => 0,
+      systemReaders,
+    });
+    const outcome = await executors.system_metrics(
+      task({ kind: 'system_metrics', metricsUrl: 'https://e/metrics' }),
+    );
+    assert.equal(outcome.details.requests, undefined);
+  });
+
+  it('metricsUrl: ответ без json → без requests', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true }),
+      now: () => 0,
+      systemReaders,
+    });
+    const outcome = await executors.system_metrics(
+      task({ kind: 'system_metrics', metricsUrl: 'https://e/metrics' }),
+    );
+    assert.equal(outcome.details.requests, undefined);
+  });
+
+  it('metricsUrl: ошибка запроса проглатывается', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => {
+        throw new Error('нет связи');
+      },
+      now: () => 0,
+      systemReaders,
+    });
+    const outcome = await executors.system_metrics(
+      task({ kind: 'system_metrics', metricsUrl: 'https://e/metrics' }),
+    );
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.details.requests, undefined);
+  });
 });
 
 describe('makeExecutors — report', () => {

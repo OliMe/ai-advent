@@ -64,12 +64,14 @@ export function createServer(scheduler: Scheduler): McpServer {
         'координаты для погоды передавай прямо в instruction). schedule: {type:"interval",everySeconds} ' +
         '| {type:"daily",at:"HH:MM",tzOffsetMinutes} | {type:"once",atIso:"ISO"}. tzOffsetMinutes — ' +
         'смещение пояса в минутах (GMT+5 = 300). deliver:"telegram" — присылать результат в Telegram. ' +
-        'Ещё виды: "system_metrics" (снимок метрик VPS; опц. url — проверять его доступность/латентность); ' +
+        'Ещё виды: "system_metrics" (снимок метрик VPS; опц. url — доступность/латентность; опц. ' +
+        'metricsUrl — эндпоинт счётчика, напр. https://smartnfree.ru/metrics, число запросов); ' +
         '"report" (нужен targetTaskId — агрегирует историю задачи-сборщика метрик в сводку).',
       inputSchema: {
         title: z.string(),
         kind: z.enum(['http_check', 'note', 'agent', 'system_metrics', 'report']),
         url: z.string().optional(),
+        metricsUrl: z.string().optional(),
         text: z.string().optional(),
         instruction: z.string().optional(),
         targetTaskId: z.string().optional(),
@@ -83,6 +85,7 @@ export function createServer(scheduler: Scheduler): McpServer {
           title: args.title,
           kind: args.kind,
           url: args.url,
+          metricsUrl: args.metricsUrl,
           text: args.text,
           instruction: args.instruction,
           targetTaskId: args.targetTaskId,

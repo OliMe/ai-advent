@@ -18,6 +18,7 @@ export interface ScheduleTaskInput {
   title: string;
   kind: TaskKind;
   url?: string;
+  metricsUrl?: string;
   text?: string;
   instruction?: string;
   targetTaskId?: string;
@@ -82,6 +83,7 @@ export class Scheduler {
       createdAt: toIso(nowMs),
       nextFireAt: toIso(nextFireTime(input.schedule, nowMs)),
       ...(input.url !== undefined ? { url: input.url } : {}),
+      ...(input.metricsUrl !== undefined ? { metricsUrl: input.metricsUrl } : {}),
       ...(input.text !== undefined ? { text: input.text } : {}),
       ...(input.instruction !== undefined ? { instruction: input.instruction } : {}),
       ...(input.targetTaskId !== undefined ? { targetTaskId: input.targetTaskId } : {}),

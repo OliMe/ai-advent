@@ -8,6 +8,7 @@ export interface MetricsAggregate {
   peakCpuPercent: number | null;
   diskFreePercent: number | null;
   avgLatencyMs: number | null;
+  maxRequests: number | null;
 }
 
 /** Число из details по ключу или null. */
@@ -53,6 +54,7 @@ export function aggregateMetrics(runs: TaskRun[]): MetricsAggregate {
     peakCpuPercent: peak(runs, 'cpuLoadPercent'),
     diskFreePercent: diskValues.length > 0 ? round1(diskValues[diskValues.length - 1]) : null,
     avgLatencyMs,
+    maxRequests: peak(runs, 'requests'),
   };
 }
 
@@ -72,6 +74,7 @@ export function formatReport(aggregate: MetricsAggregate): string {
     `• средняя задержка: ${show(aggregate.avgLatencyMs, ' мс')}\n` +
     `• свободно на диске: ${show(aggregate.diskFreePercent, '%')}\n` +
     `• пик памяти: ${show(aggregate.peakMemoryPercent, '%')}\n` +
-    `• пик CPU: ${show(aggregate.peakCpuPercent, '%')}`
+    `• пик CPU: ${show(aggregate.peakCpuPercent, '%')}\n` +
+    `• запросов к OCR (макс.): ${show(aggregate.maxRequests, '')}`
   );
 }
