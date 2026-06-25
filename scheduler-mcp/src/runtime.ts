@@ -12,6 +12,15 @@ import { BuiltinToolSet } from './builtin-tools.ts';
 import { loadTelegramConfig, sendTelegramMessage } from './telegram.ts';
 import { Scheduler, type DeliverFn } from './scheduler.ts';
 
+/** Жёсткий таймаут сетевых вызовов, чтобы недоступная сеть (напр. заблокированный Telegram)
+ * не вешала фоновый тик/исполнение. */
+const FETCH_TIMEOUT_MS = 15_000;
+
+/** fetch с таймаутом по AbortSignal. */
+function timedFetch(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+}
+
 /** Системный промпт server-side агента-исполнителя. */
 const AGENT_EXECUTOR_SYSTEM =
   'Ты — фоновый агент-исполнитель планировщика. Выполни инструкцию пользователя и верни ' +
@@ -28,7 +37,7 @@ function tryLoadAgentRunner(): AgentRunner | undefined {
     return undefined; // LLM не настроен — kind=agent будет сообщать об этом
   }
   const client = new ChatCompletionClient(config);
-  const tools = new BuiltinToolSet((url, init) => fetch(url, init));
+  const tools = new BuiltinToolSet(timedFetch);
   return {
     run: async instruction => {
       const conversation = new Conversation(client, {
@@ -56,7 +65,7 @@ function tryBuildDeliver(): DeliverFn | undefined {
     }
     const body = typeof run.details.text === 'string' ? `\n\n${run.details.text}` : '';
     const message = `🗓 ${task.title}\n${run.summary}${body}`;
-    await sendTelegramMessage(telegram, message, (url, init) => fetch(url, init));
+    await sendTelegramMessage(telegram, message, timedFetch);
   };
 }
 
@@ -64,7 +73,7 @@ function tryBuildDeliver(): DeliverFn | undefined {
 export function createDefaultScheduler(storePath: string): Scheduler {
   const store = new FileTaskStore(storePath);
   const executors = makeExecutors({
-    fetchFn: (url, init) => fetch(url, init),
+    fetchFn: timedFetch,
     now: () => Date.now(),
     agentRunner: tryLoadAgentRunner(),
   });

@@ -1,83 +1,54 @@
-/** Прогноз погоды на день (из Open-Meteo, без ключа). */
+/** Текущая погода (компактный ответ wttr.in). */
 export interface WeatherForecast {
-  tempMaxC: number;
-  tempMinC: number;
-  precipitationProbabilityPercent: number;
+  temperatureC: number;
+  precipitationMm: number;
   description: string;
 }
 
 /** Минимальный HTTP-клиент для запроса погоды (шов для тестов). */
-export type WeatherFetch = (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
+export type WeatherFetch = (url: string) => Promise<{ ok: boolean; text(): Promise<string> }>;
 
-/** Расшифровка кода погоды Open-Meteo (WMO) на русский. */
-const WEATHER_CODE_RU: Record<number, string> = {
-  0: 'ясно',
-  1: 'преимущественно ясно',
-  2: 'переменная облачность',
-  3: 'пасмурно',
-  45: 'туман',
-  48: 'изморозь',
-  51: 'слабая морось',
-  53: 'морось',
-  55: 'сильная морось',
-  61: 'слабый дождь',
-  63: 'дождь',
-  65: 'сильный дождь',
-  71: 'слабый снег',
-  73: 'снег',
-  75: 'сильный снег',
-  80: 'ливни',
-  81: 'ливни',
-  82: 'сильные ливни',
-  95: 'гроза',
-  96: 'гроза с градом',
-  99: 'сильная гроза с градом',
-};
-
-/** Человекочитаемое описание кода погоды. */
-function describeWeatherCode(code: number): string {
-  return WEATHER_CODE_RU[code] ?? `код погоды ${code}`;
+/** Первое число (возможно дробное/отрицательное) из строки вроде «+19°C» или null. */
+function firstNumber(field: string): number | null {
+  const match = field.match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : null;
 }
 
-/** Первый числовой элемент массива из произвольного значения или null. */
-function firstNumber(value: unknown): number | null {
-  if (Array.isArray(value) && typeof value[0] === 'number') {
-    return value[0];
+/**
+ * Разбирает компактный ответ wttr.in вида «<описание>|<температура>|<осадки>» (формат
+ * `%C|%t|%p`). Бросает при неожиданной структуре или отсутствии температуры.
+ */
+export function parseForecast(text: string): WeatherForecast {
+  const parts = text.trim().split('|');
+  if (parts.length < 3) {
+    throw new Error('Неожиданный ответ wttr.in.');
   }
-  return null;
-}
-
-/** Разбирает ответ Open-Meteo в прогноз; бросает при неожиданной структуре. */
-export function parseForecast(data: unknown): WeatherForecast {
-  const daily = (data as { daily?: Record<string, unknown> } | null)?.daily;
-  const tempMaxC = firstNumber(daily?.temperature_2m_max);
-  const tempMinC = firstNumber(daily?.temperature_2m_min);
-  const precipitation = firstNumber(daily?.precipitation_probability_max);
-  const code = firstNumber(daily?.weather_code);
-  if (tempMaxC === null || tempMinC === null || precipitation === null || code === null) {
-    throw new Error('Неожиданный ответ Open-Meteo (нет дневного прогноза).');
+  const temperatureC = firstNumber(parts[1]);
+  if (temperatureC === null) {
+    throw new Error('Неожиданный ответ wttr.in (нет температуры).');
   }
   return {
-    tempMaxC,
-    tempMinC,
-    precipitationProbabilityPercent: precipitation,
-    description: describeWeatherCode(code),
+    temperatureC,
+    precipitationMm: firstNumber(parts[2]) ?? 0,
+    description: parts[0].trim(),
   };
 }
 
-/** Запрашивает прогноз на день по координатам через Open-Meteo. */
+/**
+ * Запрашивает текущую погоду по координатам через wttr.in (без ключа, компактный формат с
+ * русскими описаниями). Лёгкий формат `%C|%t|%p` отвечает быстро (в отличие от тяжёлого j1).
+ */
 export async function fetchWeather(
   latitude: number,
   longitude: number,
   fetchFn: WeatherFetch,
 ): Promise<WeatherForecast> {
-  const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
-    '&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code' +
-    '&timezone=auto&forecast_days=1';
-  const response = await fetchFn(url);
+  const format = encodeURIComponent('%C|%t|%p');
+  const response = await fetchFn(
+    `https://wttr.in/${latitude},${longitude}?format=${format}&lang=ru`,
+  );
   if (!response.ok) {
-    throw new Error('Open-Meteo вернул ответ с ошибкой.');
+    throw new Error('wttr.in вернул ответ с ошибкой.');
   }
-  return parseForecast(await response.json());
+  return parseForecast(await response.text());
 }

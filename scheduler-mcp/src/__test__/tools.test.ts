@@ -19,7 +19,11 @@ function executors(): Record<TaskKind, Executor> {
   return {
     http_check: async () => ({ ok: false, summary: 'недоступен', details: {} }),
     note: async task => ({ ok: true, summary: task.text ?? '', details: {} }),
-    agent: async task => ({ ok: true, summary: `итог: ${task.instruction ?? ''}`, details: {} }),
+    agent: async task => ({
+      ok: true,
+      summary: 'Итог',
+      details: { text: `Полный ответ: ${task.instruction ?? ''}` },
+    }),
   };
 }
 
@@ -144,6 +148,17 @@ describe('handleCancelTask / Pause / Resume / RunNow', () => {
     assert.match(handleResumeTask(scheduler, 'нет'), /не найдена/);
     assert.match(await handleRunNow(scheduler, 'нет'), /не найдена/);
     assert.match(handleCancelTask(scheduler, 'нет'), /не найдена/);
+  });
+
+  it('agent-результат показывает полный текст из details.text', async () => {
+    const scheduler = makeScheduler({ executors: executors() });
+    const task = scheduler.scheduleTask({
+      title: 'Погода',
+      kind: 'agent',
+      instruction: 'рекомендации',
+      schedule: { type: 'interval', everySeconds: 5 },
+    });
+    assert.match(await handleRunNow(scheduler, task.id), /Полный ответ: рекомендации/);
   });
 });
 

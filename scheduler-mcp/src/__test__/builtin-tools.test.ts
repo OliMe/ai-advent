@@ -19,14 +19,7 @@ function fakeFetch(
   };
 }
 
-const forecastJson = {
-  daily: {
-    temperature_2m_max: [15],
-    temperature_2m_min: [8],
-    precipitation_probability_max: [70],
-    weather_code: [2],
-  },
-};
+const weatherBody = 'Переменная облачность|+19°C|0.0mm';
 
 describe('BuiltinToolSet.specs', () => {
   it('отдаёт get_weather и http_get', () => {
@@ -37,13 +30,13 @@ describe('BuiltinToolSet.specs', () => {
 
 describe('BuiltinToolSet.call — get_weather', () => {
   it('по координатам возвращает сводку погоды', async () => {
-    const tools = new BuiltinToolSet(fakeFetch({ json: forecastJson }));
+    const tools = new BuiltinToolSet(fakeFetch({ body: weatherBody }));
     const result = await tools.call('get_weather', { latitude: 56.85, longitude: 60.61 });
-    assert.match(result, /Погода сегодня: переменная облачность, от 8°C до 15°C/);
+    assert.match(result, /Погода сейчас: Переменная облачность, 19°C, осадки 0 мм/);
   });
 
   it('без числовых координат — подсказка', async () => {
-    const tools = new BuiltinToolSet(fakeFetch({ json: forecastJson }));
+    const tools = new BuiltinToolSet(fakeFetch({ body: weatherBody }));
     assert.match(
       await tools.call('get_weather', { latitude: 'x' }),
       /числовые latitude и longitude/,

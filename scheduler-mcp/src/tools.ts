@@ -27,9 +27,10 @@ function describeTask(task: Task): string {
   return `${task.id} «${task.title}» [${task.kind}, ${task.status}] ${describeSchedule(task.schedule)}; след.: ${next}`;
 }
 
-/** Однострочное описание запуска. */
+/** Описание запуска: полный текст (для agent — в details.text), иначе краткая сводка. */
 function describeRun(run: TaskRun): string {
-  return `${run.firedAt} ${run.ok ? '✓' : '✗'} «${run.taskTitle}»: ${run.summary}`;
+  const body = typeof run.details.text === 'string' ? run.details.text : run.summary;
+  return `${run.firedAt} ${run.ok ? '✓' : '✗'} «${run.taskTitle}»: ${body}`;
 }
 
 /** Создаёт задачу; при ошибке валидации возвращает текст ошибки (агент его передаст). */

@@ -75,8 +75,8 @@ export class BuiltinToolSet implements ToolSet {
     try {
       const forecast = await fetchWeather(latitude, longitude, this.fetchFn);
       return (
-        `Погода сегодня: ${forecast.description}, от ${forecast.tempMinC}°C до ${forecast.tempMaxC}°C, ` +
-        `вероятность осадков ${forecast.precipitationProbabilityPercent}%.`
+        `Погода сейчас: ${forecast.description}, ${forecast.temperatureC}°C, ` +
+        `осадки ${forecast.precipitationMm} мм.`
       );
     } catch (error) {
       return `Не удалось получить погоду: ${errorMessage(error)}`;
