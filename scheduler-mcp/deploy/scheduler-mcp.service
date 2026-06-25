@@ -1,0 +1,23 @@
+[Unit]
+Description=scheduler-mcp — MCP-сервер планировщика задач (Streamable HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Каталог с исходниками (src/) и установленными зависимостями (node_modules/).
+WorkingDirectory=/opt/scheduler-mcp
+# Порт, bearer-токен, путь хранилища, период тика: PORT, MCP_BEARER_TOKEN,
+# SCHEDULER_STORE_PATH, SCHEDULER_TICK_MS.
+EnvironmentFile=/opt/scheduler-mcp/.env
+ExecStart=/usr/bin/node src/http.ts
+Restart=on-failure
+RestartSec=3
+# Минимальная изоляция. Состояние пишется в SCHEDULER_STORE_PATH — держите его внутри
+# ReadWritePaths (по умолчанию /opt/scheduler-mcp/state.json).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/scheduler-mcp
+
+[Install]
+WantedBy=multi-user.target
