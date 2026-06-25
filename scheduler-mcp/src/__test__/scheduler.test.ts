@@ -323,4 +323,24 @@ describe('Scheduler — доставка и agent', () => {
     assert.equal(task.instruction, 'прогноз и рекомендации');
     assert.equal(task.deliver, 'telegram');
   });
+
+  it('report: требует targetTaskId; создаётся с ним', () => {
+    const scheduler = makeScheduler();
+    assert.throws(
+      () =>
+        scheduler.scheduleTask({
+          title: 'отчёт',
+          kind: 'report',
+          schedule: { type: 'interval', everySeconds: 5 },
+        }),
+      /targetTaskId/,
+    );
+    const task = scheduler.scheduleTask({
+      title: 'отчёт',
+      kind: 'report',
+      targetTaskId: 'metrics-1',
+      schedule: { type: 'daily', at: '09:00', tzOffsetMinutes: 300 },
+    });
+    assert.equal(task.targetTaskId, 'metrics-1');
+  });
 });

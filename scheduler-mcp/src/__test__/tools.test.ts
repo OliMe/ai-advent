@@ -25,6 +25,8 @@ function executors(): Record<TaskKind, Executor> {
       summary: 'Итог',
       details: { text: `Полный ответ: ${task.instruction ?? ''}` },
     }),
+    system_metrics: async () => ({ ok: true, summary: 'metrics', details: {} }),
+    report: async () => ({ ok: true, summary: 'report', details: { text: 'отчёт' } }),
   };
 }
 

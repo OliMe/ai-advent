@@ -63,13 +63,16 @@ export function createServer(scheduler: Scheduler): McpServer {
         'естественном языке, её исполнит LLM на сервере с инструментами get_weather/http_get; ' +
         'координаты для погоды передавай прямо в instruction). schedule: {type:"interval",everySeconds} ' +
         '| {type:"daily",at:"HH:MM",tzOffsetMinutes} | {type:"once",atIso:"ISO"}. tzOffsetMinutes — ' +
-        'смещение пояса в минутах (GMT+5 = 300). deliver:"telegram" — присылать результат в Telegram.',
+        'смещение пояса в минутах (GMT+5 = 300). deliver:"telegram" — присылать результат в Telegram. ' +
+        'Ещё виды: "system_metrics" (снимок метрик VPS; опц. url — проверять его доступность/латентность); ' +
+        '"report" (нужен targetTaskId — агрегирует историю задачи-сборщика метрик в сводку).',
       inputSchema: {
         title: z.string(),
-        kind: z.enum(['http_check', 'note', 'agent']),
+        kind: z.enum(['http_check', 'note', 'agent', 'system_metrics', 'report']),
         url: z.string().optional(),
         text: z.string().optional(),
         instruction: z.string().optional(),
+        targetTaskId: z.string().optional(),
         deliver: z.enum(['inbox', 'telegram']).optional(),
         schedule: z.object(scheduleShape),
       },
@@ -82,6 +85,7 @@ export function createServer(scheduler: Scheduler): McpServer {
           url: args.url,
           text: args.text,
           instruction: args.instruction,
+          targetTaskId: args.targetTaskId,
           deliver: args.deliver,
           schedule: toSchedule(args.schedule),
         }),

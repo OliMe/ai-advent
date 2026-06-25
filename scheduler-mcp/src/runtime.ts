@@ -5,12 +5,27 @@
  * scheduler/executors/schedule/task-store/builtin-tools/weather/telegram).
  */
 import { randomBytes } from 'node:crypto';
+import { statfsSync } from 'node:fs';
+import { totalmem, freemem, loadavg, cpus } from 'node:os';
 import { ChatCompletionClient, Conversation, loadConfig } from '../../core/src/index.ts';
 import { FileTaskStore } from './task-store.ts';
 import { makeExecutors, type AgentRunner } from './executors.ts';
 import { BuiltinToolSet } from './builtin-tools.ts';
+import type { SystemReaders } from './system-metrics.ts';
 import { loadTelegramConfig, sendTelegramMessage } from './telegram.ts';
 import { Scheduler, type DeliverFn } from './scheduler.ts';
+
+/** Реальные источники системных метрик поверх node:os/fs. */
+const nodeSystemReaders: SystemReaders = {
+  totalMemoryBytes: () => totalmem(),
+  freeMemoryBytes: () => freemem(),
+  loadAverage1m: () => loadavg()[0],
+  cpuCount: () => cpus().length,
+  diskFreePercent: () => {
+    const stats = statfsSync('/');
+    return (Number(stats.bavail) / Number(stats.blocks)) * 100;
+  },
+};
 
 /** Жёсткий таймаут сетевых вызовов, чтобы недоступная сеть (напр. заблокированный Telegram)
  * не вешала фоновый тик/исполнение. */
@@ -72,18 +87,23 @@ function tryBuildDeliver(): DeliverFn | undefined {
 /** Создаёт планировщик с файловым хранилищем и реальными зависимостями. */
 export function createDefaultScheduler(storePath: string): Scheduler {
   const store = new FileTaskStore(storePath);
+  // history для kind=report — поздняя привязка к ещё не созданному движку (вызовется позже).
+  let scheduler: Scheduler;
   const executors = makeExecutors({
     fetchFn: timedFetch,
     now: () => Date.now(),
     agentRunner: tryLoadAgentRunner(),
+    systemReaders: nodeSystemReaders,
+    history: taskId => scheduler.getTask(taskId)?.runs ?? [],
   });
-  return new Scheduler({
+  scheduler = new Scheduler({
     store,
     executors,
     now: () => Date.now(),
     idFactory: () => randomBytes(6).toString('hex'),
     deliver: tryBuildDeliver(),
   });
+  return scheduler;
 }
 
 /** Запускает фоновый тик; пропускает запуск, если предыдущий ещё идёт. */

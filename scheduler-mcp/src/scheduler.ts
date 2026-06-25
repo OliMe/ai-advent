@@ -20,6 +20,7 @@ export interface ScheduleTaskInput {
   url?: string;
   text?: string;
   instruction?: string;
+  targetTaskId?: string;
   deliver?: DeliveryChannel;
   schedule: Schedule;
 }
@@ -66,6 +67,9 @@ export class Scheduler {
     if (input.kind === 'agent' && !input.instruction?.trim()) {
       throw new Error('Для agent нужна непустая instruction.');
     }
+    if (input.kind === 'report' && !input.targetTaskId?.trim()) {
+      throw new Error('Для report нужен targetTaskId (задача-сборщик метрик).');
+    }
     validateSchedule(input.schedule);
     const nowMs = this.deps.now();
     const task: Task = {
@@ -80,6 +84,7 @@ export class Scheduler {
       ...(input.url !== undefined ? { url: input.url } : {}),
       ...(input.text !== undefined ? { text: input.text } : {}),
       ...(input.instruction !== undefined ? { instruction: input.instruction } : {}),
+      ...(input.targetTaskId !== undefined ? { targetTaskId: input.targetTaskId } : {}),
     };
     this.state.tasks.push(task);
     this.persist();

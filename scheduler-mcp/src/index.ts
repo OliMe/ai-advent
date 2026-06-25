@@ -21,6 +21,10 @@ export type {
 } from './executors.ts';
 export { fetchWeather, parseForecast } from './weather.ts';
 export type { WeatherForecast, WeatherFetch } from './weather.ts';
+export { collectSystemMetrics } from './system-metrics.ts';
+export type { SystemMetrics, SystemReaders } from './system-metrics.ts';
+export { aggregateMetrics, formatReport } from './aggregate.ts';
+export type { MetricsAggregate } from './aggregate.ts';
 export { BuiltinToolSet } from './builtin-tools.ts';
 export type { BuiltinFetch } from './builtin-tools.ts';
 export { loadTelegramConfig, sendTelegramMessage } from './telegram.ts';

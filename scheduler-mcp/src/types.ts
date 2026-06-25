@@ -7,8 +7,12 @@ export type Schedule =
   | { type: 'daily'; at: string; tzOffsetMinutes: number }
   | { type: 'once'; atIso: string };
 
-/** Что делает задача при срабатывании. agent — NL-инструкция исполняется LLM (Фаза 2). */
-export type TaskKind = 'http_check' | 'note' | 'agent';
+/**
+ * Что делает задача при срабатывании. agent — NL-инструкция исполняется LLM (Фаза 2);
+ * system_metrics — снимок метрик VPS (+ опц. доступность url); report — агрегат по серии
+ * метрик другой задачи (targetTaskId) (Фаза 3).
+ */
+export type TaskKind = 'http_check' | 'note' | 'agent' | 'system_metrics' | 'report';
 
 /** Канал доставки результата запуска. inbox — только в историю; telegram — ещё и в Telegram. */
 export type DeliveryChannel = 'inbox' | 'telegram';
@@ -30,6 +34,8 @@ export interface Task {
   text?: string;
   /** Инструкция на естественном языке для kind=agent. */
   instruction?: string;
+  /** Целевая задача-сборщик метрик для kind=report (агрегируем её историю). */
+  targetTaskId?: string;
   /** Канал доставки результата (по умолчанию inbox). */
   deliver: DeliveryChannel;
   /** Расписание срабатываний. */

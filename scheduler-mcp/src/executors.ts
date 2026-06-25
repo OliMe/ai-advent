@@ -1,4 +1,6 @@
-import type { Task, TaskKind } from './types.ts';
+import type { Task, TaskKind, TaskRun } from './types.ts';
+import { collectSystemMetrics, type SystemReaders } from './system-metrics.ts';
+import { aggregateMetrics, formatReport } from './aggregate.ts';
 
 /** Минимальный ответ HTTP, нужный исполнителю http_check. */
 export interface HttpResponseLike {
@@ -25,11 +27,15 @@ export interface AgentRunner {
   run(instruction: string): Promise<string>;
 }
 
-/** Зависимости исполнителей: HTTP-клиент, часы и (опц.) LLM-раннер для kind=agent. */
+/** Зависимости исполнителей: HTTP-клиент, часы, (опц.) LLM-раннер, источники метрик и история. */
 export interface ExecutorDeps {
   fetchFn: FetchLike;
   now: () => number;
   agentRunner?: AgentRunner;
+  /** Источники системных метрик для kind=system_metrics. */
+  systemReaders?: SystemReaders;
+  /** Доступ к истории запусков задачи для kind=report. */
+  history?: (taskId: string) => TaskRun[];
 }
 
 /** Текст ошибки из неизвестного значения. */
@@ -86,6 +92,44 @@ export function makeExecutors(deps: ExecutorDeps): Record<TaskKind, Executor> {
           details: { error: errorMessage(error) },
         };
       }
+    },
+    system_metrics: async task => {
+      if (deps.systemReaders === undefined) {
+        return { ok: false, summary: 'сбор метрик не настроен на сервере.', details: {} };
+      }
+      const metrics = collectSystemMetrics(deps.systemReaders);
+      const details: Record<string, unknown> = { ...metrics };
+      let availabilityNote = '';
+      if (task.url) {
+        const startedAt = deps.now();
+        try {
+          const response = await deps.fetchFn(task.url, { method: 'GET' });
+          details.available = response.ok;
+          details.latencyMs = deps.now() - startedAt;
+          availabilityNote = `, ${task.url} ${response.ok ? 'ok' : 'down'}`;
+        } catch (error) {
+          details.available = false;
+          details.latencyMs = deps.now() - startedAt;
+          details.error = errorMessage(error);
+          availabilityNote = `, ${task.url} недоступен`;
+        }
+      }
+      return {
+        ok: true,
+        summary:
+          `RAM ${metrics.memoryUsedPercent}%, CPU ${metrics.cpuLoadPercent}%, ` +
+          `диск своб ${metrics.diskFreePercent}%${availabilityNote}`,
+        details,
+      };
+    },
+    report: async task => {
+      const runs = deps.history === undefined ? [] : deps.history(task.targetTaskId ?? '');
+      const aggregate = aggregateMetrics(runs);
+      return {
+        ok: true,
+        summary: `отчёт: ${aggregate.count} замер(ов)`,
+        details: { text: formatReport(aggregate) },
+      };
     },
   };
 }

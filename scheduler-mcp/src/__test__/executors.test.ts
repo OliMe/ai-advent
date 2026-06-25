@@ -128,6 +128,127 @@ describe('makeExecutors — agent', () => {
   });
 });
 
+describe('makeExecutors — system_metrics', () => {
+  const systemReaders = {
+    totalMemoryBytes: () => 1000,
+    freeMemoryBytes: () => 500,
+    loadAverage1m: () => 1,
+    cpuCount: () => 2,
+    diskFreePercent: () => 80,
+  };
+
+  it('без url — только метрики системы', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true }),
+      now: () => 0,
+      systemReaders,
+    });
+    const outcome = await executors.system_metrics(task({ kind: 'system_metrics' }));
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.details.memoryUsedPercent, 50);
+    assert.equal(outcome.details.available, undefined);
+  });
+
+  it('с url — доступность и латентность (ok)', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true }),
+      now: sequenceClock([0, 40]),
+      systemReaders,
+    });
+    const outcome = await executors.system_metrics(
+      task({ kind: 'system_metrics', url: 'https://e/' }),
+    );
+    assert.equal(outcome.details.available, true);
+    assert.equal(outcome.details.latencyMs, 40);
+    assert.match(outcome.summary, /https:\/\/e\/ ok/);
+  });
+
+  it('с url — ответ не ok → down', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 500, ok: false }),
+      now: sequenceClock([0, 5]),
+      systemReaders,
+    });
+    const outcome = await executors.system_metrics(
+      task({ kind: 'system_metrics', url: 'https://e/' }),
+    );
+    assert.equal(outcome.details.available, false);
+    assert.match(outcome.summary, /https:\/\/e\/ down/);
+  });
+
+  it('с url — ошибка сети → недоступен', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => {
+        throw new Error('сбой');
+      },
+      now: sequenceClock([0, 5]),
+      systemReaders,
+    });
+    const outcome = await executors.system_metrics(
+      task({ kind: 'system_metrics', url: 'https://e/' }),
+    );
+    assert.equal(outcome.details.available, false);
+    assert.equal(outcome.details.error, 'сбой');
+    assert.match(outcome.summary, /недоступен/);
+  });
+
+  it('без systemReaders → сообщает, что сбор не настроен', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true }),
+      now: () => 0,
+    });
+    const outcome = await executors.system_metrics(task({ kind: 'system_metrics' }));
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.summary, /не настроен/);
+  });
+});
+
+describe('makeExecutors — report', () => {
+  const metricRun = (memoryUsedPercent: number): import('../index.ts').TaskRun => ({
+    id: 'r',
+    taskId: 'target',
+    taskTitle: 'Метрики',
+    firedAt: '2026-01-01T00:00:00.000Z',
+    ok: true,
+    summary: '',
+    details: { memoryUsedPercent },
+  });
+
+  it('агрегирует историю целевой задачи', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true }),
+      now: () => 0,
+      history: id => (id === 'target' ? [metricRun(60), metricRun(70)] : []),
+    });
+    const outcome = await executors.report(task({ kind: 'report', targetTaskId: 'target' }));
+    assert.match(String(outcome.details.text), /пик памяти: 70%/);
+    assert.match(outcome.summary, /2 замер/);
+  });
+
+  it('без history → пустой отчёт', async () => {
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true }),
+      now: () => 0,
+    });
+    const outcome = await executors.report(task({ kind: 'report', targetTaskId: 'x' }));
+    assert.match(String(outcome.details.text), /Данных для отчёта пока нет/);
+  });
+
+  it('без targetTaskId → запрашивает историю по пустому id', async () => {
+    let requested: string | null = null;
+    const executors = makeExecutors({
+      fetchFn: async () => ({ status: 200, ok: true }),
+      now: () => 0,
+      history: id => {
+        requested = id;
+        return [];
+      },
+    });
+    await executors.report(task({ kind: 'report' }));
+    assert.equal(requested, '');
+  });
+});
+
 describe('makeExecutors — note', () => {
   it('возвращает свой текст', async () => {
     const executors = makeExecutors({

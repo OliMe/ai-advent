@@ -48,6 +48,12 @@ export function trivialExecutors(): Record<TaskKind, Executor> {
     http_check: async () => ({ ok: true, summary: 'ok', details: {} }),
     note: async task => ({ ok: true, summary: task.text ?? '', details: {} }),
     agent: async task => ({ ok: true, summary: `agent: ${task.instruction ?? ''}`, details: {} }),
+    system_metrics: async () => ({
+      ok: true,
+      summary: 'metrics',
+      details: { memoryUsedPercent: 50 },
+    }),
+    report: async () => ({ ok: true, summary: 'report', details: { text: 'отчёт' } }),
   };
 }
 

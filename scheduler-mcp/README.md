@@ -16,13 +16,18 @@ MCP-сервер **планировщика отложенных и период
   (`core.Conversation`) с инструментами `get_weather` (Open-Meteo, без ключа) и `http_get`; доставка
   результата в **Telegram** (`deliver:"telegram"`, best-effort — инбокс остаётся источником правды).
   Требует `LLM_*` в `.env` (иначе `agent` сообщит, что LLM не настроен) и `TELEGRAM_*` для доставки.
-- **Фаза 3 (план):** сбор метрик + ежедневный отчёт; счётчик запросов в `yandex-ocr-mcp`.
+- **Фаза 3:** мониторинг. `system_metrics` — снимок метрик VPS (память/CPU/диск) и опц.
+  доступность/латентность `url`; `report` — агрегирует историю задачи-сборщика (targetTaskId) в
+  сводку (доступность %, пики RAM/CPU, свободный диск, средняя задержка). Связка: сборщик
+  (interval) + ежедневный `report` с `deliver`/через `--watch`. (Счётчик запросов в
+  `yandex-ocr-mcp` — на потом.)
 
 ## Инструменты
 
 | Инструмент | Назначение |
 | ---------- | ---------- |
-| `schedule_task` | Создать задачу: `kind` (`http_check`+`url` / `note`+`text` / `agent`+`instruction`), `schedule`, опц. `deliver:"telegram"`. |
+| `schedule_task` | Создать задачу: `kind` (`http_check`+`url` / `note`+`text` / `agent`+`instruction` / `system_metrics`(+опц.`url`) / `report`+`targetTaskId`), `schedule`, опц. `deliver:"telegram"`. |
+| `poll_results` | Для клиента-поллера (`llm-cli --watch`): JSON c запусками новее курсора `since`. |
 | `list_tasks` | Все задачи со статусом и следующим запуском. |
 | `get_task` | Подробности задачи + последние запуски. |
 | `cancel_task` / `pause_task` / `resume_task` | Удалить / пауза / возобновить. |
