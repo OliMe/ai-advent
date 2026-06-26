@@ -8,10 +8,17 @@ const okFetch =
   async () => ({ ok: true, json: async () => json });
 
 describe('resolveLocation', () => {
-  it('возвращает город и координаты', async () => {
-    const location = await resolveLocation(
-      okFetch({ city: 'Екатеринбург', latitude: 56.85, longitude: 60.61 }),
-    );
+  it('возвращает город и координаты, запрашивает ipwho.is', async () => {
+    let requested = '';
+    const fetchFn: LocationFetch = async url => {
+      requested = url;
+      return {
+        ok: true,
+        json: async () => ({ city: 'Екатеринбург', latitude: 56.85, longitude: 60.61 }),
+      };
+    };
+    const location = await resolveLocation(fetchFn);
+    assert.equal(requested, 'https://ipwho.is/');
     assert.deepEqual(location, { city: 'Екатеринбург', latitude: 56.85, longitude: 60.61 });
   });
 

@@ -15,7 +15,8 @@ export interface ResolvedLocation {
  * КЛИЕНТЕ: на сервере IP указывал бы на датацентр. Бросает при недоступности/неожиданном ответе.
  */
 export async function resolveLocation(fetchFn: LocationFetch = fetch): Promise<ResolvedLocation> {
-  const response = await fetchFn('https://ipapi.co/json/');
+  // ipwho.is: HTTPS, без ключа, поля latitude/longitude/city (ipapi.co упирался в RateLimited).
+  const response = await fetchFn('https://ipwho.is/');
   if (!response.ok) {
     throw new Error('сервис геолокации недоступен');
   }
