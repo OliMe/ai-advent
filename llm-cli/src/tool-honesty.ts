@@ -14,17 +14,24 @@ export const TOOL_HONESTY_DIRECTIVE =
 const ACTION_VERB = /(созда|добав|поставил|запланир|удал|отмен|перенёс|сдвинул)/i;
 /** Существительные, привязывающие заявление к планировщику. */
 const SCHEDULER_NOUN = /(напоминан|задач|планировщик)/i;
-/** Инструменты, реально меняющие состояние планировщика. */
-const ACTION_TOOL = /(schedule_task|cancel_task|run_now|pause_task|resume_task)/;
+/**
+ * Любой инструмент планировщика (изменяющий ИЛИ читающий). Если хоть один вызван, ответ обоснован
+ * реальными данными планировщика, и слова-глаголы в нём (в т.ч. внутри названий задач из списка,
+ * например «… на удаление сервиса …») — это данные, а не «фантомное» заявление.
+ */
+const SCHEDULER_TOOL =
+  /(schedule_task|cancel_task|run_now|pause_task|resume_task|list_tasks|get_task|get_history)/;
 
 /**
  * Похоже ли, что ответ заявляет действие в планировщике (создание/удаление и т.п.), хотя ни один
- * изменяющий инструмент в этом ходе не вызывался — признак «фантомного» вызова (галлюцинации).
+ * инструмент планировщика в этом ходе не вызывался — признак «фантомного» вызова (галлюцинации).
+ * Если вызывался любой инструмент планировщика (включая чтение списка) — не считаем фантомом, иначе
+ * глаголы в названиях задач из выдачи `list_tasks` дают ложные срабатывания.
  */
 export function claimsSchedulerActionWithoutCall(answer: string, calledTools: string[]): boolean {
   return (
     ACTION_VERB.test(answer) &&
     SCHEDULER_NOUN.test(answer) &&
-    !calledTools.some(name => ACTION_TOOL.test(name))
+    !calledTools.some(name => SCHEDULER_TOOL.test(name))
   );
 }

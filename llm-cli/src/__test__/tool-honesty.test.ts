@@ -8,11 +8,17 @@ describe('claimsSchedulerActionWithoutCall', () => {
     assert.equal(claimsSchedulerActionWithoutCall('Удалил задачу про отчёт', []), true);
   });
 
-  it('инструмент действительно вызван → false', () => {
+  it('изменяющий инструмент действительно вызван → false', () => {
     assert.equal(
       claimsSchedulerActionWithoutCall('Создал напоминание', ['scheduler__schedule_task']),
       false,
     );
+  });
+
+  it('вызван читающий инструмент (list_tasks) → false, даже если в данных есть глагол «удаление»', () => {
+    const answer =
+      'Вот задачи: «Уточнить про поезд на удаление сервиса gifts». Всего 7 активных задач.';
+    assert.equal(claimsSchedulerActionWithoutCall(answer, ['scheduler__list_tasks']), false);
   });
 
   it('нет глагола действия → false', () => {
