@@ -78,6 +78,7 @@ describe('Scheduler — список и поиск', () => {
           kind: 'note',
           text: 't',
           deliver: 'inbox',
+          notify: true,
           schedule: { type: 'interval', everySeconds: 10 },
           status: 'active',
           createdAt: '2026-06-25T00:00:00.000Z',
@@ -280,6 +281,30 @@ describe('Scheduler.getHistory', () => {
     assert.equal(newer.length, 1);
     assert.equal(newer[0].firedAt, new Date(2_000).toISOString());
   });
+
+  it('pollResults скрывает «тихие» задачи (notify=false), задачи без записи — показывает', async () => {
+    const scheduler = makeScheduler({ idFactory: counterIds() });
+    const quiet = scheduler.scheduleTask({
+      title: 'Метрики',
+      kind: 'system_metrics',
+      schedule: { type: 'interval', everySeconds: 5 },
+    }); // notify=false по умолчанию
+    const loud = scheduler.scheduleTask({
+      title: 'Напоминание',
+      kind: 'note',
+      text: 'n',
+      schedule: { type: 'interval', everySeconds: 5 },
+    }); // notify=true
+    await scheduler.runNow(quiet.id);
+    await scheduler.runNow(loud.id);
+    const polled = scheduler.pollResults();
+    assert.equal(polled.length, 1);
+    assert.equal(polled[0].taskId, loud.id);
+    scheduler.cancelTask(loud.id); // задача удалена — её запуск всё равно виден
+    const afterCancel = scheduler.pollResults();
+    assert.equal(afterCancel.length, 1);
+    assert.equal(afterCancel[0].taskId, loud.id);
+  });
 });
 
 describe('Scheduler — доставка и agent', () => {
@@ -333,6 +358,38 @@ describe('Scheduler — доставка и agent', () => {
       schedule: { type: 'interval', everySeconds: 600 },
     });
     assert.equal(task.metricsUrl, 'https://smartnfree.ru/metrics');
+  });
+
+  it('notify по умолчанию: false для system_metrics, true для прочих; переопределяется', () => {
+    const scheduler = makeScheduler();
+    const interval = { type: 'interval' as const, everySeconds: 5 };
+    assert.equal(
+      scheduler.scheduleTask({ title: 'M', kind: 'system_metrics', schedule: interval }).notify,
+      false,
+    );
+    assert.equal(
+      scheduler.scheduleTask({ title: 'N', kind: 'note', text: 'n', schedule: interval }).notify,
+      true,
+    );
+    assert.equal(
+      scheduler.scheduleTask({
+        title: 'M2',
+        kind: 'system_metrics',
+        notify: true,
+        schedule: interval,
+      }).notify,
+      true,
+    );
+    assert.equal(
+      scheduler.scheduleTask({
+        title: 'N2',
+        kind: 'note',
+        text: 'n',
+        notify: false,
+        schedule: interval,
+      }).notify,
+      false,
+    );
   });
 
   it('report: требует targetTaskId; создаётся с ним', () => {

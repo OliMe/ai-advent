@@ -67,7 +67,9 @@ export function createServer(scheduler: Scheduler): McpServer {
         'Ещё виды: "system_metrics" (снимок метрик VPS; опц. url — доступность/латентность; опц. ' +
         'metricsUrl — эндпоинт счётчика, напр. https://smartnfree.ru/metrics, число запросов); ' +
         '"report" (нужен targetTaskId — агрегирует историю задачи-сборщика метрик в сводку); ' +
-        '"digest" (дайджест незакрытых обещаний — список активных задач-напоминаний note).',
+        '"digest" (дайджест незакрытых обещаний — список активных задач-напоминаний note). ' +
+        'notify — слать ли результат в ленту --watch/уведомления: по умолчанию false для ' +
+        'system_metrics (шумный сбор) и true для остальных; можно переопределить.',
       inputSchema: {
         title: z.string(),
         kind: z.enum(['http_check', 'note', 'agent', 'system_metrics', 'report', 'digest']),
@@ -77,6 +79,7 @@ export function createServer(scheduler: Scheduler): McpServer {
         instruction: z.string().optional(),
         targetTaskId: z.string().optional(),
         deliver: z.enum(['inbox', 'telegram']).optional(),
+        notify: z.boolean().optional(),
         schedule: z.object(scheduleShape),
       },
     },
@@ -91,6 +94,7 @@ export function createServer(scheduler: Scheduler): McpServer {
           instruction: args.instruction,
           targetTaskId: args.targetTaskId,
           deliver: args.deliver,
+          notify: args.notify,
           schedule: toSchedule(args.schedule),
         }),
       ),

@@ -8,6 +8,7 @@ const task = (overrides: Partial<Task>): Task => ({
   title: 'задача',
   kind: 'note',
   deliver: 'inbox',
+  notify: true,
   schedule: { type: 'daily', at: '09:00', tzOffsetMinutes: 300 },
   status: 'active',
   createdAt: '2026-06-25T00:00:00.000Z',

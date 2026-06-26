@@ -9,6 +9,7 @@ function task(overrides: Partial<Task> = {}): Task {
     title: 'тест',
     kind: 'http_check',
     deliver: 'inbox',
+    notify: true,
     schedule: { type: 'interval', everySeconds: 10 },
     status: 'active',
     createdAt: '2026-06-25T00:00:00.000Z',

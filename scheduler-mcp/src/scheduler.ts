@@ -23,6 +23,8 @@ export interface ScheduleTaskInput {
   instruction?: string;
   targetTaskId?: string;
   deliver?: DeliveryChannel;
+  /** Уведомлять в --watch. По умолчанию: false для system_metrics, true для остальных. */
+  notify?: boolean;
   schedule: Schedule;
 }
 
@@ -78,6 +80,7 @@ export class Scheduler {
       title: input.title,
       kind: input.kind,
       deliver: input.deliver ?? 'inbox',
+      notify: input.notify ?? input.kind !== 'system_metrics',
       schedule: input.schedule,
       status: 'active',
       createdAt: toIso(nowMs),
@@ -152,11 +155,17 @@ export class Scheduler {
     return run;
   }
 
-  /** Запуски новее курсора (ISO firedAt), в хронологическом порядке — для поллинга клиентом. */
+  /**
+   * Запуски новее курсора (ISO firedAt) для поллинга клиентом (--watch). Исключаются запуски
+   * «тихих» задач (notify=false), чтобы не шуметь уведомлениями; в истории они остаются.
+   */
   pollResults(since?: string): TaskRun[] {
-    return since === undefined
-      ? [...this.state.runs]
-      : this.state.runs.filter(run => run.firedAt > since);
+    const recent =
+      since === undefined ? this.state.runs : this.state.runs.filter(run => run.firedAt > since);
+    return recent.filter(run => {
+      const task = this.state.tasks.find(item => item.id === run.taskId);
+      return task === undefined || task.notify;
+    });
   }
 
   /** История запусков (новые первыми), опц. по задаче и с ограничением количества. */

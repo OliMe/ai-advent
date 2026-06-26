@@ -40,6 +40,8 @@ export interface Task {
   targetTaskId?: string;
   /** Канал доставки результата (по умолчанию inbox). */
   deliver: DeliveryChannel;
+  /** Показывать ли результат в ленте --watch (системные уведомления). Шумные сборщики — false. */
+  notify: boolean;
   /** Расписание срабатываний. */
   schedule: Schedule;
   /** Текущее состояние. */
