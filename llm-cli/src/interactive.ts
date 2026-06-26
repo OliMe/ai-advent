@@ -46,6 +46,7 @@ import {
 import { CompositeToolSet } from './composite-tool-set.ts';
 import { LocationToolSet } from './location.ts';
 import { currentTimeContext } from './current-time.ts';
+import { TOOL_HONESTY_DIRECTIVE, claimsSchedulerActionWithoutCall } from './tool-honesty.ts';
 import { installClipboardPaste, type ClipboardImageReader } from './clipboard-image.ts';
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import {
@@ -66,18 +67,6 @@ import { describeError } from './errors.ts';
 
 /** Метка ответа модели в интерактивном режиме. */
 const ASSISTANT_LABEL = 'Ассистент';
-
-/**
- * Дисциплина инструментов: не выдумывать результаты вызовов. Без неё модель иногда «рапортует»
- * о созданной задаче/отправке, не вызвав инструмент, и придумывает идентификаторы.
- */
-const TOOL_HONESTY_DIRECTIVE =
-  'Строгое правило по инструментам: НЕ утверждай, что действие выполнено (задача создана, ' +
-  'запущена, УДАЛЕНА, отменена, поставлена на паузу или возобновлена, сообщение отправлено и ' +
-  'т.п.), если ты НЕ вызвал соответствующий инструмент (schedule_task/run_now/cancel_task/…) в ' +
-  'этом же ответе. Идентификаторы, статусы «удалено/создано» и любые результаты бери ТОЛЬКО из ' +
-  'ответов инструментов — не придумывай их. Нужно действие — сначала вызови инструмент, и лишь ' +
-  'потом сообщай о результате.';
 
 /** Параметры слоистой памяти для интерактивного режима. */
 export interface MemorySettings {
@@ -894,6 +883,8 @@ export async function runInteractive(
               leading.push({ role: 'system' as const, content: directive });
             }
             const withTools = [...leading, ...outgoing];
+            // Какие инструменты реально вызваны за этот ход — для проверки «фантомных» заявлений.
+            const calledTools: string[] = [];
             const result = await completeWithTools(
               client,
               withTools,
@@ -902,10 +893,20 @@ export async function runInteractive(
               limits,
               disableThinking,
               temperature,
-              reportToolCall,
+              (name, args) => {
+                calledTools.push(name);
+                reportToolCall(name, args);
+              },
             );
             usage = result.usage;
             output.write(`${ASSISTANT_LABEL}: ${result.content}\n\n`);
+            // Подстраховка: ассистент заявил действие в планировщике, не вызвав инструмент.
+            if (claimsSchedulerActionWithoutCall(result.content, calledTools)) {
+              output.write(
+                '⚠ Похоже, ассистент сообщил о действии в планировщике, но инструмент не ' +
+                  'вызывался — действие, скорее всего, НЕ выполнено. Проверьте: «покажи задачи».\n\n',
+              );
+            }
             return result.content;
           }
           if (stream) {

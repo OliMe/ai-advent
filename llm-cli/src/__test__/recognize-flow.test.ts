@@ -105,6 +105,38 @@ describe('интерактив — распознавание локальног
     assert.match(text(), /До встречи/);
   });
 
+  it('«фантомное» заявление действия без вызова инструмента → предупреждение', async t => {
+    // Модель «рапортует» о созданном напоминании, не вызвав schedule_task.
+    const client = clientWith(t, async () => ({
+      content: 'Создал два напоминания про Костю.',
+      usage: undefined,
+    }));
+    const mcp = {
+      toolSet: new McpToolSet(async () => ({
+        name: 'n',
+        tools: () => [],
+        call: async () => '',
+        close: async () => {},
+      })),
+      store: memoryStore(new Map()),
+    };
+    const { finished, text } = driveInteractive(
+      client,
+      ['напомни про Костю', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      undefined,
+      'window',
+      6,
+      undefined,
+      mcp,
+    );
+    await finished;
+    assert.match(text(), /⚠ Похоже, ассистент сообщил о действии в планировщике/);
+  });
+
   it('MCP включён без серверов → агентный путь (доступен только get_my_location)', async t => {
     // С подключённым MCP набор инструментов непуст всегда (клиентский get_my_location),
     // поэтому идём агентным циклом; модель не вызывает инструмент и сразу отвечает.

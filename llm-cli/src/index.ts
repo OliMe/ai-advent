@@ -47,6 +47,7 @@ export * from './recognize-local.ts';
 export * from './composite-tool-set.ts';
 export * from './location.ts';
 export * from './current-time.ts';
+export * from './tool-honesty.ts';
 export * from './clipboard-image.ts';
 export * from './inbox-poller.ts';
 export * from './notify.ts';
