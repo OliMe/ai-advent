@@ -50,6 +50,7 @@ import { TOOL_HONESTY_DIRECTIVE, claimsSchedulerActionWithoutCall } from './tool
 import { installClipboardPaste, type ClipboardImageReader } from './clipboard-image.ts';
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import { readlineConfirm, type ElicitationBridge } from './elicitation.ts';
+import { renderMarkdownForTerminal } from './markdown.ts';
 import {
   helpText,
   formatSessionList,
@@ -125,6 +126,8 @@ export async function runInteractive(
   clipboard: ClipboardImageReader | null = null,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
+  // Терминал ли вывод — от этого зависит, рендерить ли markdown ответа в ANSI (в пайпах/тестах нет).
+  const isTty = (output as Writable & { isTTY?: boolean }).isTTY === true;
   // Запрос подтверждения для операций вне песочницы (MCP elicitation): спрашиваем пользователя да/нет.
   mcp?.elicitationBridge?.setConfirm(
     readlineConfirm(readlineInterface.question.bind(readlineInterface), isAffirmative),
@@ -908,7 +911,9 @@ export async function runInteractive(
               },
             );
             usage = result.usage;
-            output.write(`${ASSISTANT_LABEL}: ${result.content}\n\n`);
+            output.write(
+              `${ASSISTANT_LABEL}: ${renderMarkdownForTerminal(result.content, isTty)}\n\n`,
+            );
             // Подстраховка: ассистент заявил действие в планировщике, не вызвав инструмент.
             if (claimsSchedulerActionWithoutCall(result.content, calledTools)) {
               output.write(
@@ -944,7 +949,9 @@ export async function runInteractive(
             temperature,
           );
           usage = result.usage;
-          output.write(`\n${ASSISTANT_LABEL}: ${result.content}\n\n`);
+          output.write(
+            `\n${ASSISTANT_LABEL}: ${renderMarkdownForTerminal(result.content, isTty)}\n\n`,
+          );
           return result.content;
         };
         // Жёсткий контроль инвариантов: если их нет — обычная генерация без оверхеда.

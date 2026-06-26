@@ -54,6 +54,7 @@ export * from './inbox-poller.ts';
 export * from './notify.ts';
 export * from './watch.ts';
 export * from './elicitation.ts';
+export * from './markdown.ts';
 export * from './interactive.ts';
 
 /** Точка входа: выбирает режим работы по аргументам командной строки. */
