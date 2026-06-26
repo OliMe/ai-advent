@@ -2,7 +2,7 @@ import * as readline from 'node:readline/promises';
 import type { TestContext } from 'node:test';
 import { PassThrough, Writable } from 'node:stream';
 import { runInteractive, type MemoryKind, type MemorySettings } from '../index.ts';
-import type { McpStore, ClipboardImageReader, ElicitationBridge } from '../index.ts';
+import type { McpStore, ClipboardImageReader, ElicitationBridge, VoiceInput } from '../index.ts';
 import type { McpToolSet } from '../../../mcp-client/src/index.ts';
 import { ChatCompletionClient, createSession, summarize } from '../../../core/src/index.ts';
 import type {
@@ -142,6 +142,7 @@ export function driveInteractive(
     elicitationBridge?: ElicitationBridge;
   } | null = null,
   clipboard: ClipboardImageReader | null = null,
+  voice: VoiceInput | null = null,
 ): { finished: Promise<void>; text: () => string } {
   const input = new PassThrough();
   let buffer = '';
@@ -155,6 +156,7 @@ export function driveInteractive(
       if (
         (text.includes('Вы: ') ||
           text.includes('(да/нет)') ||
+          text.includes('Enter — стоп') ||
           text.includes('Подтвердить завершение?')) &&
         next < lines.length
       ) {
@@ -183,6 +185,7 @@ export function driveInteractive(
     null,
     mcp,
     clipboard,
+    voice,
   );
   return { finished, text: () => buffer };
 }

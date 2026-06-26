@@ -26,6 +26,7 @@ import {
 import { FileMcpStore } from './mcp-store.ts';
 import { McpToolSet, connectionFactory } from '../../mcp-client/src/index.ts';
 import { ElicitationBridge } from './elicitation.ts';
+import type { VoiceInput } from './voice-input.ts';
 import { macClipboardImageReader } from './clipboard-image.ts';
 import { runInteractive, type MemorySettings } from './interactive.ts';
 
@@ -55,10 +56,21 @@ export * from './notify.ts';
 export * from './watch.ts';
 export * from './elicitation.ts';
 export * from './markdown.ts';
+export * from './yandex-speech.ts';
+export * from './voice-input.ts';
 export * from './interactive.ts';
 
-/** Точка входа: выбирает режим работы по аргументам командной строки. */
-export async function main(argv: string[], input: Readable, output: Writable): Promise<void> {
+/**
+ * Точка входа: выбирает режим работы по аргументам командной строки. `makeVoice` собирает
+ * голосовой ввод (микрофон → текст) — вызывается ПОСЛЕ loadConfig (тот грузит .env, откуда
+ * берутся YANDEX_*-креды); в тестах не передаётся, и голос выключен.
+ */
+export async function main(
+  argv: string[],
+  input: Readable,
+  output: Writable,
+  makeVoice?: (env: NodeJS.ProcessEnv) => VoiceInput | null,
+): Promise<void> {
   const config = loadConfig();
   const client = new ChatCompletionClient(config);
 
@@ -128,6 +140,8 @@ export async function main(argv: string[], input: Readable, output: Writable): P
           store: new FileMcpStore(mcpConfigPath()),
           elicitationBridge,
         };
+    // Голосовой ввод собираем здесь (после loadConfig → .env загружен); в тестах makeVoice нет.
+    const voice = makeVoice ? makeVoice(process.env) : null;
     await runInteractive(
       client,
       interactiveConfig,
@@ -146,6 +160,7 @@ export async function main(argv: string[], input: Readable, output: Writable): P
       runStore,
       mcp,
       macClipboardImageReader,
+      voice,
     );
   }
 }

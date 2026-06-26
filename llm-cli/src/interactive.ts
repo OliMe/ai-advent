@@ -51,6 +51,7 @@ import { installClipboardPaste, type ClipboardImageReader } from './clipboard-im
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import { readlineConfirm, type ElicitationBridge } from './elicitation.ts';
 import { renderMarkdownForTerminal } from './markdown.ts';
+import type { VoiceInput } from './voice-input.ts';
 import {
   helpText,
   formatSessionList,
@@ -124,6 +125,8 @@ export async function runInteractive(
   } | null = null,
   // Источник картинки из буфера обмена (Ctrl+V); null — перехват выключен (напр. в тестах).
   clipboard: ClipboardImageReader | null = null,
+  // Голосовой ввод (микрофон → текст); null — выключен (нет кредов/не терминал/тесты).
+  voice: VoiceInput | null = null,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
   // Терминал ли вывод — от этого зависит, рендерить ли markdown ответа в ANSI (в пайпах/тестах нет).
@@ -365,6 +368,34 @@ export async function runInteractive(
     await runWithUsageReport(() => runController.start('')); // прогон текущей задачи сессии
   };
 
+  // Голосовой ввод: запись с микрофона до нажатия Enter → распознавание → текст вставляется в
+  // строку ввода для правки перед отправкой. Ошибки записи/распознавания не валят сессию.
+  const recordVoice = async (): Promise<void> => {
+    if (voice === null) {
+      output.write(
+        'Голосовой ввод не настроен: задайте YANDEX_API_KEY (опц. YANDEX_FOLDER_ID) и запускайте ' +
+          'в терминале.\n\n',
+      );
+      return;
+    }
+    const session = voice.recorder.start();
+    await readlineInterface.question('🎙 Говорите… (Enter — стоп) ');
+    let audio: Uint8Array;
+    try {
+      audio = await session.finish();
+    } catch (error) {
+      output.write(`Не удалось записать звук: ${describeError(error)}\n\n`);
+      return;
+    }
+    try {
+      const text = await voice.transcribe(audio);
+      output.write(`📝 Распознано: ${text}\n`);
+      readlineInterface.write(text); // вставляем в строку ввода — можно поправить и отправить
+    } catch (error) {
+      output.write(`Не удалось распознать речь: ${describeError(error)}\n\n`);
+    }
+  };
+
   // Реестр интерактивных команд: первая подходящая по `matches` выполняет `run`.
   // Порядок важен (точные перед префиксными, напр. «/task done» до «/task »).
   // `run` может быть асинхронной (прогон пайплайна) — вызывающий цикл её ожидает.
@@ -373,6 +404,7 @@ export async function runInteractive(
     run: (input: string) => void | Promise<void>;
   }[] = [
     { matches: input => input === '/help', run: () => output.write(helpText()) },
+    { matches: input => input === '/voice', run: () => recordVoice() },
     { matches: input => input === '/mcp' || input === '/mcp list', run: () => listMcp() },
     { matches: input => input === '/mcp reload', run: () => reloadMcp() },
     {

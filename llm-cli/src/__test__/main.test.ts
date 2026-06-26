@@ -113,6 +113,22 @@ describe('main', () => {
     assert.match(output.text(), /До встречи!/);
   });
 
+  it('фабрика голосового ввода вызывается (после загрузки конфига)', async () => {
+    const input = new PassThrough();
+    const output = makeCollector();
+    let factoryCalled = false;
+
+    const finished = main(['node', 'cli.ts', '--no-mcp'], input, output.stream, () => {
+      factoryCalled = true;
+      return null; // голос выключен — но ветвь вызова фабрики покрыта
+    });
+    input.write('/exit\n');
+    await finished;
+
+    assert.equal(factoryCalled, true);
+    assert.match(output.text(), /До встречи!/);
+  });
+
   it('принимает флаг --context-tokens в интерактивном режиме', async () => {
     const input = new PassThrough();
     const output = makeCollector();
