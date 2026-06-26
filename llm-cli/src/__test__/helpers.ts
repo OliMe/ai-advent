@@ -2,7 +2,7 @@ import * as readline from 'node:readline/promises';
 import type { TestContext } from 'node:test';
 import { PassThrough, Writable } from 'node:stream';
 import { runInteractive, type MemoryKind, type MemorySettings } from '../index.ts';
-import type { McpStore, ClipboardImageReader } from '../index.ts';
+import type { McpStore, ClipboardImageReader, ElicitationBridge } from '../index.ts';
 import type { McpToolSet } from '../../../mcp-client/src/index.ts';
 import { ChatCompletionClient, createSession, summarize } from '../../../core/src/index.ts';
 import type {
@@ -136,7 +136,11 @@ export function driveInteractive(
   memory: MemoryKind = 'window',
   keepRecent = 6,
   memorySettings?: MemorySettings,
-  mcp: { toolSet: McpToolSet; store: McpStore } | null = null,
+  mcp: {
+    toolSet: McpToolSet;
+    store: McpStore;
+    elicitationBridge?: ElicitationBridge;
+  } | null = null,
   clipboard: ClipboardImageReader | null = null,
 ): { finished: Promise<void>; text: () => string } {
   const input = new PassThrough();

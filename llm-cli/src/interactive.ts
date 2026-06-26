@@ -49,6 +49,7 @@ import { currentTimeContext } from './current-time.ts';
 import { TOOL_HONESTY_DIRECTIVE, claimsSchedulerActionWithoutCall } from './tool-honesty.ts';
 import { installClipboardPaste, type ClipboardImageReader } from './clipboard-image.ts';
 import { parseList, isAffirmative, isNegative } from './replies.ts';
+import { readlineConfirm, type ElicitationBridge } from './elicitation.ts';
 import {
   helpText,
   formatSessionList,
@@ -114,12 +115,20 @@ export async function runInteractive(
   memorySettings: MemorySettings = { enabled: false, profileStore: null, taskStore: null },
   // Хранилище прогонов задач (пайплайн); null — в памяти (--ephemeral).
   runStore: RunStore | null = null,
-  // Инструменты MCP (набор + хранилище конфигурации); null — MCP выключен (--no-mcp).
-  mcp: { toolSet: McpToolSet; store: McpStore } | null = null,
+  // Инструменты MCP (набор + хранилище конфигурации + мост подтверждений); null — MCP выключен.
+  mcp: {
+    toolSet: McpToolSet;
+    store: McpStore;
+    elicitationBridge?: ElicitationBridge;
+  } | null = null,
   // Источник картинки из буфера обмена (Ctrl+V); null — перехват выключен (напр. в тестах).
   clipboard: ClipboardImageReader | null = null,
 ): Promise<void> {
   const readlineInterface = createInterface({ input, output });
+  // Запрос подтверждения для операций вне песочницы (MCP elicitation): спрашиваем пользователя да/нет.
+  mcp?.elicitationBridge?.setConfirm(
+    readlineConfirm(readlineInterface.question.bind(readlineInterface), isAffirmative),
+  );
   // Инструменты агентам (чат + пайплайн): MCP-инструменты с локальной обработкой путей
   // (recognize-text) плюс клиентский get_my_location (геолокация для задач вроде погоды).
   const chatTools =

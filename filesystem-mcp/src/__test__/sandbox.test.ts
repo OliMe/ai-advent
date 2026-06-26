@@ -2,13 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import {
-  expandHome,
-  normalizeAllowedDirs,
-  isWithinAllowed,
-  resolvePath,
-  SandboxError,
-} from '../index.ts';
+import { expandHome, normalizeAllowedDirs, isWithinAllowed, classifyPath } from '../index.ts';
 
 describe('expandHome', () => {
   it('разворачивает ~ и ~/путь, прочее не трогает', () => {
@@ -34,30 +28,42 @@ describe('isWithinAllowed', () => {
   });
 });
 
-describe('resolvePath', () => {
+describe('classifyPath', () => {
   const allowed = ['/tmp/fs-test'];
 
-  it('абсолютный внутри песочницы', () => {
-    assert.equal(resolvePath('/tmp/fs-test/a.md', allowed), '/tmp/fs-test/a.md');
+  it('абсолютный внутри песочницы → withinAllowed', () => {
+    assert.deepEqual(classifyPath('/tmp/fs-test/a.md', allowed), {
+      absolute: '/tmp/fs-test/a.md',
+      withinAllowed: true,
+    });
   });
 
   it('относительный — от первого разрешённого каталога', () => {
-    assert.equal(resolvePath('sub/a.md', allowed), '/tmp/fs-test/sub/a.md');
+    assert.deepEqual(classifyPath('sub/a.md', allowed), {
+      absolute: '/tmp/fs-test/sub/a.md',
+      withinAllowed: true,
+    });
   });
 
   it('разворачивает ~ внутри разрешённого домашнего', () => {
-    assert.equal(resolvePath('~/a.md', [homedir()]), join(homedir(), 'a.md'));
+    assert.deepEqual(classifyPath('~/a.md', [homedir()]), {
+      absolute: join(homedir(), 'a.md'),
+      withinAllowed: true,
+    });
   });
 
-  it('обход через .. → ошибка песочницы', () => {
-    assert.throws(() => resolvePath('/tmp/fs-test/../etc/passwd', allowed), SandboxError);
+  it('обход через .. → вне песочницы (withinAllowed=false)', () => {
+    assert.deepEqual(classifyPath('/tmp/fs-test/../etc/passwd', allowed), {
+      absolute: '/tmp/etc/passwd',
+      withinAllowed: false,
+    });
   });
 
-  it('путь снаружи → ошибка песочницы', () => {
-    assert.throws(() => resolvePath('/etc/passwd', allowed), SandboxError);
+  it('путь снаружи → вне песочницы', () => {
+    assert.equal(classifyPath('/etc/passwd', allowed).withinAllowed, false);
   });
 
-  it('пустой allow-list → относительный резолвится от ~ и всё равно вне → ошибка', () => {
-    assert.throws(() => resolvePath('a.md', []), SandboxError);
+  it('пустой allow-list → относительный резолвится от ~ и всё равно вне', () => {
+    assert.equal(classifyPath('a.md', []).withinAllowed, false);
   });
 });

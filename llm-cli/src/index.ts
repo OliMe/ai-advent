@@ -24,7 +24,8 @@ import {
   mcpConfigPath,
 } from './paths.ts';
 import { FileMcpStore } from './mcp-store.ts';
-import { McpToolSet, createConnection } from '../../mcp-client/src/index.ts';
+import { McpToolSet, connectionFactory } from '../../mcp-client/src/index.ts';
+import { ElicitationBridge } from './elicitation.ts';
 import { macClipboardImageReader } from './clipboard-image.ts';
 import { runInteractive, type MemorySettings } from './interactive.ts';
 
@@ -52,6 +53,7 @@ export * from './clipboard-image.ts';
 export * from './inbox-poller.ts';
 export * from './notify.ts';
 export * from './watch.ts';
+export * from './elicitation.ts';
 export * from './interactive.ts';
 
 /** Точка входа: выбирает режим работы по аргументам командной строки. */
@@ -116,9 +118,15 @@ export async function main(argv: string[], input: Readable, output: Writable): P
     // Хранилище прогонов задач (пайплайн); --ephemeral держит прогон только в памяти.
     const runStore = ephemeral ? null : new FileRunStore(runsDirectory());
     // MCP-инструменты агентам: набор поверх реального SDK + конфиг mcp.json (если не --no-mcp).
+    // Мост подтверждений: filesystem-сервер может запросить разрешение на операцию вне песочницы.
+    const elicitationBridge = new ElicitationBridge();
     const mcp = noMcp
       ? null
-      : { toolSet: new McpToolSet(createConnection), store: new FileMcpStore(mcpConfigPath()) };
+      : {
+          toolSet: new McpToolSet(connectionFactory(elicitationBridge.handler)),
+          store: new FileMcpStore(mcpConfigPath()),
+          elicitationBridge,
+        };
     await runInteractive(
       client,
       interactiveConfig,

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { driveInteractive, fakeStore, clientWith } from './helpers.ts';
 import { McpToolSet } from '../../../mcp-client/src/index.ts';
+import { ElicitationBridge } from '../index.ts';
 import type { ConnectFn, McpServerConfig } from '../../../mcp-client/src/index.ts';
 import type { McpStore } from '../index.ts';
 import { makeConfig } from '../../../core/src/__test__/helpers.ts';
@@ -70,6 +71,27 @@ describe('интерактив — команды /mcp', () => {
     assert.match(out, /MCP «srv» отключён и удалён/); // remove
     assert.match(out, /MCP-сервер не найден: нет/); // remove несуществующего
     assert.equal(store.load().has('srv'), false); // стор обновлён
+  });
+
+  it('с мостом elicitation подключается без ошибок (запрос подтверждения подставлен)', async t => {
+    const client = clientWith(t, async () => ({ content: 'x', usage: undefined }));
+    const elicitationBridge = new ElicitationBridge();
+    const mcp = { toolSet: new McpToolSet(fakeConnect), store: memoryStore(), elicitationBridge };
+    const { finished, text } = driveInteractive(
+      client,
+      ['/mcp', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      undefined,
+      'window',
+      6,
+      undefined,
+      mcp,
+    );
+    await finished;
+    assert.match(text(), /MCP-серверы не подключены/);
   });
 
   it('add без спецификации сервера — ошибка', async t => {

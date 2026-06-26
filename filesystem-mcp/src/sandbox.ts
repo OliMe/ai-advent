@@ -1,9 +1,6 @@
 import { homedir } from 'node:os';
 import { resolve, isAbsolute, join, sep } from 'node:path';
 
-/** Ошибка нарушения песочницы (путь вне разрешённых каталогов). */
-export class SandboxError extends Error {}
-
 /** Разворачивает ведущую тильду в домашний каталог. */
 export function expandHome(input: string): string {
   if (input === '~') {
@@ -25,16 +22,20 @@ export function isWithinAllowed(absolute: string, allowedDirs: string[]): boolea
   return allowedDirs.some(dir => absolute === dir || absolute.startsWith(dir + sep));
 }
 
+/** Классификация пути: абсолютный путь и признак, что он внутри allow-list. */
+export interface ResolvedPath {
+  absolute: string;
+  withinAllowed: boolean;
+}
+
 /**
  * Резолвит путь из запроса (разворот ~, относительные — от первого разрешённого каталога,
- * нормализация `..`) и проверяет, что результат внутри allow-list. Иначе бросает SandboxError.
+ * нормализация `..`) БЕЗ отказа и сообщает, внутри ли он allow-list. Решение, что делать с
+ * путём вне песочницы (отказать или запросить подтверждение), принимает обработчик.
  */
-export function resolvePath(input: string, allowedDirs: string[]): string {
+export function classifyPath(input: string, allowedDirs: string[]): ResolvedPath {
   const expanded = expandHome(input);
   const base = allowedDirs[0] ?? homedir();
   const absolute = isAbsolute(expanded) ? resolve(expanded) : resolve(base, expanded);
-  if (!isWithinAllowed(absolute, allowedDirs)) {
-    throw new SandboxError(`Путь вне разрешённых каталогов: ${input}`);
-  }
-  return absolute;
+  return { absolute, withinAllowed: isWithinAllowed(absolute, allowedDirs) };
 }
