@@ -67,6 +67,18 @@ import { describeError } from './errors.ts';
 /** Метка ответа модели в интерактивном режиме. */
 const ASSISTANT_LABEL = 'Ассистент';
 
+/**
+ * Дисциплина инструментов: не выдумывать результаты вызовов. Без неё модель иногда «рапортует»
+ * о созданной задаче/отправке, не вызвав инструмент, и придумывает идентификаторы.
+ */
+const TOOL_HONESTY_DIRECTIVE =
+  'Строгое правило по инструментам: НЕ утверждай, что действие выполнено (задача создана, ' +
+  'запущена, УДАЛЕНА, отменена, поставлена на паузу или возобновлена, сообщение отправлено и ' +
+  'т.п.), если ты НЕ вызвал соответствующий инструмент (schedule_task/run_now/cancel_task/…) в ' +
+  'этом же ответе. Идентификаторы, статусы «удалено/создано» и любые результаты бери ТОЛЬКО из ' +
+  'ответов инструментов — не придумывай их. Нужно действие — сначала вызови инструмент, и лишь ' +
+  'потом сообщай о результате.';
+
 /** Параметры слоистой памяти для интерактивного режима. */
 export interface MemorySettings {
   /** Включена ли слоистая память (профиль + задача). */
@@ -873,7 +885,10 @@ export async function runInteractive(
             output.write('\n');
             // Ведущие system-подсказки: текущее время (для относительных сроков) и, если есть
             // recognize-text, директива про распознавание (локальные пути + ответ при неудаче).
-            const leading = [{ role: 'system' as const, content: currentTimeContext(new Date()) }];
+            const leading = [
+              { role: 'system' as const, content: currentTimeContext(new Date()) },
+              { role: 'system' as const, content: TOOL_HONESTY_DIRECTIVE },
+            ];
             const directive = recognizeTextDirective(chatTools.specs());
             if (directive !== null) {
               leading.push({ role: 'system' as const, content: directive });
