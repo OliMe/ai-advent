@@ -41,20 +41,36 @@ function ffmpegRecorder(device: string): AudioRecorder {
           '-y',
           file,
         ],
-        { stdio: ['pipe', 'ignore', 'inherit'] },
+        // stderr захватываем (а не льём в терминал): avfoundation печатает туда системные
+        // предупреждения (напр. про Continuity Camera), которые «-loglevel error» не глушит.
+        { stdio: ['pipe', 'ignore', 'pipe'] },
       );
+      let diagnostics = '';
+      child.stderr?.on('data', chunk => {
+        diagnostics += String(chunk);
+      });
       return {
         finish: () =>
           new Promise<Uint8Array>((resolve, reject) => {
             child.on('error', reject);
             child.on('close', () => {
+              let bytes: Uint8Array;
               try {
-                const bytes = new Uint8Array(readFileSync(file));
+                bytes = new Uint8Array(readFileSync(file));
                 rmSync(file, { force: true });
-                resolve(bytes);
               } catch (error) {
-                reject(error instanceof Error ? error : new Error(String(error)));
+                reject(
+                  new Error(
+                    diagnostics.trim() || (error instanceof Error ? error.message : String(error)),
+                  ),
+                );
+                return;
               }
+              if (bytes.length === 0) {
+                reject(new Error(diagnostics.trim() || 'ffmpeg не записал звук.'));
+                return;
+              }
+              resolve(bytes);
             });
             child.stdin.write('q'); // ffmpeg штатно завершает запись по «q» в stdin
             child.stdin.end();
