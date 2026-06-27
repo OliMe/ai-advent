@@ -11,6 +11,7 @@ import {
   mcpConfigPath,
   runWatch,
   systemNotify,
+  pollServerNames,
   loadVoiceConfig,
   transcribeWithYandex,
 } from './index.ts';
@@ -86,6 +87,17 @@ async function watchMode(): Promise<void> {
     } catch {
       // недоступный сервер пропускаем
     }
+  }
+  // Наблюдателю нужен только планировщик (poll_results) — лишние подключения (OCR/ФС) закрываем,
+  // чтобы не держать простаивающие HTTP-сессии и не множить точки отказа.
+  const keep = new Set(pollServerNames(toolSet));
+  for (const name of toolSet.serverNames()) {
+    if (!keep.has(name)) {
+      await toolSet.removeServer(name);
+    }
+  }
+  if (keep.size === 0) {
+    stdout.write('⚠ Не найден сервер с poll_results — нечего наблюдать. Проверьте mcp.json.\n');
   }
   let running = true;
   process.on('SIGINT', () => {

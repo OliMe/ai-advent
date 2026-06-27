@@ -17,6 +17,21 @@ export function findPollTool(toolSet: ToolSet): string | null {
   return spec === undefined ? null : spec.name;
 }
 
+/**
+ * Имена серверов (префикс неймспейса «сервер__инструмент»), у которых есть poll_results.
+ * Наблюдателю нужны только они — остальные подключения можно закрыть, чтобы не держать лишние.
+ */
+export function pollServerNames(toolSet: ToolSet): string[] {
+  const names = new Set<string>();
+  for (const spec of toolSet.specs()) {
+    const separator = spec.name.indexOf('__');
+    if (separator !== -1 && spec.name.endsWith(POLL_TOOL_SUFFIX)) {
+      names.add(spec.name.slice(0, separator));
+    }
+  }
+  return [...names];
+}
+
 /** Похоже ли значение на корректный результат запуска. */
 function isPolledRun(value: unknown): value is PolledRun {
   const candidate = value as Partial<PolledRun> | null;

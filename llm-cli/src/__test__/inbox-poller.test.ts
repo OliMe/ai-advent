@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { findPollTool, pollNewResults } from '../index.ts';
+import { findPollTool, pollNewResults, pollServerNames } from '../index.ts';
 import type { ToolSet } from '../index.ts';
 
 /** Фейковый набор: задаём имя инструмента (или нет) и реализацию call. */
@@ -22,6 +22,28 @@ describe('findPollTool', () => {
     );
     assert.equal(findPollTool(toolSet('sched__echo', async () => '')), null);
     assert.equal(findPollTool(toolSet(null, async () => '')), null);
+  });
+});
+
+describe('pollServerNames', () => {
+  const toolSetWithSpecs = (names: string[]): ToolSet => ({
+    specs: () => names.map(name => ({ name, description: '', parameters: {} })),
+    call: async () => '',
+  });
+
+  it('имена серверов с poll_results по неймспейсу, без дублей', () => {
+    const set = toolSetWithSpecs([
+      'scheduler__poll_results',
+      'scheduler__list_tasks',
+      'yandex__recognize-text',
+      'filesystem__read_file',
+      'other__poll_results',
+    ]);
+    assert.deepEqual(pollServerNames(set).sort(), ['other', 'scheduler']);
+  });
+
+  it('нет poll_results или нет неймспейса → пусто', () => {
+    assert.deepEqual(pollServerNames(toolSetWithSpecs(['poll_results', 'a__b'])), []);
   });
 });
 
