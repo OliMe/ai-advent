@@ -27,6 +27,21 @@ function pollToolSet(responses: string[]): ToolSet {
   };
 }
 
+/** Набор с poll_results, где шаги — либо JSON-ответ, либо Error (бросается). */
+function pollToolSetSeq(steps: (string | Error)[]): ToolSet {
+  let index = 0;
+  return {
+    specs: () => [{ name: 's__poll_results', description: '', parameters: {} }],
+    call: async () => {
+      const step = steps[Math.min(index++, steps.length - 1)];
+      if (step instanceof Error) {
+        throw step;
+      }
+      return step;
+    },
+  };
+}
+
 describe('runWatch', () => {
   it('базовый курсор без шума, затем уведомляет о новом запуске', async () => {
     const output = collector();
@@ -66,6 +81,49 @@ describe('runWatch', () => {
       shouldContinue: () => iterations++ < 1,
     });
     assert.match(output.text(), /🔔 ✗ OCR: недоступен/);
+  });
+
+  it('сбой базового опроса не роняет наблюдатель: базу берём при первом успехе, потом шумим', async () => {
+    const output = collector();
+    const notified: { title: string; message: string }[] = [];
+    const toolSet = pollToolSetSeq([
+      new Error('MCP error -32001: Request timed out'), // базовый опрос — сбой
+      JSON.stringify({ runs: [{ firedAt: 't1', taskTitle: 'старое', ok: true, text: 'old' }] }), // станет базой
+      JSON.stringify({ runs: [{ firedAt: 't2', taskTitle: 'Погода', ok: true, text: 'тепло' }] }), // новый
+    ]);
+    let iterations = 0;
+    await runWatch({
+      toolSet,
+      output: output.stream,
+      notify: (title, message) => notified.push({ title, message }),
+      sleep: async () => {},
+      intervalMs: 1,
+      shouldContinue: () => iterations++ < 2,
+    });
+    assert.match(output.text(), /не удалось взять базовый курсор/);
+    assert.match(output.text(), /Request timed out/);
+    assert.deepEqual(notified, [{ title: 'Планировщик: Погода', message: 'тепло' }]); // «старое» не шумело
+  });
+
+  it('сбой опроса в цикле логируется и не прерывает слежение', async () => {
+    const output = collector();
+    const notified: string[] = [];
+    const toolSet = pollToolSetSeq([
+      JSON.stringify({ runs: [] }), // базовый ок
+      new Error('MCP error -32001: Request timed out'), // опрос в цикле — сбой
+      JSON.stringify({ runs: [{ firedAt: 't1', taskTitle: 'OCR', ok: true, text: 'готово' }] }),
+    ]);
+    let iterations = 0;
+    await runWatch({
+      toolSet,
+      output: output.stream,
+      notify: title => notified.push(title),
+      sleep: async () => {},
+      intervalMs: 1,
+      shouldContinue: () => iterations++ < 2,
+    });
+    assert.match(output.text(), /опрос планировщика не удался/);
+    assert.deepEqual(notified, ['Планировщик: OCR']); // после сбоя слежение продолжилось
   });
 
   it('shouldContinue=false сразу → только базовый опрос, без уведомлений', async () => {
