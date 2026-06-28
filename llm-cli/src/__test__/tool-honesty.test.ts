@@ -25,6 +25,17 @@ describe('claimsSchedulerActionWithoutCall', () => {
     assert.equal(claimsSchedulerActionWithoutCall('Распознано: AI ADVENT 2026', []), false);
   });
 
+  it('предложение-инфинитив (не заявление) → false', () => {
+    // «могу добавить/поставить» — это предложение, а не заявление о выполненном.
+    assert.equal(
+      claimsSchedulerActionWithoutCall(
+        'Могу добавить любую в список дел или поставить напоминание.',
+        [],
+      ),
+      false,
+    );
+  });
+
   it('нет существительного планировщика → false', () => {
     assert.equal(claimsSchedulerActionWithoutCall('Создал отчёт по погоде', []), false);
   });
