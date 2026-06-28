@@ -68,6 +68,14 @@ export function formatInvariants(invariants: string[]): string {
   return `Инварианты (нарушать нельзя):\n${lines.join('\n')}\n\n`;
 }
 
+/**
+ * Трасса вызовов инструментов за ход (порядок выбора и маршрутизации по серверам). Пусто, если
+ * инструменты не вызывались. Помогает увидеть длинный кросс-серверный флоу и проверить порядок.
+ */
+export function formatToolTrace(calledTools: string[]): string {
+  return calledTools.length === 0 ? '' : `🧭 ${calledTools.join(' → ')}\n\n`;
+}
+
 /** Форматирует подключённые MCP-серверы и их инструменты для команды /mcp. */
 export function formatMcpTools(serverNames: string[], specs: ToolSpec[]): string {
   if (serverNames.length === 0) {

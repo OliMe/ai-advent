@@ -61,6 +61,7 @@ import {
   formatProfileList,
   formatInvariants,
   formatMcpTools,
+  formatToolTrace,
   EPHEMERAL_NOTICE,
   MEMORY_OFF_NOTICE,
 } from './formatters.ts';
@@ -941,8 +942,11 @@ export async function runInteractive(
                 calledTools.push(name);
                 reportToolCall(name, args);
               },
+              config.maxToolRounds,
             );
             usage = result.usage;
+            // Трасса вызовов: видно выбор инструментов и порядок маршрутизации по серверам.
+            output.write(formatToolTrace(calledTools));
             output.write(
               `${ASSISTANT_LABEL}: ${renderMarkdownForTerminal(result.content, isTty)}\n\n`,
             );

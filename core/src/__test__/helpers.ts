@@ -21,6 +21,7 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     usdToRub: 90,
     maxStageAgents: 1,
     stageAgentConcurrency: 2,
+    maxToolRounds: 12,
     ...overrides,
   };
 }

@@ -31,6 +31,12 @@ export interface AppConfig {
   maxStageAgents: number;
   /** Максимум одновременных запросов роль-агентов внутри этапа. По умолчанию 2. */
   stageAgentConcurrency: number;
+  /**
+   * Максимум раундов «модель ↔ инструменты» за один ход чата с MCP-инструментами. Раунд —
+   * один ответ модели (может содержать пачку вызовов); зависимые шаги длинного флоу идут
+   * отдельными раундами. По умолчанию 12 (хватает на длинные кросс-серверные сценарии).
+   */
+  maxToolRounds: number;
 }
 
 const DEFAULT_TEMPERATURE = 0.7;
@@ -43,6 +49,7 @@ const DEFAULT_PRICE_PER_1M = 0;
 const DEFAULT_USD_RUB = 90;
 const DEFAULT_MAX_STAGE_AGENTS = 4;
 const DEFAULT_STAGE_AGENT_CONCURRENCY = 2;
+const DEFAULT_MAX_TOOL_ROUNDS = 12;
 
 /** Конечное неотрицательное число из env или значение по умолчанию. */
 function nonNegativeNumber(raw: string | undefined, fallback: number): number {
@@ -133,5 +140,7 @@ export function loadConfig(): AppConfig {
       process.env.LLM_STAGE_AGENT_CONCURRENCY,
       DEFAULT_STAGE_AGENT_CONCURRENCY,
     ),
+    // Потолок раундов агентного цикла чата с инструментами (длинный кросс-серверный флоу).
+    maxToolRounds: positiveInteger(process.env.LLM_MAX_TOOL_ROUNDS, DEFAULT_MAX_TOOL_ROUNDS),
   };
 }

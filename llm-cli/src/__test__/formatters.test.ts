@@ -7,6 +7,7 @@ import {
   formatProfileList,
   formatInvariants,
   formatMcpTools,
+  formatToolTrace,
   helpText,
   formatSessionList,
   formatStageResult,
@@ -60,6 +61,16 @@ describe('format helpers (задачи и профиль)', () => {
     );
     assert.match(text, /• srv: search, fetch/);
     assert.match(text, /• empty: \(нет инструментов\)/);
+  });
+
+  it('formatToolTrace: пусто без вызовов, цепочка со стрелками', () => {
+    assert.equal(formatToolTrace([]), '');
+    const trace = formatToolTrace([
+      'get_my_location',
+      'places__find_places',
+      'scheduler__schedule_task',
+    ]);
+    assert.match(trace, /🧭 get_my_location → places__find_places → scheduler__schedule_task/);
   });
 
   it('formatInvariants: пусто и нумерованный список', () => {
