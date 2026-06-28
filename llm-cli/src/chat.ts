@@ -27,6 +27,7 @@ async function runToolCall(
   toolSet: ToolSet,
   call: ToolCall,
   onToolCall?: (name: string, args: Record<string, unknown>) => void,
+  onToolResult?: (name: string, result: string) => void,
 ): Promise<string> {
   try {
     const args = (call.function.arguments ? JSON.parse(call.function.arguments) : {}) as Record<
@@ -34,7 +35,9 @@ async function runToolCall(
       unknown
     >;
     onToolCall?.(call.function.name, args);
-    return await toolSet.call(call.function.name, args);
+    const result = await toolSet.call(call.function.name, args);
+    onToolResult?.(call.function.name, result);
+    return result;
   } catch (error) {
     return `Ошибка инструмента «${call.function.name}»: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -55,6 +58,7 @@ export async function completeWithTools(
   temperature: number,
   onToolCall?: (name: string, args: Record<string, unknown>) => void,
   maxRounds: number = DEFAULT_MAX_TOOL_ROUNDS,
+  onToolResult?: (name: string, result: string) => void,
 ): Promise<CompletionResult> {
   const working = [...messages];
   const tools = toToolDefinitions(toolSet);
@@ -83,7 +87,7 @@ export async function completeWithTools(
       working.push({
         role: 'tool',
         tool_call_id: call.id,
-        content: await runToolCall(toolSet, call, onToolCall),
+        content: await runToolCall(toolSet, call, onToolCall, onToolResult),
       });
     }
   }

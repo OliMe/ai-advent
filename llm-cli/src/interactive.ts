@@ -249,6 +249,13 @@ export async function runInteractive(
     }
     output.write(`🔧 инструмент ${name} ${JSON.stringify(args)}\n`);
   };
+  // Результат распознавания показываем СРАЗУ (до остальных шагов пайпа), чтобы выполнить
+  // просьбу «распознай и выведи мне» — иначе текст всплыл бы только в финальной сводке хода.
+  const reportToolResult = (name: string, result: string): void => {
+    if (isRecognizeTool(name)) {
+      output.write(`\n📄 Распознанный текст:\n${result}\n`);
+    }
+  };
   // Драйвер прогонов задач (пайплайн): свои диалоги-агенты, своё хранилище.
   // Мост связывает прогон с задачей сессии — память задачи идёт в этапы, итог обратно.
   // Фабрика диалогов-агентов (этапы пайплайна, контролёр инвариантов): своя персона/температура.
@@ -943,6 +950,7 @@ export async function runInteractive(
                 reportToolCall(name, args);
               },
               config.maxToolRounds,
+              reportToolResult,
             );
             usage = result.usage;
             // Трасса вызовов: видно выбор инструментов и порядок маршрутизации по серверам.

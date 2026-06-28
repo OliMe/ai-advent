@@ -270,6 +270,7 @@ describe('completeWithTools', () => {
         ? { content: '', toolCalls: [toolCall('echo', '{"q":1}')], usage }
         : { content: 'финальный ответ', usage };
     });
+    const results: string[] = [];
     const result = await completeWithTools(
       client,
       messages,
@@ -279,10 +280,13 @@ describe('completeWithTools', () => {
       false,
       0.5,
       (name, args) => reported.push(`${name}:${JSON.stringify(args)}`),
+      6,
+      (name, value) => results.push(`${name}=${value}`),
     );
     assert.equal(result.content, 'финальный ответ');
     assert.deepEqual(calls, [{ name: 'echo', args: { q: 1 } }]);
     assert.deepEqual(reported, ['echo:{"q":1}']);
+    assert.deepEqual(results, ['echo=результат-инструмента']); // onToolResult получает результат
     assert.deepEqual(result.usage, { prompt_tokens: 2, completion_tokens: 2, total_tokens: 4 });
   });
 

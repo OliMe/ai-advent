@@ -74,6 +74,8 @@ describe('интерактив — распознавание локальног
       const out = text();
       assert.match(out, /🔍 Читаю текст с картинок…/); // дружелюбная строка, без пути
       assert.doesNotMatch(out, /yandex__recognize-text \{/); // технический лог не печатается
+      // Распознанный текст показан СРАЗУ после распознавания (до остальных шагов хода).
+      assert.match(out, /📄 Распознанный текст:\nAI ADVENT 2026/);
       assert.match(out, /Распознано: AI ADVENT 2026/);
     } finally {
       rmSync(imagePath, { force: true });
@@ -82,6 +84,50 @@ describe('интерактив — распознавание локальног
     assert.equal(received!.path, undefined);
     assert.equal(received!.base64, Buffer.from('PNGДАННЫЕ').toString('base64'));
     assert.equal(received!.mimeType, 'image/png');
+  });
+
+  it('результат НЕ распознающего инструмента не печатается как «Распознанный текст»', async t => {
+    const connect: ConnectFn = async name => ({
+      name,
+      tools: () => [{ name: 'echo', description: 'эхо', parameters: { type: 'object' } }],
+      call: async () => 'служебные данные',
+      close: async () => {},
+    });
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round === 1
+        ? {
+            content: '',
+            toolCalls: [
+              {
+                id: 'c1',
+                type: 'function' as const,
+                function: { name: 'srv__echo', arguments: '{}' },
+              },
+            ],
+            usage: undefined,
+          }
+        : { content: 'готово', usage: undefined };
+    });
+    const mcp = { toolSet: new McpToolSet(connect), store: memoryStore(new Map([['srv', STDIO]])) };
+    const { finished, text } = driveInteractive(
+      client,
+      ['позови echo', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      undefined,
+      'window',
+      6,
+      undefined,
+      mcp,
+    );
+    await finished;
+    const out = text();
+    assert.match(out, /🔧 инструмент srv__echo/);
+    assert.doesNotMatch(out, /Распознанный текст/); // не распознавание — спец-вывода нет
   });
 
   it('передан читатель буфера (Ctrl+V) — перехват ставится без ошибок', async t => {
