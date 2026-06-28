@@ -1,56 +1,6 @@
 import type { PlacesConfig } from './config.ts';
-
-/** Найденная организация рядом. */
-export interface Place {
-  name: string;
-  address: string;
-  latitude: number;
-  longitude: number;
-  /** Расстояние от точки запроса, метры. */
-  distanceMeters: number;
-  phone?: string;
-  hours?: string;
-  url?: string;
-}
-
-/** Параметры поиска организаций. */
-export interface FindPlacesQuery {
-  text: string;
-  latitude: number;
-  longitude: number;
-  radius: number;
-  limit: number;
-}
-
-/** Узкий контракт fetch (инжектируется для тестируемости). */
-export type FetchLike = (
-  url: string,
-  init: { method: string; signal: AbortSignal },
-) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
-
-/** Безопасно достаёт поле объекта (или undefined для не-объектов). */
-function pick(value: unknown, key: string): unknown {
-  return typeof value === 'object' && value !== null
-    ? (value as Record<string, unknown>)[key]
-    : undefined;
-}
-
-/** Строка из значения или undefined. */
-function asString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
-}
-
-/** Расстояние между двумя точками на сфере (метры, формула гаверсинуса). */
-export function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const earthRadius = 6_371_000;
-  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
-  const deltaLat = toRadians(lat2 - lat1);
-  const deltaLon = toRadians(lon2 - lon1);
-  const a =
-    Math.sin(deltaLat / 2) ** 2 +
-    Math.cos(toRadians(lat1)) * Math.cos(toRadians(lat2)) * Math.sin(deltaLon / 2) ** 2;
-  return Math.round(earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-}
+import type { FetchLike, FindPlacesQuery, Place, PlaceProvider } from './geo.ts';
+import { asString, haversineMeters, nearestFirst, pick } from './geo.ts';
 
 /** Размах окна поиска (градусы) для радиуса в метрах вокруг широты. */
 function spanFromRadius(
@@ -111,11 +61,11 @@ export function parseGeosearchResponse(
       ...(url ? { url } : {}),
     });
   }
-  return places.sort((a, b) => a.distanceMeters - b.distanceMeters).slice(0, limit);
+  return nearestFirst(places, limit);
 }
 
 /** Ищет организации по тексту рядом с координатами через Yandex Search API. */
-export async function findPlaces(
+export async function yandexFindPlaces(
   fetchFn: FetchLike,
   config: PlacesConfig,
   query: FindPlacesQuery,
@@ -130,7 +80,7 @@ export async function findPlaces(
     type: 'biz',
     results: String(query.limit),
   });
-  const response = await fetchFn(`${config.endpoint}?${params.toString()}`, {
+  const response = await fetchFn(`${config.yandexEndpoint}?${params.toString()}`, {
     method: 'GET',
     signal: AbortSignal.timeout(config.timeoutMs),
   });
@@ -143,4 +93,9 @@ export async function findPlaces(
     query.longitude,
     query.limit,
   );
+}
+
+/** Провайдер мест поверх Yandex Search API. */
+export function createYandexProvider(fetchFn: FetchLike, config: PlacesConfig): PlaceProvider {
+  return { findPlaces: query => yandexFindPlaces(fetchFn, config, query) };
 }

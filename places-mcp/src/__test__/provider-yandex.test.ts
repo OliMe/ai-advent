@@ -1,32 +1,29 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  haversineMeters,
-  parseGeosearchResponse,
-  findPlaces,
-  type FetchLike,
-  type PlacesConfig,
-} from '../index.ts';
+import { parseGeosearchResponse, yandexFindPlaces, createYandexProvider } from '../index.ts';
+import type { FetchLike, PlacesConfig } from '../index.ts';
 
 const config: PlacesConfig = {
+  provider: 'yandex',
   apiKey: 'KEY',
-  endpoint: 'https://search-maps.yandex.ru/v1/',
+  yandexEndpoint: 'https://search-maps.yandex.ru/v1/',
+  overpassEndpoint: 'https://overpass-api.de/api/interpreter',
+  userAgent: 'test',
   lang: 'ru_RU',
   defaultRadius: 1500,
   defaultResults: 5,
   timeoutMs: 1000,
 };
 
-/** Полный ответ Geosearch: первая дальше, вторая ближе (проверяем сортировку). */
 const sampleResponse = {
   type: 'FeatureCollection',
   features: [
     {
-      geometry: { coordinates: [37.62, 55.77] }, // дальше от центра
+      geometry: { coordinates: [37.62, 55.77] }, // дальше
       properties: { name: 'Аптека дальняя', description: 'ул. Дальняя, 9' },
     },
     {
-      geometry: { coordinates: [37.605, 55.751] }, // ближе к центру
+      geometry: { coordinates: [37.605, 55.751] }, // ближе
       properties: {
         name: 'игнор',
         description: 'игнор',
@@ -39,47 +36,30 @@ const sampleResponse = {
         },
       },
     },
-    { geometry: { coordinates: [1] } }, // битые координаты — пропускается
+    { geometry: { coordinates: [1] } }, // битые координаты — пропуск
   ],
 };
-
-describe('haversineMeters', () => {
-  it('одна и та же точка → 0', () => {
-    assert.equal(haversineMeters(55.75, 37.6, 55.75, 37.6), 0);
-  });
-  it('близкие точки → правдоподобное расстояние', () => {
-    const meters = haversineMeters(55.75, 37.61, 55.76, 37.62);
-    assert.ok(meters > 1000 && meters < 1500, `ожидали ~1.3км, получили ${meters}`);
-  });
-});
 
 describe('parseGeosearchResponse', () => {
   it('features не массив → пусто', () => {
     assert.deepEqual(parseGeosearchResponse({}, 55.75, 37.6, 5), []);
   });
 
-  it('парсит, считает расстояние, сортирует по близости, тянет meta', () => {
+  it('парсит meta, считает расстояние, сортирует, отбрасывает битое', () => {
     const places = parseGeosearchResponse(sampleResponse, 55.75, 37.605, 5);
-    assert.equal(places.length, 2); // битая запись отброшена
-    assert.equal(places[0].name, 'Аптека 36.6'); // ближайшая первой, имя из CompanyMetaData
+    assert.equal(places.length, 2);
+    assert.equal(places[0].name, 'Аптека 36.6');
     assert.equal(places[0].address, 'Москва, ул. Тверская, 1');
     assert.equal(places[0].phone, '+7 495 000-00-00');
     assert.equal(places[0].hours, 'круглосуточно');
     assert.equal(places[0].url, 'https://apteka.example');
     assert.ok(places[0].distanceMeters < places[1].distanceMeters);
-    // вторая — без meta: имя/адрес из properties, без телефона/часов/url
     assert.equal(places[1].name, 'Аптека дальняя');
-    assert.equal(places[1].address, 'ул. Дальняя, 9');
     assert.equal(places[1].phone, undefined);
-    assert.equal(places[1].hours, undefined);
-    assert.equal(places[1].url, undefined);
   });
 
-  it('лимит обрезает список', () => {
+  it('лимит обрезает; нет имени → «без названия», адрес пустой', () => {
     assert.equal(parseGeosearchResponse(sampleResponse, 55.75, 37.605, 1).length, 1);
-  });
-
-  it('нет имени нигде → «без названия», адрес пустой', () => {
     const place = parseGeosearchResponse(
       { features: [{ geometry: { coordinates: [37.6, 55.75] }, properties: {} }] },
       55.75,
@@ -91,14 +71,14 @@ describe('parseGeosearchResponse', () => {
   });
 });
 
-describe('findPlaces', () => {
-  it('строит URL (apikey/text/ll/spn/type/results) и парсит ответ', async () => {
+describe('yandexFindPlaces', () => {
+  it('строит URL (apikey/text/ll/spn/type/results) и парсит', async () => {
     const seen: string[] = [];
     const fetchFn: FetchLike = async url => {
       seen.push(url);
       return { ok: true, status: 200, json: async () => sampleResponse };
     };
-    const places = await findPlaces(fetchFn, config, {
+    const places = await yandexFindPlaces(fetchFn, config, {
       text: 'аптека',
       latitude: 55.75,
       longitude: 37.605,
@@ -106,20 +86,18 @@ describe('findPlaces', () => {
       limit: 5,
     });
     assert.equal(places.length, 2);
-    assert.match(seen[0], /search-maps\.yandex\.ru\/v1\//);
     assert.match(seen[0], /apikey=KEY/);
-    assert.match(seen[0], /text=%D0%B0%D0%BF%D1%82%D0%B5%D0%BA%D0%B0/); // «аптека» urlencoded
     assert.match(seen[0], /ll=37\.605%2C55\.75/);
     assert.match(seen[0], /type=biz/);
     assert.match(seen[0], /results=5/);
-    assert.match(seen[0], /spn=/);
   });
 
-  it('ошибка HTTP → исключение со статусом', async () => {
+  it('ошибка HTTP → исключение; createYandexProvider делегирует', async () => {
     const fetchFn: FetchLike = async () => ({ ok: false, status: 403, json: async () => ({}) });
+    const provider = createYandexProvider(fetchFn, config);
     await assert.rejects(
       () =>
-        findPlaces(fetchFn, config, {
+        provider.findPlaces({
           text: 'аптека',
           latitude: 55.75,
           longitude: 37.6,

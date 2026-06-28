@@ -1,12 +1,11 @@
 import type { PlacesConfig } from './config.ts';
-import type { FetchLike } from './yandex-geosearch.ts';
-import { findPlaces } from './yandex-geosearch.ts';
+import type { PlaceProvider } from './geo.ts';
 import { formatPlaces } from './format.ts';
 
-/** Зависимости обработчика: конфиг поиска и fetch. */
+/** Зависимости обработчика: конфиг (для дефолтов) и провайдер мест. */
 export interface ToolDeps {
   config: PlacesConfig;
-  fetchFn: FetchLike;
+  provider: PlaceProvider;
 }
 
 /** Текст ошибки из неизвестного значения. */
@@ -41,13 +40,7 @@ export async function handleFindPlaces(
   const radius = numberArg(args.radius) ?? deps.config.defaultRadius;
   const limit = numberArg(args.limit) ?? deps.config.defaultResults;
   try {
-    const places = await findPlaces(deps.fetchFn, deps.config, {
-      text,
-      latitude,
-      longitude,
-      radius,
-      limit,
-    });
+    const places = await deps.provider.findPlaces({ text, latitude, longitude, radius, limit });
     return formatPlaces(text, places);
   } catch (error) {
     return errorText(error);

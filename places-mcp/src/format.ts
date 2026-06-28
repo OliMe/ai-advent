@@ -1,4 +1,4 @@
-import type { Place } from './yandex-geosearch.ts';
+import type { Place } from './geo.ts';
 
 /** Человекочитаемое расстояние: метры до 1 км, иначе километры. */
 function formatDistance(meters: number): string {

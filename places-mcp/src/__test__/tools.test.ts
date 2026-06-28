@@ -1,56 +1,58 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { handleFindPlaces } from '../index.ts';
-import type { FetchLike, PlacesConfig, ToolDeps } from '../index.ts';
+import type { FindPlacesQuery, Place, PlaceProvider, PlacesConfig, ToolDeps } from '../index.ts';
 
 const config: PlacesConfig = {
-  apiKey: 'KEY',
-  endpoint: 'https://search-maps.yandex.ru/v1/',
+  provider: 'osm',
+  apiKey: '',
+  yandexEndpoint: 'https://search-maps.yandex.ru/v1/',
+  overpassEndpoint: 'https://overpass-api.de/api/interpreter',
+  userAgent: 'test',
   lang: 'ru_RU',
   defaultRadius: 1500,
   defaultResults: 5,
   timeoutMs: 1000,
 };
 
-const oneResult = {
-  features: [
-    {
-      geometry: { coordinates: [37.605, 55.751] },
-      properties: { CompanyMetaData: { name: 'Аптека', address: 'ул. Тверская, 1' } },
-    },
-  ],
+const place: Place = {
+  name: 'Аптека',
+  address: 'ул. Тверская, 1',
+  latitude: 55.751,
+  longitude: 37.605,
+  distanceMeters: 120,
 };
 
-/** deps с фейковым fetch; собирает увиденные URL. */
-function makeDeps(fetchFn: FetchLike): { deps: ToolDeps; urls: string[] } {
-  const urls: string[] = [];
-  const wrapped: FetchLike = async (url, init) => {
-    urls.push(url);
-    return fetchFn(url, init);
+/** deps с фейковым провайдером; собирает полученные запросы. */
+function makeDeps(findPlaces: (query: FindPlacesQuery) => Promise<Place[]>): {
+  deps: ToolDeps;
+  queries: FindPlacesQuery[];
+} {
+  const queries: FindPlacesQuery[] = [];
+  const provider: PlaceProvider = {
+    findPlaces: query => {
+      queries.push(query);
+      return findPlaces(query);
+    },
   };
-  return { deps: { config, fetchFn: wrapped }, urls };
+  return { deps: { config, provider }, queries };
 }
-
-const okFetch: FetchLike = async () => ({ ok: true, status: 200, json: async () => oneResult });
 
 describe('handleFindPlaces', () => {
   it('находит и форматирует места', async () => {
-    const { deps } = makeDeps(okFetch);
-    const out = await handleFindPlaces(deps, {
-      text: 'аптека',
-      latitude: 55.75,
-      longitude: 37.605,
-    });
+    const { deps } = makeDeps(async () => [place]);
+    const out = await handleFindPlaces(deps, { text: 'аптека', latitude: 55.75, longitude: 37.6 });
     assert.match(out, /📍 Аптека/);
     assert.match(out, /ул\. Тверская, 1/);
   });
 
-  it('радиус и лимит по умолчанию vs заданные (results в URL)', async () => {
-    const def = makeDeps(okFetch);
+  it('радиус и лимит: дефолты vs заданные', async () => {
+    const def = makeDeps(async () => []);
     await handleFindPlaces(def.deps, { text: 'кафе', latitude: 55.75, longitude: 37.6 });
-    assert.match(def.urls[0], /results=5/); // дефолт
+    assert.equal(def.queries[0].radius, 1500);
+    assert.equal(def.queries[0].limit, 5);
 
-    const custom = makeDeps(okFetch);
+    const custom = makeDeps(async () => []);
     await handleFindPlaces(custom.deps, {
       text: 'кафе',
       latitude: 55.75,
@@ -58,11 +60,12 @@ describe('handleFindPlaces', () => {
       radius: 500,
       limit: 3,
     });
-    assert.match(custom.urls[0], /results=3/); // заданный
+    assert.equal(custom.queries[0].radius, 500);
+    assert.equal(custom.queries[0].limit, 3);
   });
 
   it('пустой text → подсказка', async () => {
-    const { deps } = makeDeps(okFetch);
+    const { deps } = makeDeps(async () => []);
     assert.match(
       await handleFindPlaces(deps, { latitude: 55.75, longitude: 37.6 }),
       /непустой text/,
@@ -70,7 +73,7 @@ describe('handleFindPlaces', () => {
   });
 
   it('нет latitude или нет longitude → подсказка про координаты', async () => {
-    const { deps } = makeDeps(okFetch);
+    const { deps } = makeDeps(async () => []);
     assert.match(
       await handleFindPlaces(deps, { text: 'аптека', longitude: 37.6 }),
       /latitude и longitude/,
@@ -81,11 +84,13 @@ describe('handleFindPlaces', () => {
     );
   });
 
-  it('ошибка HTTP → текст ошибки (Error)', async () => {
-    const { deps } = makeDeps(async () => ({ ok: false, status: 403, json: async () => ({}) }));
+  it('ошибка провайдера (Error) → текст ошибки', async () => {
+    const { deps } = makeDeps(async () => {
+      throw new Error('Overpass API вернул ошибку HTTP 429.');
+    });
     assert.match(
       await handleFindPlaces(deps, { text: 'аптека', latitude: 55.75, longitude: 37.6 }),
-      /HTTP 403/,
+      /HTTP 429/,
     );
   });
 

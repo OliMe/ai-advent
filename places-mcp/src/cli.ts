@@ -5,6 +5,7 @@
  */
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadPlacesConfig } from './config.ts';
+import { createProvider } from './provider.ts';
 import { createServer } from './server.ts';
 
 async function main(): Promise<void> {
@@ -14,7 +15,8 @@ async function main(): Promise<void> {
     // .env необязателен — используем чистое окружение.
   }
   const config = loadPlacesConfig(process.env);
-  const server = createServer({ config, fetchFn: globalThis.fetch as never });
+  const provider = createProvider(config, globalThis.fetch as never);
+  const server = createServer({ config, provider });
   await server.connect(new StdioServerTransport());
 }
 
