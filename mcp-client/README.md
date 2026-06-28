@@ -15,7 +15,7 @@
 | `src/config.ts`      | `McpServerConfig` + разбор карты `mcpServers` (`parseServers`)           |
 | `src/tool-mapping.ts`| MCP `tools/list` → `ToolSpec` ядра; текст из результата вызова           |
 | `src/tool-set.ts`    | `McpToolSet` — агрегатор (add/remove/specs/call/close), неймспейс инструментов |
-| `src/connection.ts`  | Реальное подключение поверх SDK (тонкая обвязка, исключена из покрытия)  |
+| `src/connection.ts`  | Реальное подключение поверх SDK + `connectionFactory(onElicit)` (тонкая обвязка, исключена из покрытия) |
 | `src/index.ts`       | Barrel                                                                   |
 
 Инструменты неймспейсятся как **`сервер__инструмент`** (от коллизий имён): вызов
@@ -37,6 +37,20 @@ await toolSet.close();
 
 `McpToolSet` принимает фабрику подключения (`ConnectFn`) — в проде это `createConnection`
 (SDK), в тестах — фейк, поэтому вся логика агрегатора покрыта на 100% без реального SDK.
+
+### Подтверждения от сервера (MCP elicitation)
+
+`connectionFactory(onElicit)` возвращает `ConnectFn`, у которого клиент объявляет capability
+`elicitation` и переадресует серверные запросы `elicitation/create` обработчику приложения. Так
+сервер (например `filesystem-mcp`) может в рантайме спросить у пользователя разрешение на операцию;
+`createConnection` — это `connectionFactory()` без обработчика (поведение по умолчанию).
+
+```ts
+const connect = connectionFactory(async ({ message }) => ({
+  action: (await askUser(message)) ? 'accept' : 'decline',
+}));
+const toolSet = new McpToolSet(connect);
+```
 
 ## Команды
 
