@@ -144,3 +144,48 @@ export function loadConfig(): AppConfig {
     maxToolRounds: positiveInteger(process.env.LLM_MAX_TOOL_ROUNDS, DEFAULT_MAX_TOOL_ROUNDS),
   };
 }
+
+/**
+ * Конфигурация клиента эмбеддингов (OpenAI-совместимый `/embeddings`). Провайдеро-независима:
+ * URL/модель/ключ задаются окружением, поэтому Ollama (локально, без ключа) меняется на любой
+ * удалённый сервис правкой `.env` без изменений кода.
+ */
+export interface EmbeddingsConfig {
+  /** URL эндпоинта эмбеддингов (например, http://localhost:11434/v1/embeddings). */
+  url: string;
+  /** Имя модели эмбеддингов (например, nomic-embed-text). */
+  model: string;
+  /** Ключ доступа; не задан — заголовок Authorization не шлётся (Ollama его не требует). */
+  apiKey?: string;
+  /** Таймаут запроса, мс. */
+  requestTimeoutMs: number;
+  /** Число повторов при 429/5xx/сетевых сбоях. */
+  maxRetries: number;
+  /** Базовая задержка экспоненциального бэкоффа между повторами, мс. */
+  retryBaseMs: number;
+}
+
+/**
+ * Собирает конфигурацию эмбеддингов из окружения. URL и модель обязательны (без них индексация
+ * невозможна). Таймаут/повторы переиспользуют те же переменные, что и чат-клиент.
+ */
+export function loadEmbeddingsConfig(env: NodeJS.ProcessEnv): EmbeddingsConfig {
+  const url = env.LLM_EMBEDDINGS_URL?.trim();
+  if (!url) {
+    throw new Error('Не задана LLM_EMBEDDINGS_URL (эндпоинт /embeddings) — укажите в .env.');
+  }
+  const model = env.LLM_EMBEDDINGS_MODEL?.trim();
+  if (!model) {
+    throw new Error('Не задана LLM_EMBEDDINGS_MODEL (модель эмбеддингов) — укажите в .env.');
+  }
+  const apiKey = env.LLM_EMBEDDINGS_API_KEY?.trim();
+  const retries = Number(env.LLM_MAX_RETRIES ?? DEFAULT_MAX_RETRIES);
+  return {
+    url,
+    model,
+    ...(apiKey ? { apiKey } : {}),
+    requestTimeoutMs: positiveInteger(env.LLM_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS),
+    maxRetries: Number.isInteger(retries) && retries >= 0 ? retries : DEFAULT_MAX_RETRIES,
+    retryBaseMs: positiveInteger(env.LLM_RETRY_BASE_MS, DEFAULT_RETRY_BASE_MS),
+  };
+}

@@ -1,4 +1,5 @@
 import type { AppConfig } from './config.ts';
+import { isRetryableStatus, retryDelayMs, sleep } from './http-retry.ts';
 import type {
   ApiErrorResponse,
   ChatCompletionChunk,
@@ -57,30 +58,6 @@ function emptyContentError(finishReason: string | null | undefined): Error {
   return new Error(
     finishReason === 'length' ? TRUNCATED_BY_LENGTH_MESSAGE : EMPTY_RESPONSE_MESSAGE,
   );
-}
-
-/** Стоит ли повторять запрос при таком HTTP-статусе (rate limit и ошибки сервера). */
-function isRetryableStatus(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
-/** Задержка перед повтором: учитывает заголовок Retry-After, иначе экспонента. */
-function retryDelayMs(baseMs: number, attempt: number, response?: Response): number {
-  if (response) {
-    const retryAfter = response.headers.get('retry-after');
-    if (retryAfter !== null) {
-      const seconds = Number(retryAfter);
-      if (Number.isFinite(seconds)) {
-        return seconds * 1000;
-      }
-    }
-  }
-  return baseMs * 2 ** attempt;
-}
-
-/** Пауза заданной длительности. */
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /** Клиент для обращения к любому OpenAI-совместимому API chat/completions через fetch. */
