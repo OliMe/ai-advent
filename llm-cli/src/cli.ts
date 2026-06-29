@@ -127,6 +127,7 @@ async function watchMode(): Promise<void> {
     sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
     intervalMs: 30_000,
     shouldContinue: () => running,
+    now: () => new Date(),
   });
   await toolSet.close();
 }
