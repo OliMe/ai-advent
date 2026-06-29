@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { claimsSchedulerActionWithoutCall, TOOL_HONESTY_DIRECTIVE } from '../index.ts';
 
 describe('claimsSchedulerActionWithoutCall', () => {
-  it('заявлено действие (глагол+существительное), инструмент не вызван → true', () => {
+  it('заявлено действие (глагол+существительное), НИ ОДИН инструмент не вызван → true', () => {
     assert.equal(claimsSchedulerActionWithoutCall('Создал два напоминания: …', []), true);
     assert.equal(claimsSchedulerActionWithoutCall('Удалил задачу про отчёт', []), true);
   });
 
-  it('изменяющий инструмент действительно вызван → false', () => {
+  it('изменяющий инструмент планировщика вызван → false', () => {
     assert.equal(
       claimsSchedulerActionWithoutCall('Создал напоминание', ['scheduler__schedule_task']),
       false,
@@ -19,6 +19,12 @@ describe('claimsSchedulerActionWithoutCall', () => {
     const answer =
       'Вот задачи: «Уточнить про поезд на удаление сервиса gifts». Всего 7 активных задач.';
     assert.equal(claimsSchedulerActionWithoutCall(answer, ['scheduler__list_tasks']), false);
+  });
+
+  it('вызван НЕ-планировщик инструмент (запись в файл) → false, хотя есть «добавил…планировщику»', () => {
+    // Реальный кейс: добавил задачи в файл, упомянул «соответствует планировщику» — не фантом.
+    const answer = 'Добавил обе. Теперь tasks.md полностью соответствует планировщику.';
+    assert.equal(claimsSchedulerActionWithoutCall(answer, ['filesystem__append_file']), false);
   });
 
   it('нет глагола действия → false', () => {
