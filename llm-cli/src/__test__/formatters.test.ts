@@ -101,6 +101,9 @@ describe('helpText / formatSessionList / newSession', () => {
     assert.match(text, /\/branch/);
     assert.match(text, /\/switch/);
     assert.match(text, /\/reset/);
+    assert.match(text, /\/voice/);
+    assert.match(text, /\/mcp add/); // семейство /mcp документировано
+    assert.match(text, /\/mcp reload/);
   });
 
   it('formatSessionList: пусто, с именем ветки и с пустым превью', () => {
