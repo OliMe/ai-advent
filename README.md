@@ -20,6 +20,7 @@
 | [`scheduler-mcp/`](scheduler-mcp) | MCP-сервер планировщика отложенных/периодических задач с фоновым исполнением 24/7: `schedule_task`/`list_tasks`/`cancel_task`/`run_now`/`get_history`/… Исполнители `http_check`/`note`/`agent`(LLM)/`system_metrics`/`report`. Доставка результатов — pull (`poll_results` + `llm-cli --watch`) или Telegram. Два транспорта (stdio/HTTP), деплой на VPS. |
 | [`filesystem-mcp/`](filesystem-mcp) | MCP-сервер файловой системы с «мягкой» песочницей (allow-list): `read_file`/`write_file`/`append_file`/`list_dir`/`delete_path`. Путь вне allow-list требует подтверждения пользователя (MCP elicitation); удаление — без рекурсии и без удаления корня. |
 | [`places-mcp/`](places-mcp) | MCP-сервер поиска организаций рядом: инструмент `find_places` (координаты из `get_my_location`) — список с расстоянием/адресом/телефоном/часами. Переключаемые провайдеры `PLACES_PROVIDER=osm\|yandex` (по умолчанию OpenStreetMap Overpass — без ключей). |
+| [`rag/`](rag) | RAG-индексатор: загрузка документов (локальная папка / GitHub / URL с обходом по ссылкам) → чанкинг (2 стратегии: `fixed` и `structural`) → эмбеддинги (`core.EmbeddingsClient`, по умолчанию локальный Ollama) → локальный JSON-индекс с метаданными. CLI `build`/`compare`/`query` (сравнение стратегий + косинус-ретрив). |
 
 Связка «генератор → экстрактор» образует замкнутый цикл: `contract-generator`
 пишет файл договоров, который напрямую читает `contract-extractor`.
@@ -61,6 +62,9 @@ npm start             # см. README конкретного пакета
 | `LLM_RETRY_BASE_MS` | Базовая задержка бэкоффа, мс | `500` |
 | `LLM_STAGE_MAX_TOKENS` | Потолок генерации агентов пайплайна задач, токенов | дефолт провайдера |
 | `LLM_MAX_TOOL_ROUNDS` | Потолок раундов агентного цикла чата с MCP-инструментами (длинный кросс-серверный флоу) | `12` |
+| `LLM_EMBEDDINGS_URL` | Эндпоинт `/embeddings` для RAG (`core.EmbeddingsClient`); напр. Ollama `http://localhost:11434/v1/embeddings` | — |
+| `LLM_EMBEDDINGS_MODEL` | Модель эмбеддингов (напр. `nomic-embed-text`) | — |
+| `LLM_EMBEDDINGS_API_KEY` | Ключ для эмбеддингов (для Ollama не нужен) | — |
 
 ## Разработка
 
@@ -87,7 +91,8 @@ ai-advent/
 ├── yandex-ocr-mcp/        MCP-сервер OCR (Yandex Vision)
 ├── scheduler-mcp/         MCP-сервер планировщика задач (24/7)
 ├── filesystem-mcp/        MCP-сервер файловой системы (песочница)
-└── places-mcp/            MCP-сервер поиска организаций рядом
+├── places-mcp/            MCP-сервер поиска организаций рядом
+└── rag/                   RAG-индексатор документов (чанкинг + эмбеддинги + индекс)
 ```
 
 Подробности по флагам и примерам — в README соответствующего пакета.
