@@ -51,6 +51,7 @@ import { installClipboardPaste, type ClipboardImageReader } from './clipboard-im
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import { readlineConfirm, type ElicitationBridge } from './elicitation.ts';
 import { renderMarkdownForTerminal } from './markdown.ts';
+import { ragSearchDirective } from './rag-directive.ts';
 import type { VoiceInput } from './voice-input.ts';
 import {
   helpText,
@@ -933,6 +934,11 @@ export async function runInteractive(
             const directive = recognizeTextDirective(chatTools.specs());
             if (directive !== null) {
               leading.push({ role: 'system' as const, content: directive });
+            }
+            // Если подключён RAG-поиск (search_docs) — нацеливаем агента искать по документам.
+            const ragDirective = ragSearchDirective(chatTools.specs());
+            if (ragDirective !== null) {
+              leading.push({ role: 'system' as const, content: ragDirective });
             }
             const withTools = [...leading, ...outgoing];
             // Какие инструменты реально вызваны за этот ход — для проверки «фантомных» заявлений.

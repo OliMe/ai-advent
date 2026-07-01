@@ -56,6 +56,7 @@ export * from './notify.ts';
 export * from './watch.ts';
 export * from './elicitation.ts';
 export * from './markdown.ts';
+export * from './rag-directive.ts';
 export * from './yandex-speech.ts';
 export * from './voice-input.ts';
 export * from './interactive.ts';
