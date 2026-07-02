@@ -83,6 +83,51 @@ describe('retrieve', () => {
     );
   });
 
+  it('hook rewrite меняет текст для эмбеддинга, но не запрос для rerank', async () => {
+    const embedded: string[] = [];
+    const capturing = async (inputs: string[]): Promise<number[][]> => {
+      embedded.push(...inputs);
+      return [[1, 0]];
+    };
+    let rerankQuery = '';
+    const results = await retrieve(
+      'исходный',
+      [idx([ch('A', [1, 0]), ch('B', [0, 1])])],
+      opts({ k: 2, kPre: 2, rerank: 'llm' }),
+      capturing,
+      {
+        rewrite: async () => 'переписанный',
+        rerankLlm: async (query, candidates) => {
+          rerankQuery = query;
+          return candidates;
+        },
+      },
+    );
+    assert.deepEqual(embedded, ['переписанный']); // эмбеддится переписанный текст
+    assert.equal(rerankQuery, 'исходный'); // rerank судит по исходному запросу
+    assert.equal(results.length, 2);
+  });
+
+  it('rerank=llm без хука деградирует до none (порядок по score)', async () => {
+    const index = idx([ch('A', [1, 0]), ch('B', [1, 1])]);
+    const results = await retrieve('q', [index], opts({ k: 2, kPre: 2, rerank: 'llm' }), embed);
+    assert.deepEqual(
+      results.map(r => r.chunk.chunk_id),
+      ['A', 'B'],
+    );
+  });
+
+  it('rerank=llm с хуком применяет переранжирование хука', async () => {
+    const index = idx([ch('A', [1, 0]), ch('B', [1, 1])]);
+    const reversed = await retrieve('q', [index], opts({ k: 2, kPre: 2, rerank: 'llm' }), embed, {
+      rerankLlm: async (_query, candidates) => [...candidates].reverse(),
+    });
+    assert.deepEqual(
+      reversed.map(r => r.chunk.chunk_id),
+      ['B', 'A'], // хук перевернул порядок
+    );
+  });
+
   it('rerank=mmr переранжирует результаты (штрафует почти-дубли)', async () => {
     // Запрос [1,0]. A и B почти совпадают (дубли), C — непохожий и менее релевантный. По score
     // порядок A,B,C; MMR при низкой lambda поднимает разнообразный C над дублирующим B.

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadRagConfig, embeddingScheme } from '../index.ts';
+import { loadRagConfig, loadChatConfig, embeddingScheme } from '../index.ts';
 
 const env = (values: Record<string, string | undefined>): NodeJS.ProcessEnv =>
   values as NodeJS.ProcessEnv;
@@ -24,6 +24,22 @@ describe('loadRagConfig', () => {
     });
     assert.equal(config.queryPrefix, 'search_query: ');
     assert.equal(config.docPrefix, 'search_document: ');
+    assert.equal(config.rewrite, 'none');
+    assert.equal(config.chat, null); // без LLM_*/RAG_LLM_* фичи с моделью выключены
+    assert.equal(config.chatDisableThinking, false);
+  });
+
+  it('rewrite/rerank=llm переопределяются; нераспознанный rewrite → none', () => {
+    assert.equal(loadRagConfig(env({ RAG_REWRITE: 'expand' })).rewrite, 'expand');
+    assert.equal(loadRagConfig(env({ RAG_REWRITE: 'hyde' })).rewrite, 'hyde');
+    assert.equal(loadRagConfig(env({ RAG_REWRITE: 'wat' })).rewrite, 'none');
+    assert.equal(loadRagConfig(env({ RAG_RERANK: 'llm' })).rerank, 'llm');
+  });
+
+  it('chatDisableThinking включается по 1/true', () => {
+    assert.equal(loadRagConfig(env({ RAG_LLM_NO_THINKING: '1' })).chatDisableThinking, true);
+    assert.equal(loadRagConfig(env({ RAG_LLM_NO_THINKING: 'true' })).chatDisableThinking, true);
+    assert.equal(loadRagConfig(env({ RAG_LLM_NO_THINKING: 'no' })).chatDisableThinking, false);
   });
 
   it('префиксы nomic переопределяются; пустая строка отключает префикс', () => {
@@ -107,5 +123,53 @@ describe('loadRagConfig', () => {
     assert.equal(bad.k, 5);
     assert.equal(bad.embeddings.maxRetries, 3);
     assert.equal(loadRagConfig(env({ LLM_MAX_RETRIES: '0' })).embeddings.maxRetries, 0);
+  });
+});
+
+describe('loadChatConfig', () => {
+  it('без url/model/ключа → null', () => {
+    assert.equal(loadChatConfig(env({})), null);
+    assert.equal(
+      loadChatConfig(env({ LLM_BASE_URL: 'https://api', LLM_MODEL: 'm' })), // нет ключа
+      null,
+    );
+  });
+
+  it('фолбэк на ядровые LLM_*', () => {
+    const config = loadChatConfig(
+      env({ LLM_API_KEY: 'k', LLM_BASE_URL: 'https://api', LLM_MODEL: 'glm' }),
+    );
+    assert.ok(config);
+    assert.equal(config.apiKey, 'k');
+    assert.equal(config.baseUrl, 'https://api');
+    assert.equal(config.model, 'glm');
+    assert.equal(config.temperature, 0.2); // дефолт для reranking/rewrite
+  });
+
+  it('RAG_LLM_* имеют приоритет над LLM_*; своя температура', () => {
+    const config = loadChatConfig(
+      env({
+        LLM_API_KEY: 'core',
+        LLM_BASE_URL: 'https://core',
+        LLM_MODEL: 'core-model',
+        RAG_LLM_API_KEY: 'rag',
+        RAG_LLM_BASE_URL: 'https://rag',
+        RAG_LLM_MODEL: 'rag-model',
+        RAG_LLM_TEMPERATURE: '0.5',
+      }),
+    );
+    assert.ok(config);
+    assert.equal(config.apiKey, 'rag');
+    assert.equal(config.baseUrl, 'https://rag');
+    assert.equal(config.model, 'rag-model');
+    assert.equal(config.temperature, 0.5);
+  });
+
+  it('loadRagConfig.chat собирается, когда заданы LLM_*', () => {
+    const config = loadRagConfig(
+      env({ LLM_API_KEY: 'k', LLM_BASE_URL: 'https://api', LLM_MODEL: 'm' }),
+    );
+    assert.ok(config.chat);
+    assert.equal(config.chat.model, 'm');
   });
 });

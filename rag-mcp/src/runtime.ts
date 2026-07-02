@@ -4,18 +4,35 @@
  */
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { EmbeddingsClient } from '../../core/src/index.ts';
+import { ChatCompletionClient, EmbeddingsClient } from '../../core/src/index.ts';
+import type { AppConfig } from '../../core/src/index.ts';
 import { buildIndex, loadDocuments, nodeLoaders, JsonIndexStore } from '../../rag/src/index.ts';
 import type { ChunkStrategy, Index } from '../../rag/src/index.ts';
 import type { RagConfig } from './config.ts';
 import { embeddingScheme } from './config.ts';
 import { withPrefix } from './prefix.ts';
 import { ensureIndex } from './index-cache.ts';
+import { makeRewriter } from './rewrite.ts';
+import type { ChatComplete } from './rewrite.ts';
+import { makeChatRerankProvider, makeLlmReranker } from './rerank-llm.ts';
 import type { ToolDeps } from './tools.ts';
 
 /** Путь к файлу индекса в кэше по ключу. */
 function indexPath(cacheDir: string, key: string): string {
   return join(cacheDir, `${key}.json`);
+}
+
+/** Строит функцию chat-обращения над клиентом ядра: system+user промпты → текст ответа. */
+function makeChatComplete(chat: AppConfig, disableThinking: boolean): ChatComplete {
+  const client = new ChatCompletionClient(chat);
+  return (systemPrompt, userPrompt) =>
+    client.complete(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      { disableThinking },
+    );
 }
 
 /** Собирает боевые ToolDeps: эмбеддинги, индексация на лету, файловый кэш. */
@@ -55,5 +72,16 @@ export function createRuntimeDeps(config: RagConfig): ToolDeps {
       .map(name => new JsonIndexStore(join(config.cacheDir, name)).load());
   };
 
-  return { config, embed, ensure, loadAllCached };
+  // rewrite/LLM-реранк требуют chat-модель; без неё эти хуки не задаются и конвейер идёт как есть.
+  const complete = config.chat ? makeChatComplete(config.chat, config.chatDisableThinking) : null;
+  const rewrite =
+    complete && config.rewrite !== 'none'
+      ? (makeRewriter(config.rewrite, complete) ?? undefined)
+      : undefined;
+  const rerankLlm =
+    complete && config.rerank === 'llm'
+      ? makeLlmReranker(makeChatRerankProvider(complete))
+      : undefined;
+
+  return { config, embed, ensure, loadAllCached, rewrite, rerankLlm };
 }

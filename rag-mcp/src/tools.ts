@@ -1,4 +1,4 @@
-import type { ChunkStrategy, EmbedFn, Index } from '../../rag/src/index.ts';
+import type { ChunkStrategy, EmbedFn, Index, ScoredChunk } from '../../rag/src/index.ts';
 import type { RagConfig } from './config.ts';
 import { retrieve } from './retrieval.ts';
 import { formatResults, formatIndexes } from './format.ts';
@@ -12,6 +12,10 @@ export interface ToolDeps {
   ensure(source: string, strategy: ChunkStrategy): Promise<Index>;
   /** Все кэшированные индексы (для поиска без source и для list_indexes). */
   loadAllCached(): Index[];
+  /** Переписывание запроса (если rewrite≠none и есть chat-модель); иначе не задан. */
+  rewrite?: (query: string) => Promise<string>;
+  /** LLM/cross-encoder переранжирование (если rerank=llm и есть chat-модель); иначе не задан. */
+  rerankLlm?: (query: string, candidates: ScoredChunk[]) => Promise<ScoredChunk[]>;
 }
 
 /** Текст ошибки из неизвестного значения. */
@@ -73,6 +77,7 @@ export async function handleSearchDocs(
         mmrLambda: deps.config.mmrLambda,
       },
       deps.embed,
+      { rewrite: deps.rewrite, rerankLlm: deps.rerankLlm },
     );
     return formatResults(query, scored);
   } catch (error) {

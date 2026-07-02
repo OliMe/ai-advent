@@ -1,8 +1,9 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { EmbeddingsConfig } from '../../core/src/index.ts';
+import type { AppConfig, EmbeddingsConfig } from '../../core/src/index.ts';
 import type { ChunkStrategy, ChunkOptions } from '../../rag/src/index.ts';
 import type { RerankMode } from './retrieval.ts';
+import type { RewriteMode } from './rewrite.ts';
 
 /** Конфигурация RAG-сервера: кэш, стратегия, размеры выборки, чанкинг, эмбеддинги. */
 export interface RagConfig {
@@ -16,10 +17,16 @@ export interface RagConfig {
   kPre: number;
   /** Порог косинуса: чанки ниже отсекаются на стадии фильтра (0 — выключено). */
   minScore: number;
-  /** Режим переранжирования (none/mmr). */
+  /** Режим переранжирования (none/mmr/llm). */
   rerank: RerankMode;
   /** Баланс релевантность/разнообразие для MMR (0..1). */
   mmrLambda: number;
+  /** Режим переписывания запроса (none/expand/hyde). */
+  rewrite: RewriteMode;
+  /** Chat-модель для rewrite/LLM-реранка (RAG_LLM_* с фолбэком на LLM_*); null — фичи выключены. */
+  chat: AppConfig | null;
+  /** Отключать «рассуждения» chat-модели (нужно для GLM). */
+  chatDisableThinking: boolean;
   /** Опции чанкинга. */
   chunk: ChunkOptions;
   /** Глубина веб-обхода при индексации URL. */
@@ -65,6 +72,60 @@ function boundedNumber(
   return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
 }
 
+/** Первое непустое (trim) значение из перечня переменных окружения или undefined. */
+function firstNonEmpty(...values: (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
+/** Режим переписывания запроса из env (expand/hyde) или none по умолчанию. */
+function resolveRewrite(raw: string | undefined): RewriteMode {
+  const value = raw?.trim();
+  return value === 'expand' || value === 'hyde' ? value : 'none';
+}
+
+/** Режим переранжирования из env (none/llm) или mmr по умолчанию. */
+function resolveRerank(raw: string | undefined): RerankMode {
+  const value = raw?.trim();
+  return value === 'none' || value === 'llm' ? value : 'mmr';
+}
+
+/**
+ * Собирает конфиг chat-модели для rewrite/LLM-реранка: сначала RAG_LLM_*, затем фолбэк на ядровые
+ * LLM_*. Если url/model/ключ так и не набрались — возвращает null (фичи с LLM просто выключаются).
+ */
+export function loadChatConfig(env: NodeJS.ProcessEnv): AppConfig | null {
+  const apiKey = firstNonEmpty(env.RAG_LLM_API_KEY, env.LLM_API_KEY);
+  const baseUrl = firstNonEmpty(env.RAG_LLM_BASE_URL, env.LLM_BASE_URL);
+  const model = firstNonEmpty(env.RAG_LLM_MODEL, env.LLM_MODEL);
+  if (!apiKey || !baseUrl || !model) {
+    return null;
+  }
+  return {
+    apiKey,
+    baseUrl,
+    model,
+    // Низкая температура — стабильнее для reranking и переписывания запроса.
+    temperature: boundedNumber(env.RAG_LLM_TEMPERATURE, 0.2, 0, 2),
+    systemPrompt: '',
+    requestTimeoutMs: positiveInteger(env.LLM_REQUEST_TIMEOUT_MS, 60_000),
+    contextTokens: positiveInteger(env.LLM_CONTEXT_TOKENS, 8192),
+    maxRetries: nonNegativeInteger(env.LLM_MAX_RETRIES, 3),
+    retryBaseMs: positiveInteger(env.LLM_RETRY_BASE_MS, 500),
+    priceInputPer1M: 0,
+    priceOutputPer1M: 0,
+    usdToRub: 90,
+    maxStageAgents: 4,
+    stageAgentConcurrency: 2,
+    maxToolRounds: 12,
+  };
+}
+
 /** Собирает конфигурацию RAG-сервера из окружения (с разумными дефолтами под Ollama). */
 export function loadRagConfig(env: NodeJS.ProcessEnv): RagConfig {
   const strategy: ChunkStrategy = env.RAG_STRATEGY?.trim() === 'fixed' ? 'fixed' : 'structural';
@@ -76,8 +137,12 @@ export function loadRagConfig(env: NodeJS.ProcessEnv): RagConfig {
     k,
     kPre: positiveInteger(env.RAG_TOP_K_PRE, 20),
     minScore: boundedNumber(env.RAG_MIN_SCORE, 0, 0, 1),
-    rerank: env.RAG_RERANK?.trim() === 'none' ? 'none' : 'mmr',
+    rerank: resolveRerank(env.RAG_RERANK),
     mmrLambda: boundedNumber(env.RAG_MMR_LAMBDA, 0.7, 0, 1),
+    rewrite: resolveRewrite(env.RAG_REWRITE),
+    chat: loadChatConfig(env),
+    chatDisableThinking:
+      env.RAG_LLM_NO_THINKING?.trim() === '1' || env.RAG_LLM_NO_THINKING?.trim() === 'true',
     chunk: {
       fixed: {
         size: positiveInteger(env.RAG_CHUNK_SIZE, 2000),
