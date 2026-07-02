@@ -1,6 +1,7 @@
 export { loadRagConfig, loadChatConfig, embeddingScheme } from './config.ts';
 export type { RagConfig } from './config.ts';
 export { withPrefix } from './prefix.ts';
+export { packageEnvPath, loadPackageEnv } from './env.ts';
 export { sourceKey } from './cache-key.ts';
 export { retrieve } from './retrieval.ts';
 export type {

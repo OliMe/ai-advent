@@ -69,7 +69,11 @@ ollama serve
 ollama pull nomic-embed-text
 ```
 
-Переменные окружения (все опциональны):
+Конфигурация читается из **`.env` рядом с пакетом** (`rag-mcp/.env`) — по пути модуля, а НЕ из
+текущего рабочего каталога. Поэтому конфиг одинаков, откуда бы сервер ни запустили, в том числе
+когда его поднимает `llm-cli` как MCP-процесс (у того свой cwd). Уже заданные переменные окружения
+имеют приоритет над файлом (`loadEnvFile` их не перезаписывает), так что `env`-блок записи сервера в
+`~/.llm-cli/mcp.json` при желании перекрывает файл. Переменные окружения (все опциональны):
 
 | Переменная | Назначение | По умолчанию |
 | ---------- | ---------- | ------------ |
@@ -98,6 +102,19 @@ ollama pull nomic-embed-text
 источником, при необходимости построит индекс и ответит по документации со ссылкой на источники.
 Пример: «Что делает репозиторий https://github.com/krutoo/utils?» → индекс на лету → ответ по README.
 
+Стадии Day-23 (`rerank`/`rewrite`/`minScore`) агент задаёт **дефолтами сервера** (из `rag-mcp/.env`)
+или **аргументами** вызова `search_docs`. Чтобы включить rewrite/LLM-реранк по умолчанию, положите в
+`rag-mcp/.env` chat-модель и режимы:
+
+```bash
+printf 'RAG_RERANK=llm\nRAG_REWRITE=hyde\nRAG_MIN_SCORE=0.5\nRAG_LLM_NO_THINKING=1\n' >> rag-mcp/.env
+# chat-модель: свои RAG_LLM_* или ядровые LLM_* (URL/MODEL/API_KEY)
+```
+
+Демонстрация «до/после» в чате: задайте один вопрос при `RAG_RERANK=none RAG_REWRITE=none` (базовый
+режим), затем поменяйте на `llm`/`hyde` и `/mcp reload` — сравните ответ и процитированный источник.
+Либо в одном сеансе переключайте режим прямо в запросе («…вызови search_docs с rerank=llm, rewrite=hyde»).
+
 ## Команды разработки
 
 ```bash
@@ -111,6 +128,7 @@ npm run write-prettier  # форматирование
 | Файл | Назначение |
 | ---- | ---------- |
 | `src/config.ts` | `loadRagConfig` (стратегия, k/kPre, порог, rerank/rewrite, префиксы, эмбеддинги) + `loadChatConfig` (RAG_LLM_* → фолбэк LLM_*) + `embeddingScheme`. |
+| `src/env.ts` | `loadPackageEnv`/`packageEnvPath` — загрузка `.env` рядом с пакетом (по пути модуля, не из cwd). |
 | `src/cache-key.ts` | `sourceKey(source, strategy, scheme)` — ключ кэша со «схемой» эмбеддинга. |
 | `src/prefix.ts` | `withPrefix(embed, prefix)` — префиксы задачи nomic для эмбеддера. |
 | `src/retrieval.ts` | Staged-конвейер (rewrite → эмбеддинг → topK → фильтр → rerank → срез k) + трасса. |

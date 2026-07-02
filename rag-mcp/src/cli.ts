@@ -5,15 +5,14 @@
  */
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { loadRagConfig } from './config.ts';
+import { loadPackageEnv } from './env.ts';
 import { createRuntimeDeps } from './runtime.ts';
 import { createServer } from './server.ts';
 
 async function main(): Promise<void> {
-  try {
-    process.loadEnvFile();
-  } catch {
-    // .env необязателен (Ollama без ключа).
-  }
+  // .env берётся рядом с пакетом (по пути модуля), а не из cwd — чтобы конфиг не зависел от того,
+  // откуда сервер запущен (в т.ч. когда его поднимает llm-cli как MCP-процесс).
+  loadPackageEnv(import.meta.dirname, path => process.loadEnvFile(path));
   const config = loadRagConfig(process.env);
   const server = createServer(createRuntimeDeps(config));
   await server.connect(new StdioServerTransport());
