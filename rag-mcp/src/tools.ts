@@ -64,7 +64,14 @@ export async function handleSearchDocs(
     const scored = await retrieve(
       query,
       indexes,
-      { k, kPre: Math.max(k, deps.config.kPre), queryPrefix: deps.config.queryPrefix },
+      {
+        k,
+        kPre: Math.max(k, deps.config.kPre),
+        queryPrefix: deps.config.queryPrefix,
+        minScore: deps.config.minScore,
+        rerank: deps.config.rerank,
+        mmrLambda: deps.config.mmrLambda,
+      },
       deps.embed,
     );
     return formatResults(query, scored);

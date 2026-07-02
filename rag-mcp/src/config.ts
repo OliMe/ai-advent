@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { EmbeddingsConfig } from '../../core/src/index.ts';
 import type { ChunkStrategy, ChunkOptions } from '../../rag/src/index.ts';
+import type { RerankMode } from './retrieval.ts';
 
 /** Конфигурация RAG-сервера: кэш, стратегия, размеры выборки, чанкинг, эмбеддинги. */
 export interface RagConfig {
@@ -11,8 +12,14 @@ export interface RagConfig {
   strategy: ChunkStrategy;
   /** Сколько чанков отдавать в результат (top-K после стадии rerank/фильтра). */
   k: number;
-  /** Сколько доставать до стадии rerank/фильтра (хук Дня 23; по умолчанию = k). */
+  /** Сколько доставать до стадии rerank/фильтра (kPre ≥ k; по умолчанию 20). */
   kPre: number;
+  /** Порог косинуса: чанки ниже отсекаются на стадии фильтра (0 — выключено). */
+  minScore: number;
+  /** Режим переранжирования (none/mmr). */
+  rerank: RerankMode;
+  /** Баланс релевантность/разнообразие для MMR (0..1). */
+  mmrLambda: number;
   /** Опции чанкинга. */
   chunk: ChunkOptions;
   /** Глубина веб-обхода при индексации URL. */
@@ -47,6 +54,17 @@ function nonNegativeInteger(raw: string | undefined, fallback: number): number {
   return Number.isInteger(value) && value >= 0 ? value : fallback;
 }
 
+/** Дробное число в диапазоне [min, max] из env или значение по умолчанию. */
+function boundedNumber(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+}
+
 /** Собирает конфигурацию RAG-сервера из окружения (с разумными дефолтами под Ollama). */
 export function loadRagConfig(env: NodeJS.ProcessEnv): RagConfig {
   const strategy: ChunkStrategy = env.RAG_STRATEGY?.trim() === 'fixed' ? 'fixed' : 'structural';
@@ -56,7 +74,10 @@ export function loadRagConfig(env: NodeJS.ProcessEnv): RagConfig {
     cacheDir: env.RAG_CACHE_DIR?.trim() || join(homedir(), '.rag-mcp', 'indexes'),
     strategy,
     k,
-    kPre: positiveInteger(env.RAG_TOP_K_PRE, k),
+    kPre: positiveInteger(env.RAG_TOP_K_PRE, 20),
+    minScore: boundedNumber(env.RAG_MIN_SCORE, 0, 0, 1),
+    rerank: env.RAG_RERANK?.trim() === 'none' ? 'none' : 'mmr',
+    mmrLambda: boundedNumber(env.RAG_MMR_LAMBDA, 0.7, 0, 1),
     chunk: {
       fixed: {
         size: positiveInteger(env.RAG_CHUNK_SIZE, 2000),

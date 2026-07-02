@@ -6,11 +6,14 @@ const env = (values: Record<string, string | undefined>): NodeJS.ProcessEnv =>
   values as NodeJS.ProcessEnv;
 
 describe('loadRagConfig', () => {
-  it('дефолты: structural, k=kPre=5, Ollama-эмбеддинги без ключа', () => {
+  it('дефолты: structural, k=5, kPre=20, mmr/порог, Ollama-эмбеддинги без ключа', () => {
     const config = loadRagConfig(env({}));
     assert.equal(config.strategy, 'structural');
     assert.equal(config.k, 5);
-    assert.equal(config.kPre, 5);
+    assert.equal(config.kPre, 20);
+    assert.equal(config.minScore, 0);
+    assert.equal(config.rerank, 'mmr');
+    assert.equal(config.mmrLambda, 0.7);
     assert.match(config.cacheDir, /\.rag-mcp\/indexes$/);
     assert.equal(config.embeddings.url, 'http://localhost:11434/v1/embeddings');
     assert.equal(config.embeddings.model, 'nomic-embed-text');
@@ -46,8 +49,22 @@ describe('loadRagConfig', () => {
     assert.equal(loadRagConfig(env({ RAG_STRATEGY: 'fixed' })).strategy, 'fixed');
   });
 
-  it('kPre по умолчанию равен k', () => {
-    assert.equal(loadRagConfig(env({ RAG_TOP_K: '8' })).kPre, 8);
+  it('kPre по умолчанию 20 независимо от k', () => {
+    assert.equal(loadRagConfig(env({ RAG_TOP_K: '8' })).kPre, 20);
+  });
+
+  it('rerank/порог/lambda переопределяются; невалидные → дефолты', () => {
+    const custom = loadRagConfig(
+      env({ RAG_RERANK: 'none', RAG_MIN_SCORE: '0.4', RAG_MMR_LAMBDA: '0.5' }),
+    );
+    assert.equal(custom.rerank, 'none');
+    assert.equal(custom.minScore, 0.4);
+    assert.equal(custom.mmrLambda, 0.5);
+    // Нераспознанный режим → дефолт mmr; порог/лямбда вне [0,1] → дефолты.
+    const bad = loadRagConfig(env({ RAG_RERANK: 'wat', RAG_MIN_SCORE: '2', RAG_MMR_LAMBDA: '-1' }));
+    assert.equal(bad.rerank, 'mmr');
+    assert.equal(bad.minScore, 0);
+    assert.equal(bad.mmrLambda, 0.7);
   });
 
   it('переопределения из окружения (в т.ч. эмбеддинги и kPre)', () => {
