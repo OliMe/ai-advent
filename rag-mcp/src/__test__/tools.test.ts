@@ -29,7 +29,7 @@ function makeDeps(over: Partial<ToolDeps> = {}): {
 } {
   const ensured: { source: string; strategy: ChunkStrategy }[] = [];
   const deps: ToolDeps = {
-    config: loadRagConfig({} as NodeJS.ProcessEnv),
+    config: loadRagConfig({ RAG_RERANK: 'none' } as NodeJS.ProcessEnv),
     embed: async () => [[1, 0]],
     ensure: async (source, strategy) => {
       ensured.push({ source, strategy });
@@ -66,6 +66,51 @@ describe('handleSearchDocs', () => {
       strategy: 'structural',
     });
     assert.equal(structuralDeps.ensured[0].strategy, 'structural');
+  });
+
+  it('печатает трассу «до/после» (кандидаты → rerank → итог)', async () => {
+    const { deps } = makeDeps();
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's' });
+    assert.match(out, /🔎 кандидатов 2 → rerank\(none\): 2/);
+  });
+
+  it('аргумент rerank переопределяет режim (mmr в трассе)', async () => {
+    const { deps } = makeDeps();
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's', rerank: 'mmr' });
+    assert.match(out, /rerank\(mmr\)/);
+  });
+
+  it('аргумент minScore отсекает слабые (видно в трассе)', async () => {
+    const { deps } = makeDeps();
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's', minScore: 0.5 });
+    // B(cos=0) отсечён порогом 0.5: из 2 кандидатов остаётся 1.
+    assert.match(out, /порог≥0\.50: 1/);
+    assert.match(out, /Найдено фрагментов: 1/);
+  });
+
+  it('rewrite=expand с chat-моделью переписывает запрос (пометка в трассе)', async () => {
+    const calls: string[] = [];
+    const chatComplete = async (system: string) => {
+      calls.push(system);
+      return 'синонимы';
+    };
+    const { deps } = makeDeps({ chatComplete });
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's', rewrite: 'expand' });
+    assert.match(out, /запрос переписан/);
+    assert.equal(calls.length, 1); // модель вызвана для переписывания
+  });
+
+  it('rerank=llm с chat-моделью реранжирует (llm в трассе)', async () => {
+    const chatComplete = async () => '[0.9, 0.1]';
+    const { deps } = makeDeps({ chatComplete });
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's', rerank: 'llm' });
+    assert.match(out, /rerank\(llm\)/);
+  });
+
+  it('rerank=llm без chat-модели деградирует до none', async () => {
+    const { deps } = makeDeps(); // без chatComplete
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's', rerank: 'llm' });
+    assert.match(out, /rerank\(none\)/);
   });
 
   it('без source и пустой кэш → подсказка', async () => {

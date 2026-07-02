@@ -1,7 +1,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatResults, formatIndexes } from '../index.ts';
+import { formatResults, formatTrace, formatIndexes } from '../index.ts';
+import type { RetrieveTrace } from '../index.ts';
 import type { Index, IndexedChunk, ScoredChunk } from '../../../rag/src/index.ts';
+
+const trace = (over: Partial<RetrieveTrace> = {}): RetrieveTrace => ({
+  rewritten: false,
+  candidates: 20,
+  minScore: 0,
+  afterThreshold: 20,
+  rerank: 'mmr',
+  returned: 5,
+  ...over,
+});
 
 const ch = (over: Partial<IndexedChunk> = {}): IndexedChunk => ({
   chunk_id: 'c',
@@ -14,18 +25,43 @@ const ch = (over: Partial<IndexedChunk> = {}): IndexedChunk => ({
   ...over,
 });
 
-describe('formatResults', () => {
-  it('пусто → сообщение «не найдено»', () => {
-    assert.match(
-      formatResults('вопрос', []),
-      /По запросу «вопрос» релевантных фрагментов не найдено/,
+describe('formatTrace', () => {
+  it('без порога и rewrite: кандидаты → rerank → итог', () => {
+    assert.equal(
+      formatTrace(trace({ candidates: 20, rerank: 'mmr', returned: 5 })),
+      '🔎 кандидатов 20 → rerank(mmr): 5',
     );
   });
 
-  it('нумерует фрагменты с метками источника, оценкой и текстом', () => {
+  it('с порогом и rewrite: показывает стадию фильтра и пометку переписывания', () => {
+    assert.equal(
+      formatTrace(
+        trace({
+          rewritten: true,
+          candidates: 20,
+          minScore: 0.3,
+          afterThreshold: 8,
+          rerank: 'llm',
+          returned: 5,
+        }),
+      ),
+      '🔎 кандидатов 20 → порог≥0.30: 8 → rerank(llm): 5, запрос переписан',
+    );
+  });
+});
+
+describe('formatResults', () => {
+  it('пусто → сообщение «не найдено» + трасса', () => {
+    const out = formatResults('вопрос', [], trace({ candidates: 0, returned: 0 }));
+    assert.match(out, /По запросу «вопрос» релевантных фрагментов не найдено/);
+    assert.match(out, /🔎 кандидатов 0/);
+  });
+
+  it('нумерует фрагменты с метками источника, оценкой и текстом; печатает трассу', () => {
     const scored: ScoredChunk[] = [{ chunk: ch(), score: 0.831 }];
-    const out = formatResults('как установить', scored);
+    const out = formatResults('как установить', scored, trace({ candidates: 12, returned: 1 }));
     assert.match(out, /Найдено фрагментов: 1/);
+    assert.match(out, /🔎 кандидатов 12 → rerank\(mmr\): 1/);
     assert.match(out, /\[1\] github\.com\/o\/r › README\.md › Установка \(0\.831\)/);
     assert.match(out, /как установить пакет/);
   });

@@ -3,7 +3,13 @@ export type { RagConfig } from './config.ts';
 export { withPrefix } from './prefix.ts';
 export { sourceKey } from './cache-key.ts';
 export { retrieve } from './retrieval.ts';
-export type { RetrieveOptions, RetrieveHooks, RerankMode } from './retrieval.ts';
+export type {
+  RetrieveOptions,
+  RetrieveHooks,
+  RetrieveResult,
+  RetrieveTrace,
+  RerankMode,
+} from './retrieval.ts';
 export { mmrRerank } from './mmr.ts';
 export { makeRewriter } from './rewrite.ts';
 export type { RewriteMode, ChatComplete } from './rewrite.ts';
@@ -11,6 +17,6 @@ export { makeLlmReranker, makeChatRerankProvider, parseScores } from './rerank-l
 export type { RerankProvider } from './rerank-llm.ts';
 export { ensureIndex } from './index-cache.ts';
 export type { CacheDeps } from './index-cache.ts';
-export { formatResults, formatIndexes } from './format.ts';
+export { formatResults, formatTrace, formatIndexes } from './format.ts';
 export { handleSearchDocs, handleListIndexes, handleBuildIndex } from './tools.ts';
 export type { ToolDeps } from './tools.ts';

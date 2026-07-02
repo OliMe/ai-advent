@@ -1,19 +1,32 @@
 import type { Index, ScoredChunk } from '../../rag/src/index.ts';
+import type { RetrieveTrace } from './retrieval.ts';
+
+/** Однострочная трасса конвейера «до/после»: кандидаты → фильтр порога → rerank → итог (+ rewrite). */
+export function formatTrace(trace: RetrieveTrace): string {
+  const stages = [`кандидатов ${trace.candidates}`];
+  if (trace.minScore > 0) {
+    stages.push(`порог≥${trace.minScore.toFixed(2)}: ${trace.afterThreshold}`);
+  }
+  stages.push(`rerank(${trace.rerank}): ${trace.returned}`);
+  const rewrite = trace.rewritten ? ', запрос переписан' : '';
+  return `🔎 ${stages.join(' → ')}${rewrite}`;
+}
 
 /**
- * Форматирует найденные чанки в текст результата инструмента: пронумерованные фрагменты с метками
- * источника `[source › file › section]` и оценкой близости, затем текст. Этот текст уходит модели
- * как результат вызова — по нему она и отвечает, ссылаясь на источники.
+ * Форматирует найденные чанки в текст результата инструмента: строка-трасса стадий, затем
+ * пронумерованные фрагменты с метками источника `[source › file › section]` и оценкой близости.
+ * Этот текст уходит модели как результат вызова — по нему она и отвечает, ссылаясь на источники.
  */
-export function formatResults(query: string, scored: ScoredChunk[]): string {
+export function formatResults(query: string, scored: ScoredChunk[], trace: RetrieveTrace): string {
+  const diagnostics = formatTrace(trace);
   if (scored.length === 0) {
-    return `По запросу «${query}» релевантных фрагментов не найдено.`;
+    return `По запросу «${query}» релевантных фрагментов не найдено.\n${diagnostics}`;
   }
   const blocks = scored.map(({ chunk, score }, index) => {
     const label = `[${index + 1}] ${chunk.source} › ${chunk.file} › ${chunk.section} (${score.toFixed(3)})`;
     return `${label}\n${chunk.text}`;
   });
-  return `Найдено фрагментов: ${scored.length} по запросу «${query}»:\n\n${blocks.join('\n\n')}`;
+  return `Найдено фрагментов: ${scored.length} по запросу «${query}»:\n${diagnostics}\n\n${blocks.join('\n\n')}`;
 }
 
 /** Краткая сводка кэшированных индексов для list_indexes. */

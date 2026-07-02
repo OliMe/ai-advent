@@ -36,17 +36,27 @@ const opts = (over: Partial<RetrieveOptions> = {}): RetrieveOptions => ({
 });
 
 describe('retrieve', () => {
-  it('эмбеддит запрос, берёт top-kPre по косинусу и срезает до k', async () => {
+  it('эмбеддит запрос, берёт top-kPre по косинусу и срезает до k; трасса заполнена', async () => {
     const index = idx([ch('A', [1, 0]), ch('B', [0, 1]), ch('C', [1, 1])]);
-    const results = await retrieve('вопрос', [index], opts({ k: 2, kPre: 3 }), embed);
+    const { results, trace } = await retrieve('вопрос', [index], opts({ k: 2, kPre: 3 }), embed);
     assert.deepEqual(
       results.map(r => r.chunk.chunk_id),
       ['A', 'C'], // A(cos=1) ближе C(≈0.707); B(0) отсечён срезом k=2
     );
+    assert.deepEqual(trace, {
+      rewritten: false,
+      candidates: 3,
+      minScore: 0,
+      afterThreshold: 3,
+      rerank: 'none',
+      returned: 2,
+    });
   });
 
   it('несколько индексов объединяются; пустой вход → пусто', async () => {
-    assert.deepEqual(await retrieve('q', [], opts({ k: 2, kPre: 3 }), embed), []);
+    const empty = await retrieve('q', [], opts({ k: 2, kPre: 3 }), embed);
+    assert.deepEqual(empty.results, []);
+    assert.equal(empty.trace.candidates, 0);
     const merged = await retrieve(
       'q',
       [idx([ch('A', [1, 0])]), idx([ch('B', [1, 1])])],
@@ -54,7 +64,7 @@ describe('retrieve', () => {
       embed,
     );
     assert.deepEqual(
-      merged.map(r => r.chunk.chunk_id),
+      merged.results.map(r => r.chunk.chunk_id),
       ['A', 'B'],
     );
   });
@@ -74,23 +84,31 @@ describe('retrieve', () => {
     assert.deepEqual(seen, ['search_query: вопрос']);
   });
 
-  it('minScore отсекает чанки ниже порога', async () => {
+  it('minScore отсекает чанки ниже порога; трасса показывает до/после', async () => {
     const index = idx([ch('A', [1, 0]), ch('B', [0, 1]), ch('C', [1, 1])]);
-    const results = await retrieve('q', [index], opts({ k: 5, kPre: 5, minScore: 0.5 }), embed);
+    const { results, trace } = await retrieve(
+      'q',
+      [index],
+      opts({ k: 5, kPre: 5, minScore: 0.5 }),
+      embed,
+    );
     assert.deepEqual(
       results.map(r => r.chunk.chunk_id),
       ['A', 'C'], // B(cos=0) отсечён порогом 0.5
     );
+    assert.equal(trace.candidates, 3);
+    assert.equal(trace.afterThreshold, 2);
+    assert.equal(trace.minScore, 0.5);
   });
 
-  it('hook rewrite меняет текст для эмбеддинга, но не запрос для rerank', async () => {
+  it('hook rewrite меняет текст для эмбеддинга, но не запрос для rerank; трасса rewritten=true', async () => {
     const embedded: string[] = [];
     const capturing = async (inputs: string[]): Promise<number[][]> => {
       embedded.push(...inputs);
       return [[1, 0]];
     };
     let rerankQuery = '';
-    const results = await retrieve(
+    const { results, trace } = await retrieve(
       'исходный',
       [idx([ch('A', [1, 0]), ch('B', [0, 1])])],
       opts({ k: 2, kPre: 2, rerank: 'llm' }),
@@ -106,24 +124,36 @@ describe('retrieve', () => {
     assert.deepEqual(embedded, ['переписанный']); // эмбеддится переписанный текст
     assert.equal(rerankQuery, 'исходный'); // rerank судит по исходному запросу
     assert.equal(results.length, 2);
+    assert.equal(trace.rewritten, true);
+    assert.equal(trace.rerank, 'llm');
   });
 
-  it('rerank=llm без хука деградирует до none (порядок по score)', async () => {
+  it('rerank=llm без хука деградирует до none (трасса rerank=none)', async () => {
     const index = idx([ch('A', [1, 0]), ch('B', [1, 1])]);
-    const results = await retrieve('q', [index], opts({ k: 2, kPre: 2, rerank: 'llm' }), embed);
+    const { results, trace } = await retrieve(
+      'q',
+      [index],
+      opts({ k: 2, kPre: 2, rerank: 'llm' }),
+      embed,
+    );
     assert.deepEqual(
       results.map(r => r.chunk.chunk_id),
       ['A', 'B'],
     );
+    assert.equal(trace.rerank, 'none');
   });
 
   it('rerank=llm с хуком применяет переранжирование хука', async () => {
     const index = idx([ch('A', [1, 0]), ch('B', [1, 1])]);
-    const reversed = await retrieve('q', [index], opts({ k: 2, kPre: 2, rerank: 'llm' }), embed, {
-      rerankLlm: async (_query, candidates) => [...candidates].reverse(),
-    });
+    const { results } = await retrieve(
+      'q',
+      [index],
+      opts({ k: 2, kPre: 2, rerank: 'llm' }),
+      embed,
+      { rerankLlm: async (_query, candidates) => [...candidates].reverse() },
+    );
     assert.deepEqual(
-      reversed.map(r => r.chunk.chunk_id),
+      results.map(r => r.chunk.chunk_id),
       ['B', 'A'], // хук перевернул порядок
     );
   });
@@ -134,7 +164,7 @@ describe('retrieve', () => {
     const index = idx([ch('A', [2, 1]), ch('B', [2, 1.05]), ch('C', [1, 2])]);
     const plain = await retrieve('q', [index], opts({ k: 3, kPre: 3, rerank: 'none' }), embed);
     assert.deepEqual(
-      plain.map(r => r.chunk.chunk_id),
+      plain.results.map(r => r.chunk.chunk_id),
       ['A', 'B', 'C'],
     );
     const diversified = await retrieve(
@@ -144,8 +174,9 @@ describe('retrieve', () => {
       embed,
     );
     assert.deepEqual(
-      diversified.map(r => r.chunk.chunk_id),
+      diversified.results.map(r => r.chunk.chunk_id),
       ['A', 'C', 'B'], // C поднят над дублирующим B
     );
+    assert.equal(diversified.trace.rerank, 'mmr');
   });
 });

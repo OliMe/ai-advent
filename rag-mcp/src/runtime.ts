@@ -12,9 +12,7 @@ import type { RagConfig } from './config.ts';
 import { embeddingScheme } from './config.ts';
 import { withPrefix } from './prefix.ts';
 import { ensureIndex } from './index-cache.ts';
-import { makeRewriter } from './rewrite.ts';
 import type { ChatComplete } from './rewrite.ts';
-import { makeChatRerankProvider, makeLlmReranker } from './rerank-llm.ts';
 import type { ToolDeps } from './tools.ts';
 
 /** Путь к файлу индекса в кэше по ключу. */
@@ -72,16 +70,10 @@ export function createRuntimeDeps(config: RagConfig): ToolDeps {
       .map(name => new JsonIndexStore(join(config.cacheDir, name)).load());
   };
 
-  // rewrite/LLM-реранк требуют chat-модель; без неё эти хуки не задаются и конвейер идёт как есть.
-  const complete = config.chat ? makeChatComplete(config.chat, config.chatDisableThinking) : null;
-  const rewrite =
-    complete && config.rewrite !== 'none'
-      ? (makeRewriter(config.rewrite, complete) ?? undefined)
-      : undefined;
-  const rerankLlm =
-    complete && config.rerank === 'llm'
-      ? makeLlmReranker(makeChatRerankProvider(complete))
-      : undefined;
+  // rewrite/LLM-реранк требуют chat-модель; без неё chatComplete не задаётся и хуки не строятся.
+  const chatComplete = config.chat
+    ? makeChatComplete(config.chat, config.chatDisableThinking)
+    : undefined;
 
-  return { config, embed, ensure, loadAllCached, rewrite, rerankLlm };
+  return { config, embed, ensure, loadAllCached, chatComplete };
 }

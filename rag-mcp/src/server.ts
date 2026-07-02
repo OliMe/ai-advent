@@ -23,13 +23,18 @@ export function createServer(deps: ToolDeps): McpServer {
       description:
         'Ищет релевантные фрагменты в проиндексированных документах. Если задан source ' +
         '(ссылка на github.com / путь к папке / URL документации) — индексирует его на лету при ' +
-        'отсутствии индекса, иначе ищет по уже построенным. Возвращает фрагменты с метками ' +
-        'источников — отвечай по ним и ссылайся на источник.',
+        'отсутствии индекса, иначе ищет по уже построенным. Опц. можно переопределить порог ' +
+        'релевантности (minScore), режим переранжирования (rerank: none/mmr/llm) и переписывания ' +
+        'запроса (rewrite: none/expand/hyde). Возвращает фрагменты с метками источников (и трассу ' +
+        'стадий) — отвечай по ним и ссылайся на источник.',
       inputSchema: {
         query: z.string(),
         source: z.string().optional(),
         strategy: z.enum(['fixed', 'structural']).optional(),
         k: z.number().optional(),
+        minScore: z.number().min(0).max(1).optional(),
+        rerank: z.enum(['none', 'mmr', 'llm']).optional(),
+        rewrite: z.enum(['none', 'expand', 'hyde']).optional(),
       },
     },
     async args => text(await handleSearchDocs(deps, args)),

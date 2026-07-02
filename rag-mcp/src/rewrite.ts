@@ -17,25 +17,20 @@ const HYDE_SYSTEM =
   'он взят из искомого документа. Без оговорок и вступлений, только сам фрагмент. Язык — как в запросе.';
 
 /**
- * Собирает функцию переписывания запроса под режим. `expand` дописывает к запросу обогащение,
- * `hyde` заменяет запрос гипотетическим документом; при пустом ответе модели — исходный запрос.
- * Режим `none` (или невалидный) → null: конвейер эмбеддит исходный запрос без обращения к модели.
+ * Собирает функцию переписывания запроса под режим (only expand/hyde — режим `none` вызывающий код
+ * не передаёт). `expand` дописывает к запросу обогащение, `hyde` заменяет запрос гипотетическим
+ * документом; при пустом ответе модели — исходный запрос без изменений.
  */
 export function makeRewriter(
-  mode: RewriteMode,
+  mode: 'expand' | 'hyde',
   complete: ChatComplete,
-): ((query: string) => Promise<string>) | null {
-  if (mode === 'expand') {
-    return async query => {
-      const expansion = (await complete(EXPAND_SYSTEM, query)).trim();
-      return expansion ? `${query}\n${expansion}` : query;
-    };
-  }
-  if (mode === 'hyde') {
-    return async query => {
-      const hypothetical = (await complete(HYDE_SYSTEM, query)).trim();
-      return hypothetical || query;
-    };
-  }
-  return null;
+): (query: string) => Promise<string> {
+  const systemPrompt = mode === 'expand' ? EXPAND_SYSTEM : HYDE_SYSTEM;
+  return async query => {
+    const reply = (await complete(systemPrompt, query)).trim();
+    if (!reply) {
+      return query;
+    }
+    return mode === 'expand' ? `${query}\n${reply}` : reply;
+  };
 }
