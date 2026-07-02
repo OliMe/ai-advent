@@ -1,5 +1,6 @@
-export { loadRagConfig } from './config.ts';
+export { loadRagConfig, embeddingScheme } from './config.ts';
 export type { RagConfig } from './config.ts';
+export { withPrefix } from './prefix.ts';
 export { sourceKey } from './cache-key.ts';
 export { rerank, retrieve } from './retrieval.ts';
 export type { RetrieveOptions } from './retrieval.ts';

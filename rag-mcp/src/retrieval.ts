@@ -1,10 +1,12 @@
 import { topK } from '../../rag/src/index.ts';
 import type { EmbedFn, Index, ScoredChunk } from '../../rag/src/index.ts';
 
-/** Параметры выборки: kPre — до стадии rerank/фильтра, k — итог (после). */
+/** Параметры выборки: kPre — до стадии rerank/фильтра, k — итог (после); queryPrefix — префикс запроса. */
 export interface RetrieveOptions {
   k: number;
   kPre: number;
+  /** Префикс запроса при эмбеддинге (nomic: «search_query: »); пусто — без префикса. */
+  queryPrefix: string;
 }
 
 /**
@@ -25,7 +27,7 @@ export async function retrieve(
   options: RetrieveOptions,
   embed: EmbedFn,
 ): Promise<ScoredChunk[]> {
-  const [queryVector] = await embed([query]);
+  const [queryVector] = await embed([`${options.queryPrefix}${query}`]);
   const allChunks = indexes.flatMap(index => index.chunks);
   const preliminary = topK(queryVector, allChunks, options.kPre);
   return rerank(preliminary).slice(0, options.k);

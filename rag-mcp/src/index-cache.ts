@@ -14,15 +14,16 @@ export interface CacheDeps {
 }
 
 /**
- * Гарантирует наличие индекса для источника+стратегии: есть в кэше — берём оттуда; нет — строим
- * на лету и кэшируем. Возвращает готовый индекс.
+ * Гарантирует наличие индекса для источника+стратегии+схемы: есть в кэше — берём оттуда; нет —
+ * строим на лету и кэшируем. Возвращает готовый индекс.
  */
 export async function ensureIndex(
   source: string,
   strategy: ChunkStrategy,
+  scheme: string,
   deps: CacheDeps,
 ): Promise<Index> {
-  const key = sourceKey(source, strategy);
+  const key = sourceKey(source, strategy, scheme);
   if (deps.has(key)) {
     return deps.load(key);
   }

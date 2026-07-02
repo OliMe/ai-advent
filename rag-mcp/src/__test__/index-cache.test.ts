@@ -27,7 +27,7 @@ describe('ensureIndex', () => {
       },
       save: () => calls.push('save'),
     };
-    const result = await ensureIndex('src', 'structural', deps);
+    const result = await ensureIndex('src', 'structural', 'scheme', deps);
     assert.equal(result.createdAt, 'cached');
     assert.deepEqual(calls, ['load']); // build/save не вызывались
   });
@@ -47,7 +47,7 @@ describe('ensureIndex', () => {
         calls.push('save');
       },
     };
-    const result = await ensureIndex('src', 'fixed', deps);
+    const result = await ensureIndex('src', 'fixed', 'scheme', deps);
     assert.equal(result.createdAt, 'built');
     assert.deepEqual(calls, ['build', 'save']);
     assert.ok(savedKey.length > 0); // сохранён под ключом

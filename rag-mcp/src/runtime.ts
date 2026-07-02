@@ -8,6 +8,8 @@ import { EmbeddingsClient } from '../../core/src/index.ts';
 import { buildIndex, loadDocuments, nodeLoaders, JsonIndexStore } from '../../rag/src/index.ts';
 import type { ChunkStrategy, Index } from '../../rag/src/index.ts';
 import type { RagConfig } from './config.ts';
+import { embeddingScheme } from './config.ts';
+import { withPrefix } from './prefix.ts';
 import { ensureIndex } from './index-cache.ts';
 import type { ToolDeps } from './tools.ts';
 
@@ -20,10 +22,12 @@ function indexPath(cacheDir: string, key: string): string {
 export function createRuntimeDeps(config: RagConfig): ToolDeps {
   const client = new EmbeddingsClient(config.embeddings);
   const embed = (inputs: string[]) => client.embed(inputs);
+  const embedDocuments = withPrefix(embed, config.docPrefix);
+  const scheme = embeddingScheme(config);
   const loaders = nodeLoaders({ depth: config.depth, maxBytes: config.maxBytes });
 
   const ensure = (source: string, strategy: ChunkStrategy): Promise<Index> =>
-    ensureIndex(source, strategy, {
+    ensureIndex(source, strategy, scheme, {
       has: key => existsSync(indexPath(config.cacheDir, key)),
       load: key => new JsonIndexStore(indexPath(config.cacheDir, key)).load(),
       save: (key, index) => {
@@ -35,7 +39,7 @@ export function createRuntimeDeps(config: RagConfig): ToolDeps {
         return buildIndex(documents, {
           strategy: strat,
           chunk: config.chunk,
-          embed,
+          embed: embedDocuments,
           model: config.embeddings.model,
           createdAt: new Date().toISOString(),
         });

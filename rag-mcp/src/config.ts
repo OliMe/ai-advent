@@ -21,6 +21,18 @@ export interface RagConfig {
   maxBytes: number;
   /** Конфиг эмбеддингов (по умолчанию Ollama; сменяемо через LLM_EMBEDDINGS_*). */
   embeddings: EmbeddingsConfig;
+  /** Префикс запроса при эмбеддинге (nomic: «search_query: »); пусто — без префикса. */
+  queryPrefix: string;
+  /** Префикс документа при эмбеддинге (nomic: «search_document: »); пусто — без префикса. */
+  docPrefix: string;
+}
+
+/**
+ * «Схема» эмбеддинга: модель + префиксы. Входит в ключ кэша, чтобы индексы, построенные разными
+ * схемами (напр. без префиксов), не переиспользовались с новой — иначе векторы несопоставимы.
+ */
+export function embeddingScheme(config: RagConfig): string {
+  return `${config.embeddings.model}|${config.queryPrefix}|${config.docPrefix}`;
 }
 
 /** Целое ≥ 1 из env или значение по умолчанию. */
@@ -62,5 +74,9 @@ export function loadRagConfig(env: NodeJS.ProcessEnv): RagConfig {
       maxRetries: nonNegativeInteger(env.LLM_MAX_RETRIES, 3),
       retryBaseMs: positiveInteger(env.LLM_RETRY_BASE_MS, 500),
     },
+    // Пустая строка в env отключает префикс (для моделей, которым он не нужен) — поэтому
+    // проверяем именно undefined, а не «||» (иначе '' откатывалось бы к дефолту).
+    queryPrefix: env.RAG_QUERY_PREFIX !== undefined ? env.RAG_QUERY_PREFIX : 'search_query: ',
+    docPrefix: env.RAG_DOC_PREFIX !== undefined ? env.RAG_DOC_PREFIX : 'search_document: ',
   };
 }

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadRagConfig } from '../index.ts';
+import { loadRagConfig, embeddingScheme } from '../index.ts';
 
 const env = (values: Record<string, string | undefined>): NodeJS.ProcessEnv =>
   values as NodeJS.ProcessEnv;
@@ -19,6 +19,27 @@ describe('loadRagConfig', () => {
       fixed: { size: 2000, overlap: 256 },
       structuralMaxSize: 2000,
     });
+    assert.equal(config.queryPrefix, 'search_query: ');
+    assert.equal(config.docPrefix, 'search_document: ');
+  });
+
+  it('префиксы nomic переопределяются; пустая строка отключает префикс', () => {
+    const custom = loadRagConfig(env({ RAG_QUERY_PREFIX: 'q: ', RAG_DOC_PREFIX: 'd: ' }));
+    assert.equal(custom.queryPrefix, 'q: ');
+    assert.equal(custom.docPrefix, 'd: ');
+    const disabled = loadRagConfig(env({ RAG_QUERY_PREFIX: '', RAG_DOC_PREFIX: '' }));
+    assert.equal(disabled.queryPrefix, '');
+    assert.equal(disabled.docPrefix, '');
+  });
+
+  it('embeddingScheme = модель|queryPrefix|docPrefix (различает схемы)', () => {
+    const withPrefixes = loadRagConfig(env({}));
+    const withoutPrefixes = loadRagConfig(env({ RAG_QUERY_PREFIX: '', RAG_DOC_PREFIX: '' }));
+    assert.equal(
+      embeddingScheme(withPrefixes),
+      'nomic-embed-text|search_query: |search_document: ',
+    );
+    assert.notEqual(embeddingScheme(withPrefixes), embeddingScheme(withoutPrefixes));
   });
 
   it('RAG_STRATEGY=fixed → fixed', () => {
