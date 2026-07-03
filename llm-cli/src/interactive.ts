@@ -51,7 +51,11 @@ import { installClipboardPaste, type ClipboardImageReader } from './clipboard-im
 import { parseList, isAffirmative, isNegative } from './replies.ts';
 import { readlineConfirm, type ElicitationBridge } from './elicitation.ts';
 import { renderMarkdownForTerminal } from './markdown.ts';
-import { ragSearchDirective } from './rag-directive.ts';
+import {
+  ragSearchDirective,
+  isSearchDocsTool,
+  formatRagResultForDisplay,
+} from './rag-directive.ts';
 import type { VoiceInput } from './voice-input.ts';
 import {
   helpText,
@@ -255,6 +259,12 @@ export async function runInteractive(
   const reportToolResult = (name: string, result: string): void => {
     if (isRecognizeTool(name)) {
       output.write(`\n📄 Распознанный текст:\n${result}\n`);
+      return;
+    }
+    // Показываем сводку RAG-поиска (трасса стадий + найденные источники), иначе разница между
+    // режимами rerank/rewrite/порога видна только модели, а пользователю — нет.
+    if (isSearchDocsTool(name)) {
+      output.write(`\n🔎 RAG-поиск:\n${formatRagResultForDisplay(result)}\n`);
     }
   };
   // Драйвер прогонов задач (пайплайн): свои диалоги-агенты, своё хранилище.
