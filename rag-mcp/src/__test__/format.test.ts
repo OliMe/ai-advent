@@ -9,6 +9,8 @@ const trace = (over: Partial<RetrieveTrace> = {}): RetrieveTrace => ({
   candidates: 20,
   minScore: 0,
   afterThreshold: 20,
+  confidence: 0.8,
+  lowConfidence: false,
   rerank: 'mmr',
   rerankFallback: false,
   returned: 5,
@@ -27,17 +29,32 @@ const ch = (over: Partial<IndexedChunk> = {}): IndexedChunk => ({
 });
 
 describe('formatTrace', () => {
-  it('без порога и rewrite: кандидаты → rerank → итог', () => {
+  it('без порога и rewrite: кандидаты → rerank → итог + уверенность', () => {
     assert.equal(
       formatTrace(trace({ candidates: 20, rerank: 'mmr', returned: 5 })),
-      '🔎 кандидатов 20 → rerank(mmr): 5',
+      '🔎 кандидатов 20 → rerank(mmr): 5 · уверенность 0.80',
     );
   });
 
   it('фолбэк LLM-реранка показывается как llm→mmr', () => {
     assert.equal(
       formatTrace(trace({ rerank: 'llm', rerankFallback: true, candidates: 20, returned: 5 })),
-      '🔎 кандидатов 20 → rerank(llm→mmr): 5',
+      '🔎 кандидатов 20 → rerank(llm→mmr): 5 · уверенность 0.80',
+    );
+  });
+
+  it('низкая уверенность помечается «(низкая)»', () => {
+    assert.equal(
+      formatTrace(
+        trace({
+          candidates: 20,
+          rerank: 'none',
+          returned: 3,
+          confidence: 0.42,
+          lowConfidence: true,
+        }),
+      ),
+      '🔎 кандидатов 20 → rerank(none): 3 · уверенность 0.42 (низкая)',
     );
   });
 
@@ -53,7 +70,7 @@ describe('formatTrace', () => {
           returned: 5,
         }),
       ),
-      '🔎 кандидатов 20 → порог≥0.30: 8 → rerank(llm): 5, запрос переписан',
+      '🔎 кандидатов 20 → порог≥0.30: 8 → rerank(llm): 5, запрос переписан · уверенность 0.80',
     );
   });
 });
@@ -65,13 +82,25 @@ describe('formatResults', () => {
     assert.match(out, /🔎 кандидатов 0/);
   });
 
-  it('нумерует фрагменты с метками источника, оценкой и текстом; печатает трассу', () => {
-    const scored: ScoredChunk[] = [{ chunk: ch(), score: 0.831 }];
+  it('нумерует фрагменты с chunk_id, метками источника, оценкой и текстом; печатает трассу', () => {
+    const scored: ScoredChunk[] = [{ chunk: ch({ chunk_id: 'readme#3' }), score: 0.831 }];
     const out = formatResults('как установить', scored, trace({ candidates: 12, returned: 1 }));
     assert.match(out, /Найдено фрагментов: 1/);
     assert.match(out, /🔎 кандидатов 12 → rerank\(mmr\): 1/);
-    assert.match(out, /\[1\] github\.com\/o\/r › README\.md › Установка \(0\.831\)/);
+    assert.match(out, /\[1\] readme#3 · github\.com\/o\/r › README\.md › Установка \(0\.831\)/);
     assert.match(out, /как установить пакет/);
+  });
+
+  it('низкая уверенность → пометка в результате (и для пустого, и для непустого)', () => {
+    const low = trace({ confidence: 0.4, lowConfidence: true, returned: 1 });
+    assert.match(
+      formatResults('q', [], trace({ confidence: 0, lowConfidence: true, returned: 0 })),
+      /⚠ Низкая уверенность контекста/,
+    );
+    assert.match(
+      formatResults('q', [{ chunk: ch(), score: 0.4 }], low),
+      /⚠ Низкая уверенность контекста \(лучший косинус 0\.40\)/,
+    );
   });
 });
 

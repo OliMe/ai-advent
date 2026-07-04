@@ -51,7 +51,7 @@ describe('handleSearchDocs', () => {
     const out = await handleSearchDocs(deps, { query: 'q', source: 'github.com/o/r' });
     assert.deepEqual(ensured, [{ source: 'github.com/o/r', strategy: 'structural' }]);
     assert.match(out, /Найдено фрагментов/);
-    assert.match(out, /\[1\] src › f\.md › sec/);
+    assert.match(out, /\[1\] A · src › f\.md › sec/); // chunk_id в заголовке
   });
 
   it('аргумент strategy (fixed/structural) переопределяет стратегию', async () => {

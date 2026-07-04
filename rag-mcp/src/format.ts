@@ -11,24 +11,30 @@ export function formatTrace(trace: RetrieveTrace): string {
   const rerankLabel = trace.rerankFallback ? `${trace.rerank}→mmr` : trace.rerank;
   stages.push(`rerank(${rerankLabel}): ${trace.returned}`);
   const rewrite = trace.rewritten ? ', запрос переписан' : '';
-  return `🔎 ${stages.join(' → ')}${rewrite}`;
+  // Уверенность ретрива + пометка «(низкая)» — сигнал для режима «не знаю».
+  const confidence = ` · уверенность ${trace.confidence.toFixed(2)}${trace.lowConfidence ? ' (низкая)' : ''}`;
+  return `🔎 ${stages.join(' → ')}${rewrite}${confidence}`;
 }
 
 /**
- * Форматирует найденные чанки в текст результата инструмента: строка-трасса стадий, затем
- * пронумерованные фрагменты с метками источника `[source › file › section]` и оценкой близости.
- * Этот текст уходит модели как результат вызова — по нему она и отвечает, ссылаясь на источники.
+ * Форматирует найденные чанки в текст результата инструмента: строка-трасса стадий (+ пометка низкой
+ * уверенности), затем пронумерованные фрагменты с парсируемым заголовком `[n] chunk_id · source ›
+ * file › section (score)` и телом чанка. `chunk_id` в заголовке нужен, чтобы модель ссылалась на
+ * источник по идентификатору, а клиент (llm-cli) сверял дословные цитаты с конкретным чанком.
  */
 export function formatResults(query: string, scored: ScoredChunk[], trace: RetrieveTrace): string {
   const diagnostics = formatTrace(trace);
+  const notice = trace.lowConfidence
+    ? `\n⚠ Низкая уверенность контекста (лучший косинус ${trace.confidence.toFixed(2)}).`
+    : '';
   if (scored.length === 0) {
-    return `По запросу «${query}» релевантных фрагментов не найдено.\n${diagnostics}`;
+    return `По запросу «${query}» релевантных фрагментов не найдено.\n${diagnostics}${notice}`;
   }
   const blocks = scored.map(({ chunk, score }, index) => {
-    const label = `[${index + 1}] ${chunk.source} › ${chunk.file} › ${chunk.section} (${score.toFixed(3)})`;
+    const label = `[${index + 1}] ${chunk.chunk_id} · ${chunk.source} › ${chunk.file} › ${chunk.section} (${score.toFixed(3)})`;
     return `${label}\n${chunk.text}`;
   });
-  return `Найдено фрагментов: ${scored.length} по запросу «${query}»:\n${diagnostics}\n\n${blocks.join('\n\n')}`;
+  return `Найдено фрагментов: ${scored.length} по запросу «${query}»:\n${diagnostics}${notice}\n\n${blocks.join('\n\n')}`;
 }
 
 /** Краткая сводка кэшированных индексов для list_indexes. */

@@ -123,6 +123,7 @@ export async function handleSearchDocs(
         rerank: rerankMode,
         mmrLambda: config.mmrLambda,
         rerankLlmTop: config.rerankLlmTop,
+        confidenceMin: config.confidenceMin,
       },
       deps.embed,
       hooks,

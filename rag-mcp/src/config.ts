@@ -17,6 +17,8 @@ export interface RagConfig {
   kPre: number;
   /** Порог косинуса: чанки ниже отсекаются на стадии фильтра (0 — выключено). */
   minScore: number;
+  /** Порог уверенности: лучший косинус ниже — контекст помечается «низкая уверенность» (для «не знаю»). */
+  confidenceMin: number;
   /** Режим переранжирования (none/mmr/llm). */
   rerank: RerankMode;
   /** Баланс релевантность/разнообразие для MMR (0..1). */
@@ -139,6 +141,7 @@ export function loadRagConfig(env: NodeJS.ProcessEnv): RagConfig {
     k,
     kPre: positiveInteger(env.RAG_TOP_K_PRE, 20),
     minScore: boundedNumber(env.RAG_MIN_SCORE, 0, 0, 1),
+    confidenceMin: boundedNumber(env.RAG_CONFIDENCE_MIN, 0.5, 0, 1),
     rerank: resolveRerank(env.RAG_RERANK),
     mmrLambda: boundedNumber(env.RAG_MMR_LAMBDA, 0.7, 0, 1),
     rerankLlmTop: positiveInteger(env.RAG_RERANK_LLM_TOP, 8),

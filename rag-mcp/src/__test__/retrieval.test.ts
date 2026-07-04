@@ -33,6 +33,7 @@ const opts = (over: Partial<RetrieveOptions> = {}): RetrieveOptions => ({
   rerank: 'none',
   mmrLambda: 0.7,
   rerankLlmTop: 8,
+  confidenceMin: 0,
   ...over,
 });
 
@@ -49,10 +50,24 @@ describe('retrieve', () => {
       candidates: 3,
       minScore: 0,
       afterThreshold: 3,
+      confidence: 1, // лучший косинус (A=[1,0] к запросу [1,0])
+      lowConfidence: false,
       rerank: 'none',
       rerankFallback: false,
       returned: 2,
     });
+  });
+
+  it('confidenceMin: лучший косинус ниже порога → lowConfidence=true', async () => {
+    const index = idx([ch('A', [1, 1]), ch('B', [0, 1])]); // A к запросу [1,0]: cos≈0.707
+    const { trace } = await retrieve(
+      'q',
+      [index],
+      opts({ k: 2, kPre: 2, confidenceMin: 0.9 }),
+      embed,
+    );
+    assert.ok(Math.abs(trace.confidence - 0.7071) < 0.001);
+    assert.equal(trace.lowConfidence, true); // 0.707 < 0.9
   });
 
   it('несколько индексов объединяются; пустой вход → пусто', async () => {

@@ -28,6 +28,8 @@ export interface RetrieveOptions {
   mmrLambda: number;
   /** Сколько верхних кандидатов подавать в LLM-реранк (короткий список — надёжный ответ модели). */
   rerankLlmTop: number;
+  /** Порог уверенности: лучший косинус ниже — результат помечается lowConfidence (для «не знаю»). */
+  confidenceMin: number;
 }
 
 /** Опциональные хуки конвейера: переписывание запроса и LLM/cross-encoder переранжирование. */
@@ -86,6 +88,10 @@ export interface RetrieveTrace {
   minScore: number;
   /** Осталось после фильтра порога. */
   afterThreshold: number;
+  /** Лучший косинус в пуле кандидатов (после фильтра, до rerank) — метрика уверенности ретрива. */
+  confidence: number;
+  /** true — лучший косинус ниже порога уверенности: контекст слабый (повод сказать «не знаю»). */
+  lowConfidence: boolean;
   /** Фактически применённый режим rerank (llm без хука → none). */
   rerank: RerankMode;
   /** true — LLM-реранк не смог оценить и откатился на MMR (в трассе «llm→mmr»). */
@@ -121,6 +127,9 @@ export async function retrieve(
     options.minScore > 0
       ? preliminary.filter(scored => scored.score >= options.minScore)
       : preliminary;
+  // Уверенность = лучший косинус в пуле после фильтра (до rerank) — консистентная метрика,
+  // не зависящая от режима rerank (llm/mmr меняют score). Пустой пул → 0 → низкая уверенность.
+  const confidence = filtered[0]?.score ?? 0;
   const { reranked, effective, fallback } = await applyRerank(query, filtered, options, hooks);
   const results = reranked.slice(0, options.k);
   return {
@@ -130,6 +139,8 @@ export async function retrieve(
       candidates: preliminary.length,
       minScore: options.minScore,
       afterThreshold: filtered.length,
+      confidence,
+      lowConfidence: confidence < options.confidenceMin,
       rerank: effective,
       rerankFallback: fallback,
       returned: results.length,
