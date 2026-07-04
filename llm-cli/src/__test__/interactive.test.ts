@@ -536,6 +536,45 @@ describe('runInteractive', () => {
     assert.equal(session.messages[0].content, 'Ты эксперт');
   });
 
+  it('/rag: bind (2 источника) → показ → off, с хранилищем', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const store = fakeStore();
+    const session = makeSession();
+    const { finished, text } = driveInteractive(
+      client,
+      ['/rag /docs https://github.com/o/r', '/rag', '/rag off', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      store,
+      session,
+    );
+    await finished;
+    assert.equal(session.ragSources, undefined); // после off
+    assert.ok(store.saved.length >= 2); // bind + off сохранены
+    assert.match(text(), /Grounded-режим RAG включён\. Источники \(2\)/);
+    assert.match(text(), /• https:\/\/github\.com\/o\/r/); // /rag показал список
+    assert.match(text(), /Grounded-режим RAG выключен/);
+  });
+
+  it('/rag: bind → off → показ «выключен», без хранилища', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    const { finished, text } = driveInteractive(
+      client,
+      ['/rag /docs', '/rag off', '/rag', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      session,
+    );
+    await finished;
+    assert.equal(session.ragSources, undefined);
+    assert.deepEqual(session.ragSources, undefined);
+    assert.match(text(), /Включить: \/rag/); // показ при пустом списке
+  });
+
   it('/file добавляет содержимое файла в контекст и шлёт его в запросе', async t => {
     const dir = mkdtempSync(join(tmpdir(), 'llm-file-'));
     try {

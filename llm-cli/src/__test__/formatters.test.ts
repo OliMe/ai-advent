@@ -104,6 +104,8 @@ describe('helpText / formatSessionList / newSession', () => {
     assert.match(text, /\/voice/);
     assert.match(text, /\/mcp add/); // семейство /mcp документировано
     assert.match(text, /\/mcp reload/);
+    assert.match(text, /\/rag /); // grounded-режим документирован
+    assert.match(text, /\/rag off/);
   });
 
   it('formatSessionList: пусто, с именем ветки и с пустым превью', () => {

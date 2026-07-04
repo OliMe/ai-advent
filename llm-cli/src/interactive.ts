@@ -513,6 +513,43 @@ export async function runInteractive(
         output.write('Системный промпт обновлён.\n\n');
       },
     },
+    // Grounded-режим RAG (День 25): привязать источники / показать / выключить. Порядок важен —
+    // точные «/rag off» и «/rag» раньше префиксного «/rag ».
+    {
+      matches: input => input === '/rag off',
+      run: () => {
+        currentSession.ragSources = undefined;
+        store?.save(currentSession);
+        output.write('Grounded-режим RAG выключен.\n\n');
+      },
+    },
+    {
+      matches: input => input === '/rag',
+      run: () => {
+        const sources = currentSession.ragSources ?? [];
+        output.write(
+          sources.length === 0
+            ? 'Grounded-режим RAG выключен. Включить: /rag <источник…>\n\n'
+            : `Grounded-режим RAG: поиск по источникам на каждом вопросе:\n${sources
+                .map(source => `• ${source}`)
+                .join('\n')}\n\n`,
+        );
+      },
+    },
+    {
+      matches: input => input.startsWith('/rag '),
+      run: input => {
+        // Ввод уже обрезан (trim), поэтому после «/rag » гарантированно есть непустой источник.
+        const sources = input.slice('/rag '.length).trim().split(/\s+/);
+        currentSession.ragSources = sources;
+        store?.save(currentSession);
+        output.write(
+          `Grounded-режим RAG включён. Источники (${sources.length}):\n${sources
+            .map(source => `• ${source}`)
+            .join('\n')}\n\n`,
+        );
+      },
+    },
     {
       matches: input => input.startsWith('/file '),
       run: input => {
