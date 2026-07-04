@@ -122,6 +122,7 @@ export async function handleSearchDocs(
         minScore,
         rerank: rerankMode,
         mmrLambda: config.mmrLambda,
+        rerankLlmTop: config.rerankLlmTop,
       },
       deps.embed,
       hooks,

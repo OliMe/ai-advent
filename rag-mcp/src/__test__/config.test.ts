@@ -14,6 +14,7 @@ describe('loadRagConfig', () => {
     assert.equal(config.minScore, 0);
     assert.equal(config.rerank, 'mmr');
     assert.equal(config.mmrLambda, 0.7);
+    assert.equal(config.rerankLlmTop, 8);
     assert.match(config.cacheDir, /\.rag-mcp\/indexes$/);
     assert.equal(config.embeddings.url, 'http://localhost:11434/v1/embeddings');
     assert.equal(config.embeddings.model, 'nomic-embed-text');
@@ -81,6 +82,11 @@ describe('loadRagConfig', () => {
     assert.equal(bad.rerank, 'mmr');
     assert.equal(bad.minScore, 0);
     assert.equal(bad.mmrLambda, 0.7);
+  });
+
+  it('rerankLlmTop переопределяется; невалидный → дефолт 8', () => {
+    assert.equal(loadRagConfig(env({ RAG_RERANK_LLM_TOP: '5' })).rerankLlmTop, 5);
+    assert.equal(loadRagConfig(env({ RAG_RERANK_LLM_TOP: '0' })).rerankLlmTop, 8);
   });
 
   it('переопределения из окружения (в т.ч. эмбеддинги и kPre)', () => {

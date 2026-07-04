@@ -1,12 +1,21 @@
 import type { ScoredChunk } from '../../rag/src/index.ts';
 import type { ChatComplete } from './rewrite.ts';
+import type { RerankOutcome } from './retrieval.ts';
+
+/** Скоры релевантности от провайдера + признак фолбэка (провайдер не смог оценить — сохранить порядок). */
+export interface RerankScores {
+  /** По одному скору на кандидата (в исходном порядке). */
+  scores: number[];
+  /** true — годных скоров нет (напр. LLM вернул непарсимый ответ); скоры-заглушка, порядок не менять. */
+  fallback: boolean;
+}
 
 /**
  * Провайдер переранжирования: по запросу и текстам кандидатов возвращает скоры релевантности
  * (по одному на кандидата, тот же контракт, что `/rerank` у cross-encoder — bge-reranker и т.п.).
  * Сейчас реализуется через chat-LLM; в будущем тем же интерфейсом — настоящий cross-encoder.
  */
-export type RerankProvider = (query: string, texts: string[]) => Promise<number[]>;
+export type RerankProvider = (query: string, texts: string[]) => Promise<RerankScores>;
 
 /** Промпт chat-реранкера: оценить релевантность каждого фрагмента запросу и вернуть JSON-массив. */
 const RERANK_SYSTEM =
@@ -16,11 +25,14 @@ const RERANK_SYSTEM =
 
 /**
  * Разбирает ответ модели в массив скоров нужной длины. Не удалось (нет массива, неверная длина,
- * битый JSON) → фолбэк, сохраняющий исходный порядок (убывающие скоры по позиции). Нечисловой
- * элемент → 0.
+ * битый JSON) → `fallback: true` со скорами-заглушкой (убывают по позиции — сохраняют исходный
+ * порядок). Нечисловой элемент → 0.
  */
-export function parseScores(raw: string, count: number): number[] {
-  const fallback = Array.from({ length: count }, (_, index) => count - index);
+export function parseScores(raw: string, count: number): RerankScores {
+  const fallback: RerankScores = {
+    scores: Array.from({ length: count }, (_, index) => count - index),
+    fallback: true,
+  };
   const match = raw.match(/\[[\s\S]*\]/);
   if (!match) {
     return fallback;
@@ -30,7 +42,10 @@ export function parseScores(raw: string, count: number): number[] {
     if (!Array.isArray(parsed) || parsed.length !== count) {
       return fallback;
     }
-    return parsed.map(value => (typeof value === 'number' && Number.isFinite(value) ? value : 0));
+    const scores = parsed.map(value =>
+      typeof value === 'number' && Number.isFinite(value) ? value : 0,
+    );
+    return { scores, fallback: false };
   } catch {
     return fallback;
   }
@@ -46,25 +61,31 @@ export function makeChatRerankProvider(complete: ChatComplete): RerankProvider {
 }
 
 /**
- * Оборачивает провайдер скоров в переранжировщик кандидатов: заменяет score на оценку провайдера
- * и сортирует по убыванию. Пустой вход → как есть. Недостающий скор → исходный score кандидата.
+ * Оборачивает провайдер скоров в переранжировщик кандидатов. Успех: заменяет score на оценку
+ * провайдера и сортирует по убыванию. Фолбэк (провайдер не смог оценить) или пустой вход: кандидаты
+ * как есть, с исходными скорами и порядком (без фейковых чисел) — вызывающий решит, что делать
+ * (в конвейере фолбэк уходит на детерминированный MMR). Признак фолбэка — в `RerankOutcome.fallback`.
  */
 export function makeLlmReranker(
   provider: RerankProvider,
-): (query: string, candidates: ScoredChunk[]) => Promise<ScoredChunk[]> {
+): (query: string, candidates: ScoredChunk[]) => Promise<RerankOutcome> {
   return async (query, candidates) => {
     if (candidates.length === 0) {
-      return candidates;
+      return { results: candidates, fallback: false };
     }
-    const scores = await provider(
+    const { scores, fallback } = await provider(
       query,
       candidates.map(candidate => candidate.chunk.text),
     );
-    return candidates
+    if (fallback) {
+      return { results: candidates, fallback: true };
+    }
+    const results = candidates
       .map((candidate, index) => ({
         chunk: candidate.chunk,
         score: scores[index] ?? candidate.score,
       }))
       .sort((first, second) => second.score - first.score);
+    return { results, fallback: false };
   };
 }

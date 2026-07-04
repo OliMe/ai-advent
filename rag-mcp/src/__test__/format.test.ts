@@ -10,6 +10,7 @@ const trace = (over: Partial<RetrieveTrace> = {}): RetrieveTrace => ({
   minScore: 0,
   afterThreshold: 20,
   rerank: 'mmr',
+  rerankFallback: false,
   returned: 5,
   ...over,
 });
@@ -30,6 +31,13 @@ describe('formatTrace', () => {
     assert.equal(
       formatTrace(trace({ candidates: 20, rerank: 'mmr', returned: 5 })),
       '🔎 кандидатов 20 → rerank(mmr): 5',
+    );
+  });
+
+  it('фолбэк LLM-реранка показывается как llm→mmr', () => {
+    assert.equal(
+      formatTrace(trace({ rerank: 'llm', rerankFallback: true, candidates: 20, returned: 5 })),
+      '🔎 кандидатов 20 → rerank(llm→mmr): 5',
     );
   });
 

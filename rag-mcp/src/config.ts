@@ -21,6 +21,8 @@ export interface RagConfig {
   rerank: RerankMode;
   /** Баланс релевантность/разнообразие для MMR (0..1). */
   mmrLambda: number;
+  /** Сколько верхних кандидатов подавать в LLM-реранк (короткий список — надёжный ответ модели). */
+  rerankLlmTop: number;
   /** Режим переписывания запроса (none/expand/hyde). */
   rewrite: RewriteMode;
   /** Chat-модель для rewrite/LLM-реранка (RAG_LLM_* с фолбэком на LLM_*); null — фичи выключены. */
@@ -139,6 +141,7 @@ export function loadRagConfig(env: NodeJS.ProcessEnv): RagConfig {
     minScore: boundedNumber(env.RAG_MIN_SCORE, 0, 0, 1),
     rerank: resolveRerank(env.RAG_RERANK),
     mmrLambda: boundedNumber(env.RAG_MMR_LAMBDA, 0.7, 0, 1),
+    rerankLlmTop: positiveInteger(env.RAG_RERANK_LLM_TOP, 8),
     rewrite: resolveRewrite(env.RAG_REWRITE),
     chat: loadChatConfig(env),
     chatDisableThinking:

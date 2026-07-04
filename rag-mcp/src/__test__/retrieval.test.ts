@@ -32,6 +32,7 @@ const opts = (over: Partial<RetrieveOptions> = {}): RetrieveOptions => ({
   minScore: 0,
   rerank: 'none',
   mmrLambda: 0.7,
+  rerankLlmTop: 8,
   ...over,
 });
 
@@ -49,6 +50,7 @@ describe('retrieve', () => {
       minScore: 0,
       afterThreshold: 3,
       rerank: 'none',
+      rerankFallback: false,
       returned: 2,
     });
   });
@@ -117,7 +119,7 @@ describe('retrieve', () => {
         rewrite: async () => 'переписанный',
         rerankLlm: async (query, candidates) => {
           rerankQuery = query;
-          return candidates;
+          return { results: candidates, fallback: false };
         },
       },
     );
@@ -126,6 +128,7 @@ describe('retrieve', () => {
     assert.equal(results.length, 2);
     assert.equal(trace.rewritten, true);
     assert.equal(trace.rerank, 'llm');
+    assert.equal(trace.rerankFallback, false);
   });
 
   it('rerank=llm без хука деградирует до none (трасса rerank=none)', async () => {
@@ -145,17 +148,54 @@ describe('retrieve', () => {
 
   it('rerank=llm с хуком применяет переранжирование хука', async () => {
     const index = idx([ch('A', [1, 0]), ch('B', [1, 1])]);
-    const { results } = await retrieve(
+    const { results, trace } = await retrieve(
       'q',
       [index],
       opts({ k: 2, kPre: 2, rerank: 'llm' }),
       embed,
-      { rerankLlm: async (_query, candidates) => [...candidates].reverse() },
+      {
+        rerankLlm: async (_query, candidates) => ({
+          results: [...candidates].reverse(),
+          fallback: false,
+        }),
+      },
     );
     assert.deepEqual(
       results.map(r => r.chunk.chunk_id),
       ['B', 'A'], // хук перевернул порядок
     );
+    assert.equal(trace.rerankFallback, false);
+  });
+
+  it('rerank=llm подаёт в хук только rerankLlmTop верхних кандидатов', async () => {
+    const index = idx([ch('A', [1, 0]), ch('B', [0.9, 0.1]), ch('C', [0.8, 0.2])]);
+    let seen = 0;
+    await retrieve('q', [index], opts({ k: 3, kPre: 3, rerank: 'llm', rerankLlmTop: 2 }), embed, {
+      rerankLlm: async (_query, candidates) => {
+        seen = candidates.length;
+        return { results: candidates, fallback: false };
+      },
+    });
+    assert.equal(seen, 2); // из 3 кандидатов в LLM ушли только top-2
+  });
+
+  it('фолбэк LLM-реранка → детерминированный MMR по кандидатам; трасса llm + fallback', async () => {
+    // Запрос [1,0]. A и B — почти дубли, C непохож. При фолбэке применяется MMR (low lambda),
+    // поднимающий разнообразный C над дублирующим B — а не сырой косинусный порядок A,B,C.
+    const index = idx([ch('A', [2, 1]), ch('B', [2, 1.05]), ch('C', [1, 2])]);
+    const { results, trace } = await retrieve(
+      'q',
+      [index],
+      opts({ k: 3, kPre: 3, rerank: 'llm', mmrLambda: 0.2 }),
+      embed,
+      { rerankLlm: async (_query, candidates) => ({ results: candidates, fallback: true }) },
+    );
+    assert.deepEqual(
+      results.map(r => r.chunk.chunk_id),
+      ['A', 'C', 'B'], // MMR-порядок, не косинусный A,B,C
+    );
+    assert.equal(trace.rerank, 'llm');
+    assert.equal(trace.rerankFallback, true);
   });
 
   it('rerank=mmr переранжирует результаты (штрафует почти-дубли)', async () => {

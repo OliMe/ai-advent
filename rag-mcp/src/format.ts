@@ -7,7 +7,9 @@ export function formatTrace(trace: RetrieveTrace): string {
   if (trace.minScore > 0) {
     stages.push(`порог≥${trace.minScore.toFixed(2)}: ${trace.afterThreshold}`);
   }
-  stages.push(`rerank(${trace.rerank}): ${trace.returned}`);
+  // Фолбэк LLM-реранка (модель не дала годных скоров) виден как «llm→mmr» — честно, что сработал MMR.
+  const rerankLabel = trace.rerankFallback ? `${trace.rerank}→mmr` : trace.rerank;
+  stages.push(`rerank(${rerankLabel}): ${trace.returned}`);
   const rewrite = trace.rewritten ? ', запрос переписан' : '';
   return `🔎 ${stages.join(' → ')}${rewrite}`;
 }

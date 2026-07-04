@@ -5,6 +5,13 @@ import { mmrRerank } from './mmr.ts';
 /** Режим стадии rerank: `none` — как есть, `mmr` — MMR, `llm` — LLM/cross-encoder (через хук). */
 export type RerankMode = 'none' | 'mmr' | 'llm';
 
+/** Исход переранжирования кандидатов хуком: результат + признак фолбэка (не удалось оценить). */
+export interface RerankOutcome {
+  results: ScoredChunk[];
+  /** true — переранжировать не удалось (напр. LLM вернул непарсимый ответ); порядок/скоры исходные. */
+  fallback: boolean;
+}
+
 /** Параметры выборки: staged-конвейер эмбеддинг → topK(kPre) → фильтр порога → rerank → срез k. */
 export interface RetrieveOptions {
   /** Итог после стадии rerank/фильтра. */
@@ -19,6 +26,8 @@ export interface RetrieveOptions {
   rerank: RerankMode;
   /** Баланс релевантность/разнообразие для MMR (0..1). */
   mmrLambda: number;
+  /** Сколько верхних кандидатов подавать в LLM-реранк (короткий список — надёжный ответ модели). */
+  rerankLlmTop: number;
 }
 
 /** Опциональные хуки конвейера: переписывание запроса и LLM/cross-encoder переранжирование. */
@@ -26,7 +35,45 @@ export interface RetrieveHooks {
   /** Переписывание запроса перед эмбеддингом (expand/HyDE). Нет — берётся исходный запрос. */
   rewrite?: (query: string) => Promise<string>;
   /** Переранжирование кандидатов при rerank='llm'. Нет — стадия деградирует до 'none'. */
-  rerankLlm?: (query: string, candidates: ScoredChunk[]) => Promise<ScoredChunk[]>;
+  rerankLlm?: (query: string, candidates: ScoredChunk[]) => Promise<RerankOutcome>;
+}
+
+/** Результат применения стадии rerank: переставленные кандидаты, фактический режим и признак фолбэка. */
+interface RerankApplied {
+  reranked: ScoredChunk[];
+  effective: RerankMode;
+  fallback: boolean;
+}
+
+/**
+ * Применяет выбранную стадию переранжирования. Для `llm` в модель уходят только `rerankLlmTop`
+ * верхних кандидатов (короткий список — надёжный парсинг), остальные приклеиваются после в исходном
+ * порядке. Если LLM не смог оценить (фолбэк) — детерминированный MMR по тем же кандидатам (надёжный
+ * запасной вариант вместо сырого косинуса), а `fallback` отражается в трассе.
+ */
+async function applyRerank(
+  query: string,
+  filtered: ScoredChunk[],
+  options: RetrieveOptions,
+  hooks: RetrieveHooks,
+): Promise<RerankApplied> {
+  if (options.rerank === 'mmr') {
+    return {
+      reranked: mmrRerank(filtered, options.k, options.mmrLambda),
+      effective: 'mmr',
+      fallback: false,
+    };
+  }
+  if (options.rerank === 'llm' && hooks.rerankLlm) {
+    const head = filtered.slice(0, options.rerankLlmTop);
+    const tail = filtered.slice(options.rerankLlmTop);
+    const outcome = await hooks.rerankLlm(query, head);
+    const reordered = outcome.fallback
+      ? mmrRerank(head, head.length, options.mmrLambda)
+      : outcome.results;
+    return { reranked: [...reordered, ...tail], effective: 'llm', fallback: outcome.fallback };
+  }
+  return { reranked: filtered, effective: 'none', fallback: false };
 }
 
 /** Трасса конвейера для наблюдаемости «до/после»: что применялось и сколько чанков на каждой стадии. */
@@ -41,6 +88,8 @@ export interface RetrieveTrace {
   afterThreshold: number;
   /** Фактически применённый режим rerank (llm без хука → none). */
   rerank: RerankMode;
+  /** true — LLM-реранк не смог оценить и откатился на MMR (в трассе «llm→mmr»). */
+  rerankFallback: boolean;
   /** Итог после среза k. */
   returned: number;
 }
@@ -49,25 +98,6 @@ export interface RetrieveTrace {
 export interface RetrieveResult {
   results: ScoredChunk[];
   trace: RetrieveTrace;
-}
-
-/**
- * Применяет выбранную стадию переранжирования; возвращает результат и фактический режим (llm без
- * подключённого хука вырождается в none).
- */
-async function applyRerank(
-  query: string,
-  filtered: ScoredChunk[],
-  options: RetrieveOptions,
-  hooks: RetrieveHooks,
-): Promise<{ reranked: ScoredChunk[]; effective: RerankMode }> {
-  if (options.rerank === 'mmr') {
-    return { reranked: mmrRerank(filtered, options.k, options.mmrLambda), effective: 'mmr' };
-  }
-  if (options.rerank === 'llm' && hooks.rerankLlm) {
-    return { reranked: await hooks.rerankLlm(query, filtered), effective: 'llm' };
-  }
-  return { reranked: filtered, effective: 'none' };
 }
 
 /**
@@ -91,7 +121,7 @@ export async function retrieve(
     options.minScore > 0
       ? preliminary.filter(scored => scored.score >= options.minScore)
       : preliminary;
-  const { reranked, effective } = await applyRerank(query, filtered, options, hooks);
+  const { reranked, effective, fallback } = await applyRerank(query, filtered, options, hooks);
   const results = reranked.slice(0, options.k);
   return {
     results,
@@ -101,6 +131,7 @@ export async function retrieve(
       minScore: options.minScore,
       afterThreshold: filtered.length,
       rerank: effective,
+      rerankFallback: fallback,
       returned: results.length,
     },
   };
