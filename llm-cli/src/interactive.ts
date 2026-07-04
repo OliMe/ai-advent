@@ -253,11 +253,17 @@ export async function runInteractive(
     pipelineUsage.completion_tokens += usage.completion_tokens;
     pipelineUsage.total_tokens += usage.total_tokens;
   };
+  // RAG_QUIET=1 — прятать логи RAG-поиска (вызов + сводку): в grounded-режиме на ход несколько
+  // поисков, и они засоряют чат. Ответ с секцией «Источники» при этом остаётся.
+  const ragQuiet = process.env.RAG_QUIET === '1';
   // Печать вызова инструмента агентом (наблюдаемость tool-use). Для распознавания —
   // дружелюбная строка без технического пути; для прочих — имя инструмента и аргументы.
   const reportToolCall = (name: string, args: Record<string, unknown>): void => {
     if (isRecognizeTool(name)) {
       output.write('🔍 Читаю текст с картинок…\n');
+      return;
+    }
+    if (isSearchDocsTool(name) && ragQuiet) {
       return;
     }
     output.write(`🔧 инструмент ${name} ${JSON.stringify(args)}\n`);
@@ -270,8 +276,8 @@ export async function runInteractive(
       return;
     }
     // Показываем сводку RAG-поиска (трасса стадий + найденные источники), иначе разница между
-    // режимами rerank/rewrite/порога видна только модели, а пользователю — нет.
-    if (isSearchDocsTool(name)) {
+    // режимами rerank/rewrite/порога видна только модели, а пользователю — нет. RAG_QUIET прячет её.
+    if (isSearchDocsTool(name) && !ragQuiet) {
       output.write(`\n🔎 RAG-поиск:\n${formatRagResultForDisplay(result)}\n`);
     }
   };
