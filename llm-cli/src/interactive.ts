@@ -393,10 +393,15 @@ export async function runInteractive(
 
   // Создаёт новую задачу, делает её текущей задачей сессии и сразу запускает её
   // исполнение пайплайном (запуск выполнения совмещён с созданием задачи).
-  const createTaskAndRun = async (title: string): Promise<void> => {
+  // Установить текущую задачу сессии (память задачи) без исполнения пайплайном.
+  const setCurrentTask = (title: string): Task => {
     const task = memoryManager.setTask(title);
     currentSession.taskId = task.id;
     store?.save(currentSession);
+    return task;
+  };
+  const createTaskAndRun = async (title: string): Promise<void> => {
+    const task = setCurrentTask(title);
     output.write(`Задача установлена: ${task.title}\n\n`);
     await runWithUsageReport(() => runController.start('')); // прогон текущей задачи сессии
   };
@@ -672,8 +677,9 @@ export async function runInteractive(
         if (!memoryManager.enabled) {
           output.write(MEMORY_OFF_NOTICE);
         } else {
-          // Новая задача сразу исполняется пайплайном.
-          await createTaskAndRun(input.slice('/task '.length).trim());
+          // Установить текущую задачу (память задачи). Исполнение — отдельной командой /run.
+          const task = setCurrentTask(input.slice('/task '.length).trim());
+          output.write(`Задача установлена: ${task.title}. Исполнить пайплайном — /run.\n\n`);
         }
       },
     },

@@ -615,11 +615,30 @@ describe('runInteractive', () => {
 describe('интерактив: команды слоистой памяти', () => {
   const layered: MemorySettings = { enabled: true, profileStore: null, taskStore: null };
 
-  it('/task создаёт задачу и сразу запускает её исполнение пайплайном', async t => {
+  it('/task с текстом устанавливает задачу без авто-запуска пайплайна', async t => {
     const client = taskRunClient(t);
     const { finished, text } = driveInteractive(
       client,
-      ['/task Сделать лендинг', 'да', '/task', '/exit'],
+      ['/task Сделать лендинг', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      null,
+      makeSession(),
+      'window',
+      6,
+      layered,
+    );
+    await finished;
+    assert.match(text(), /Задача установлена: Сделать лендинг\. Исполнить пайплайном — \/run/);
+    assert.doesNotMatch(text(), /Запущена задача/); // авто-запуска нет — только по /run
+  });
+
+  it('/run исполняет установленную через /task текущую задачу', async t => {
+    const client = taskRunClient(t);
+    const { finished, text } = driveInteractive(
+      client,
+      ['/task Сделать лендинг', '/run', 'да', '/task', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -631,7 +650,7 @@ describe('интерактив: команды слоистой памяти', (
     );
     await finished;
     assert.match(text(), /Задача установлена: Сделать лендинг/);
-    assert.match(text(), /Запущена задача «Сделать лендинг»/); // прогон стартовал сразу
+    assert.match(text(), /Запущена задача «Сделать лендинг»/); // прогон только по /run
     assert.match(text(), /завершена и подтверждена/); // дошёл до завершения по «да»
     assert.match(text(), /Активной задачи нет/); // после завершения задача отвязана
   });
@@ -642,11 +661,9 @@ describe('интерактив: команды слоистой памяти', (
       client,
       [
         '/task Первая',
-        'да', // подтверждаем завершение авто-прогона «Первая»
-        '/task Вторая',
-        'да', // и «Вторая»
+        '/task Вторая', // текущей становится «Вторая», «Первая» остаётся открытой
         '/tasks',
-        '/task switch Первая', // реактивируем завершённую
+        '/task switch Первая', // переключаемся обратно на открытую «Первую»
         '/task done',
         '/task done',
         '/exit',
@@ -690,11 +707,10 @@ describe('интерактив: команды слоистой памяти', (
     const session = makeSession();
     const { finished, text } = driveInteractive(
       client,
-      // switch реактивирует завершённую задачу и снова привязывает её к сессии —
-      // тогда delete видит её активной и отвязывает.
+      // «Черновик» активна сразу после /task и привязана к сессии — delete видит её
+      // активной и отвязывает (switch здесь избыточен, но безвреден).
       [
         '/task Черновик',
-        'да',
         '/task switch Черновик',
         '/task delete Черновик',
         '/task delete нет',
@@ -721,7 +737,7 @@ describe('интерактив: команды слоистой памяти', (
     const client = taskRunClient(t);
     const { finished, text } = driveInteractive(
       client,
-      ['/task Один', 'да', '/task Два', 'да', '/task delete Один, Два, Нет', '/tasks', '/exit'],
+      ['/task Один', '/task Два', '/task delete Один, Два, Нет', '/tasks', '/exit'],
       0.7,
       makeConfig(),
       true,
@@ -1089,7 +1105,7 @@ describe('интерактив: команды слоистой памяти', (
     const session = makeSession();
     const { finished, text } = driveInteractive(
       client,
-      ['/task Вторая', 'да', '/task switch Старт', '/task done', '/exit'],
+      ['/task Вторая', '/task switch Старт', '/task done', '/exit'],
       0.7,
       makeConfig(),
       true,
