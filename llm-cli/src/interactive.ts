@@ -58,6 +58,12 @@ import {
 } from './rag-directive.ts';
 import { resolveRagAnswer } from './citation-guard.ts';
 import { FAITHFULNESS_CHECKER_SYSTEM } from './faithfulness.ts';
+import {
+  isConversationalReply,
+  groundedFocus,
+  buildGroundedQuery,
+  forcedRagSearch,
+} from './grounded.ts';
 import type { VoiceInput } from './voice-input.ts';
 import {
   helpText,
@@ -993,11 +999,41 @@ export async function runInteractive(
             if (ragDirective !== null) {
               leading.push({ role: 'system' as const, content: ragDirective });
             }
-            const withTools = [...leading, ...outgoing];
-            // Какие инструменты реально вызваны за этот ход — для проверки «фантомных» заявлений.
+            // Какие инструменты реально вызваны за этот ход (вкл. принудительный grounded-поиск) —
+            // для гейта цитат и проверки «фантомных» заявлений.
             const calledTools: string[] = [];
-            // Результаты search_docs за ход — против них цитатный гейт сверяет дословные цитаты.
-            const ragResults: string[] = [];
+            // Grounded-режим (День 25): на содержательный вопрос детерминированно ищем по КАЖДОМУ
+            // привязанному источнику (запрос обогащён целью/терминами задачи) и кладём фрагменты в
+            // контекст. Дальше идёт обычный агентный ход (другие инструменты доступны) + гейт Дня 24.
+            const groundedSources = currentSession.ragSources ?? [];
+            const grounded = groundedSources.length > 0 && !isConversationalReply(userInput);
+            const forcedResults = grounded
+              ? await forcedRagSearch(
+                  chatTools,
+                  groundedSources,
+                  buildGroundedQuery(
+                    userInput,
+                    groundedFocus(memoryManager.currentTask(), memoryManager.invariantsList()),
+                  ),
+                  (name, args, toolResult) => {
+                    calledTools.push(name);
+                    reportToolCall(name, args);
+                    reportToolResult(name, toolResult);
+                  },
+                )
+              : [];
+            if (forcedResults.length > 0) {
+              leading.push({
+                role: 'system' as const,
+                content:
+                  'Найденные фрагменты по вопросу (отвечай СТРОГО по ним; повторно эти источники не ' +
+                  `ищи):\n${forcedResults.join('\n\n')}`,
+              });
+            }
+            const withTools = [...leading, ...outgoing];
+            // Результаты search_docs за ход — против них цитатный гейт сверяет дословные цитаты
+            // (grounded-режим предзаполняет их принудительным поиском).
+            const ragResults: string[] = [...forcedResults];
             const result = await completeWithTools(
               client,
               withTools,
