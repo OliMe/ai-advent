@@ -141,7 +141,7 @@ export function loadRagConfig(env: NodeJS.ProcessEnv): RagConfig {
     k,
     kPre: positiveInteger(env.RAG_TOP_K_PRE, 20),
     minScore: boundedNumber(env.RAG_MIN_SCORE, 0, 0, 1),
-    confidenceMin: boundedNumber(env.RAG_CONFIDENCE_MIN, 0.5, 0, 1),
+    confidenceMin: boundedNumber(env.RAG_CONFIDENCE_MIN, 0.6, 0, 1),
     rerank: resolveRerank(env.RAG_RERANK),
     mmrLambda: boundedNumber(env.RAG_MMR_LAMBDA, 0.7, 0, 1),
     rerankLlmTop: positiveInteger(env.RAG_RERANK_LLM_TOP, 8),

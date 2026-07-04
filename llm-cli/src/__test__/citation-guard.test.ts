@@ -29,9 +29,18 @@ const validAnswer =
   'Цитаты:\n- find_places ищет организации рядом';
 
 describe('normalizeForMatch', () => {
-  it('снимает markdown/кавычки, схлопывает пробелы, нижний регистр', () => {
-    assert.equal(normalizeForMatch('  **Find_Places**\n  ищет  '), 'find_places ищет');
-    assert.equal(normalizeForMatch('> «цитата»'), 'цитата');
+  it('оставляет буквы/цифры, пунктуация → пробел, нижний регистр', () => {
+    assert.equal(normalizeForMatch('  **Find_Places**\n  ищет  '), 'find places ищет');
+    assert.equal(normalizeForMatch('> «цитата».'), 'цитата');
+    // «concurrency.limit» и «concurrency limit» нормализуются одинаково.
+    assert.equal(normalizeForMatch('`concurrency.limit`'), 'concurrency limit');
+  });
+
+  it('варианты кавычек/тире нормализуются одинаково (модель их «облагораживает»)', () => {
+    for (const q of ['«Амбар»', '„Амбар"', '“Амбар”', '"Амбар"', '‹Амбар›']) {
+      assert.equal(normalizeForMatch(q), 'амбар', `для ${q}`);
+    }
+    assert.equal(normalizeForMatch('лимита — в очередь'), normalizeForMatch('лимита - в очередь'));
   });
 });
 
@@ -45,6 +54,14 @@ describe('parseAnswerSections', () => {
   it('markdown-заголовки и инлайновый контент секции', () => {
     const parsed = parseAnswerSections(
       '**Ответ:** текст\n**Источники:** /d › doc.md · doc#0\n**Цитаты:**\n> цитата один',
+    );
+    assert.deepEqual(parsed.sources, ['/d › doc.md · doc#0']);
+    assert.deepEqual(parsed.citations, ['цитата один']);
+  });
+
+  it('markdown ## заголовки БЕЗ двоеточия (частый формат модели)', () => {
+    const parsed = parseAnswerSections(
+      '## Ответ\nтекст\n## Источники\n- /d › doc.md · doc#0\n## Цитаты\n- цитата один',
     );
     assert.deepEqual(parsed.sources, ['/d › doc.md · doc#0']);
     assert.deepEqual(parsed.citations, ['цитата один']);
@@ -87,7 +104,7 @@ describe('validateCitations', () => {
   });
 
   it('слишком длинная цитата → отказ', () => {
-    const long = 'a'.repeat(241);
+    const long = 'a'.repeat(501);
     const r = validateCitations(`Ответ: x\nИсточники:\n- /d › doc.md · doc#0\nЦитаты:\n- ${long}`, [
       chunk({ text: long }),
     ]);

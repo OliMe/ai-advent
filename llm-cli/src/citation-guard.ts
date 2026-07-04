@@ -12,8 +12,8 @@ export const RAG_DONT_KNOW =
 export const RAG_UNVERIFIED =
   'Не могу подтвердить ответ дословными цитатами из источников. Уточните запрос.';
 
-/** Максимальная длина одной цитаты (символов) — цитата должна быть короткой выдержкой. */
-const MAX_CITATION_LENGTH = 240;
+/** Максимальная длина одной цитаты (символов) — выдержка, но реальные абзацы доков бывают длинными. */
+const MAX_CITATION_LENGTH = 500;
 
 /**
  * Нормализует текст для дословной сверки: снимает markdown-разметку и кавычки, схлопывает
@@ -21,12 +21,14 @@ const MAX_CITATION_LENGTH = 240;
  * дословность не ломается на переносах строк и обрамлении цитаты.
  */
 export function normalizeForMatch(text: string): string {
-  // Подчёркивание НЕ трогаем — оно часть идентификаторов (find_places, concurrency_limit).
+  // Оставляем только буквы/цифры, любую пунктуацию/пробелы → один пробел. Так «дословность» —
+  // это «те же слова подряд», устойчиво к тому, что модель «облагораживает» кавычки/тире/точки
+  // (« » „ " — . `). Обе стороны нормализуем одинаково, поэтому сверка остаётся честной: выдуманную
+  // цитату (другие слова) это НЕ пропустит.
   return text
-    .replace(/[`*>#«»"'”“]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
 }
 
 /** Снимает ведущие маркеры списка/цитаты/markdown с элемента секции. */
@@ -42,13 +44,17 @@ function sectionHeader(
   line: string,
 ): { section: 'sources' | 'citations' | 'answer'; rest: string } | null {
   const cleaned = line.replace(/^[\s*#>\-]+/, '').toLowerCase();
-  // Двоеточие ОБЯЗАТЕЛЬНО — иначе строка-цитата «цитата один» принялась бы за заголовок секции.
   // [а-яё]* — \w не матчит кириллицу, «источники» иначе режется на «источник»+«и:».
-  const match = cleaned.match(/^(ответ|источник|цитат)[а-яё]*\s*[:：]\s*(.*)$/);
+  const match = cleaned.match(/^(ответ|источник|цитат)[а-яё]*\s*([:：])?\s*(.*)$/);
   if (!match) {
     return null;
   }
-  const rest = match[2];
+  const rest = match[3];
+  // Заголовок — либо «keyword:», либо ОДИНОЧНОЕ слово-заголовок (markdown «## Источники» без
+  // двоеточия). «цитата один» (без двоеточия, но с продолжением) заголовком НЕ считаем.
+  if (match[2] === undefined && rest !== '') {
+    return null;
+  }
   if (match[1].startsWith('источник')) {
     return { section: 'sources', rest };
   }
@@ -111,7 +117,8 @@ export function validateCitations(answer: string, chunks: SearchChunk[]): Citati
     const known = chunks.some(chunk =>
       [chunk.file, chunk.source, chunk.chunk_id]
         .map(normalizeForMatch)
-        .some(needle => needle !== '' && haystack.includes(needle)),
+        // ≥3 символов — иначе одиночный токен (source «/d» → «d») ложно матчит любой источник.
+        .some(needle => needle.length >= 3 && haystack.includes(needle)),
     );
     if (!known) {
       return { ok: false, reason: `источник не найден среди найденных: «${source}»` };

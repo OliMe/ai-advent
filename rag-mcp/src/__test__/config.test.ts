@@ -12,7 +12,7 @@ describe('loadRagConfig', () => {
     assert.equal(config.k, 5);
     assert.equal(config.kPre, 20);
     assert.equal(config.minScore, 0);
-    assert.equal(config.confidenceMin, 0.5);
+    assert.equal(config.confidenceMin, 0.6);
     assert.equal(config.rerank, 'mmr');
     assert.equal(config.mmrLambda, 0.7);
     assert.equal(config.rerankLlmTop, 8);
@@ -90,9 +90,9 @@ describe('loadRagConfig', () => {
     assert.equal(loadRagConfig(env({ RAG_RERANK_LLM_TOP: '0' })).rerankLlmTop, 8);
   });
 
-  it('confidenceMin переопределяется; вне [0,1] → дефолт 0.5', () => {
-    assert.equal(loadRagConfig(env({ RAG_CONFIDENCE_MIN: '0.6' })).confidenceMin, 0.6);
-    assert.equal(loadRagConfig(env({ RAG_CONFIDENCE_MIN: '2' })).confidenceMin, 0.5);
+  it('confidenceMin переопределяется; вне [0,1] → дефолт 0.6', () => {
+    assert.equal(loadRagConfig(env({ RAG_CONFIDENCE_MIN: '0.4' })).confidenceMin, 0.4);
+    assert.equal(loadRagConfig(env({ RAG_CONFIDENCE_MIN: '2' })).confidenceMin, 0.6);
   });
 
   it('переопределения из окружения (в т.ч. эмбеддинги и kPre)', () => {
