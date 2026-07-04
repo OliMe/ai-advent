@@ -56,6 +56,7 @@ import {
   isSearchDocsTool,
   formatRagResultForDisplay,
 } from './rag-directive.ts';
+import { resolveRagAnswer } from './citation-guard.ts';
 import type { VoiceInput } from './voice-input.ts';
 import {
   helpText,
@@ -957,6 +958,8 @@ export async function runInteractive(
             const withTools = [...leading, ...outgoing];
             // Какие инструменты реально вызваны за этот ход — для проверки «фантомных» заявлений.
             const calledTools: string[] = [];
+            // Результаты search_docs за ход — против них цитатный гейт сверяет дословные цитаты.
+            const ragResults: string[] = [];
             const result = await completeWithTools(
               client,
               withTools,
@@ -970,22 +973,55 @@ export async function runInteractive(
                 reportToolCall(name, args);
               },
               config.maxToolRounds,
-              reportToolResult,
+              (name, toolResult) => {
+                if (isSearchDocsTool(name)) {
+                  ragResults.push(toolResult);
+                }
+                reportToolResult(name, toolResult);
+              },
             );
             usage = result.usage;
+            // RAG-ход: слабый/пустой контекст → «не знаю»; иначе — гейт дословных цитат и источников
+            // (перегенерация при провале, безопасный фолбэк). На не-RAG ходах ответ модели как есть.
+            const finalContent = calledTools.some(isSearchDocsTool)
+              ? await resolveRagAnswer({
+                  ragResults,
+                  initial: result.content,
+                  regenerate: async feedback => {
+                    const fix = [
+                      ...withTools,
+                      {
+                        role: 'user' as const,
+                        content: `${feedback}\n\nНайденные фрагменты (используй только их):\n${ragResults.join('\n\n')}`,
+                      },
+                    ];
+                    const fixed = await askModel(
+                      client,
+                      fix,
+                      config.requestTimeoutMs,
+                      limits,
+                      disableThinking,
+                      temperature,
+                    );
+                    return fixed.content;
+                  },
+                  onFailure: (reason, attempt) =>
+                    output.write(`⚠ Цитаты не подтвердились (попытка ${attempt}): ${reason}\n`),
+                })
+              : result.content;
             // Трасса вызовов: видно выбор инструментов и порядок маршрутизации по серверам.
             output.write(formatToolTrace(calledTools));
             output.write(
-              `${ASSISTANT_LABEL}: ${renderMarkdownForTerminal(result.content, isTty)}\n\n`,
+              `${ASSISTANT_LABEL}: ${renderMarkdownForTerminal(finalContent, isTty)}\n\n`,
             );
             // Подстраховка: ассистент заявил действие в планировщике, не вызвав инструмент.
-            if (claimsSchedulerActionWithoutCall(result.content, calledTools)) {
+            if (claimsSchedulerActionWithoutCall(finalContent, calledTools)) {
               output.write(
                 '⚠ Похоже, ассистент сообщил о действии в планировщике, но инструмент не ' +
                   'вызывался — действие, скорее всего, НЕ выполнено. Проверьте: «покажи задачи».\n\n',
               );
             }
-            return result.content;
+            return finalContent;
           }
           if (stream) {
             // Пустая строка-отступ, чтобы прелоадер/ответ не «прилипали» к строке «Вы: …».
