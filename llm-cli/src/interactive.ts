@@ -57,6 +57,7 @@ import {
   formatRagResultForDisplay,
 } from './rag-directive.ts';
 import { resolveRagAnswer } from './citation-guard.ts';
+import { FAITHFULNESS_CHECKER_SYSTEM } from './faithfulness.ts';
 import type { VoiceInput } from './voice-input.ts';
 import {
   helpText,
@@ -983,6 +984,17 @@ export async function runInteractive(
             usage = result.usage;
             // RAG-ход: слабый/пустой контекст → «не знаю»; иначе — гейт дословных цитат и источников
             // (перегенерация при провале, безопасный фолбэк). На не-RAG ходах ответ модели как есть.
+            // RAG_FAITHFULNESS_CHECK=1 — опциональный рантайм-судья достоверности поверх локального гейта.
+            const faithfulness =
+              process.env.RAG_FAITHFULNESS_CHECK === '1'
+                ? {
+                    makeChecker: () => agentFactory(FAITHFULNESS_CHECKER_SYSTEM, undefined, 0),
+                    onUnfaithful: (issues: string[], attempt: number) =>
+                      output.write(
+                        `↻ достоверность (попытка ${attempt}): ответ не опирается на источники:\n${issues.join('\n')}\n`,
+                      ),
+                  }
+                : undefined;
             const finalContent = calledTools.some(isSearchDocsTool)
               ? await resolveRagAnswer({
                   ragResults,
@@ -1007,6 +1019,7 @@ export async function runInteractive(
                   },
                   onFailure: (reason, attempt) =>
                     output.write(`⚠ Цитаты не подтвердились (попытка ${attempt}): ${reason}\n`),
+                  faithfulness,
                 })
               : result.content;
             // Трасса вызовов: видно выбор инструментов и порядок маршрутизации по серверам.

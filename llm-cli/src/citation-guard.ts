@@ -1,5 +1,7 @@
+import type { Conversation } from '../../core/src/index.ts';
 import type { SearchChunk } from './rag-answer.ts';
 import { parseSearchResult } from './rag-answer.ts';
+import { enforceFaithfulness } from './faithfulness.ts';
 
 /** Ответ при слабом/пустом контексте (режим «не знаю»). */
 export const RAG_DONT_KNOW =
@@ -179,6 +181,11 @@ export async function resolveRagAnswer(options: {
   initial: string;
   regenerate: (feedback: string) => Promise<string>;
   onFailure?: (reason: string, attempt: number) => void;
+  /** Опциональный рантайм-гейт достоверности (LLM-судья) поверх локального; отсутствует — выключен. */
+  faithfulness?: {
+    makeChecker: () => Conversation;
+    onUnfaithful?: (issues: string[], attempt: number) => void;
+  };
 }): Promise<string> {
   const parsed = options.ragResults.map(parseSearchResult);
   const chunks = parsed.flatMap(result => result.chunks);
@@ -186,10 +193,22 @@ export async function resolveRagAnswer(options: {
   if (chunks.length === 0 || allLow) {
     return RAG_DONT_KNOW;
   }
-  return enforceCitations({
+  const local = await enforceCitations({
     initial: options.initial,
     chunks,
     regenerate: options.regenerate,
     onFailure: options.onFailure,
+  });
+  // Гейт достоверности — только если включён и локальный гейт дал реальный ответ (не фолбэк).
+  if (options.faithfulness === undefined || local === RAG_UNVERIFIED) {
+    return local;
+  }
+  return enforceFaithfulness({
+    initial: local,
+    chunks,
+    makeChecker: options.faithfulness.makeChecker,
+    regenerate: options.regenerate,
+    fallback: RAG_UNVERIFIED,
+    onUnfaithful: options.faithfulness.onUnfaithful,
   });
 }

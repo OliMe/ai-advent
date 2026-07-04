@@ -59,6 +59,7 @@ export * from './markdown.ts';
 export * from './rag-directive.ts';
 export * from './rag-answer.ts';
 export * from './citation-guard.ts';
+export * from './faithfulness.ts';
 export * from './yandex-speech.ts';
 export * from './voice-input.ts';
 export * from './interactive.ts';

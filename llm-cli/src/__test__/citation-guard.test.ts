@@ -10,6 +10,7 @@ import {
   RAG_UNVERIFIED,
 } from '../index.ts';
 import type { SearchChunk } from '../index.ts';
+import type { Conversation } from '../../../core/src/index.ts';
 
 const chunk = (over: Partial<SearchChunk> = {}): SearchChunk => ({
   chunk_id: 'doc#0',
@@ -189,6 +190,42 @@ describe('resolveRagAnswer', () => {
       },
     });
     assert.equal(regenerated, true);
+    assert.equal(out, validAnswer);
+  });
+
+  const checker =
+    (reply: string): (() => Conversation) =>
+    () =>
+      ({ ask: async () => ({ content: reply }) }) as unknown as Conversation;
+
+  it('faithfulness включён + судья «OK» → локально валидный ответ проходит', async () => {
+    const out = await resolveRagAnswer({
+      ragResults: [searchResult],
+      initial: validAnswer,
+      regenerate: async () => validAnswer,
+      faithfulness: { makeChecker: checker('OK') },
+    });
+    assert.equal(out, validAnswer);
+  });
+
+  it('faithfulness включён + судья нашёл выдумку → перегенерация', async () => {
+    let regen = 0;
+    let call = 0;
+    const out = await resolveRagAnswer({
+      ragResults: [searchResult],
+      initial: validAnswer,
+      regenerate: async () => {
+        regen++;
+        return validAnswer;
+      },
+      faithfulness: {
+        makeChecker: () =>
+          ({
+            ask: async () => ({ content: call++ === 0 ? '- утверждение без опоры' : 'OK' }),
+          }) as unknown as Conversation,
+      },
+    });
+    assert.equal(regen, 1); // судья забраковал → одна перегенерация → «OK»
     assert.equal(out, validAnswer);
   });
 });
