@@ -45,6 +45,15 @@ describe('FileSessionStore', () => {
     assert.equal(store.load('нет-такой'), null);
   });
 
+  it('привязанные RAG-источники (grounded-режим) переживают round-trip', () => {
+    const session = {
+      ...makeSession('20260610T100000-r', '2026-06-10T10:00:00.000Z'),
+      ragSources: ['/docs', 'https://github.com/o/r'],
+    };
+    store.save(session);
+    assert.deepEqual(store.load(session.id)?.ragSources, ['/docs', 'https://github.com/o/r']);
+  });
+
   it('list и latest пусты, когда каталога ещё нет', () => {
     assert.deepEqual(store.list(), []);
     assert.equal(store.latest(), null);
