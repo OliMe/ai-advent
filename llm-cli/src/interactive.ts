@@ -946,7 +946,11 @@ export async function runInteractive(
               leading.push({ role: 'system' as const, content: directive });
             }
             // Если подключён RAG-поиск (search_docs) — нацеливаем агента искать по документам.
-            const ragDirective = ragSearchDirective(chatTools.specs());
+            // RAG_ANSWER_COMPACT=1 — компактные источники/цитаты (для длинного чата).
+            const ragDirective = ragSearchDirective(
+              chatTools.specs(),
+              process.env.RAG_ANSWER_COMPACT === '1',
+            );
             if (ragDirective !== null) {
               leading.push({ role: 'system' as const, content: ragDirective });
             }
