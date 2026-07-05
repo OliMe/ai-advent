@@ -89,6 +89,12 @@ export interface MemoryWriteReport {
   profileAdded: string[];
   /** Число пунктов после консолидации профиля (иначе null — это не консолидация). */
   consolidated: number | null;
+  /**
+   * Ход-воспоминание: пользователь просит вспомнить/повторить уже обсуждённое (а не задаёт
+   * новый знаниевый вопрос). Сигнал клиенту grounded-режима отвечать из истории, а не искать
+   * заново. Определяется LLM-извлечением; в клиенте комбинируется с лексическими маркерами.
+   */
+  recall: boolean;
 }
 
 /**
@@ -277,6 +283,9 @@ export class MemoryManager {
       '«поставь напоминание …», «проверяй доступность …», «следи за …») — это команды для ' +
       'инструментов, а НЕ задача-цель сессии и НЕ инвариант: для них isNewTask=false и ' +
       'invariant="". ' +
+      '"recall" — true, если ПОСЛЕДНЯЯ реплика пользователя просит ВСПОМНИТЬ или ПОВТОРИТЬ ' +
+      'уже сказанное в этом диалоге («напомни …», «повтори …», «что мы решили», «с чего начали», ' +
+      '«какая у нас задача/цель», «что ты называл»), а НЕ задаёт новый знаниевый вопрос; иначе false. ' +
       'Без пояснений.\n\nСообщения:\n' +
       dialogue;
     return this.client.completeWithUsage([{ role: 'user', content: instruction }], {
@@ -291,18 +300,23 @@ export class MemoryManager {
    * Применяет результат извлечения к слоям. Детектит предложение новой задачи,
    * пишет факты задачи и явные предпочтения. Возвращает, что именно записано.
    */
-  private applyExtraction(content: string): { taskUpdated: boolean; profileAdded: string[] } {
+  private applyExtraction(content: string): {
+    taskUpdated: boolean;
+    profileAdded: string[];
+    recall: boolean;
+  } {
     let parsed: {
       task?: unknown;
       user?: unknown;
       isNewTask?: unknown;
       proposedTitle?: unknown;
       invariant?: unknown;
+      recall?: unknown;
     };
     try {
       parsed = JSON.parse(content);
     } catch {
-      return { taskUpdated: false, profileAdded: [] }; // невалидный JSON — пропускаем ход
+      return { taskUpdated: false, profileAdded: [], recall: false }; // невалидный JSON — пропускаем ход
     }
     // Авто-определение новой задачи: предлагаем, если уверены, тема отличается от
     // текущей и пользователь раньше от такого имени не отказывался.
@@ -328,7 +342,7 @@ export class MemoryManager {
     }
     const taskUpdated = Array.isArray(parsed.task) ? this.tasks.applyDetails(parsed.task) : false;
     const profileAdded = Array.isArray(parsed.user) ? this.profiles.addTraits(parsed.user) : [];
-    return { taskUpdated, profileAdded };
+    return { taskUpdated, profileAdded, recall: parsed.recall === true };
   }
 
   /**
@@ -360,6 +374,7 @@ export class MemoryManager {
         taskFactCount: task !== null ? task.details.length : 0,
         profileAdded: applied.profileAdded,
         consolidated: null,
+        recall: applied.recall,
       };
     } catch {
       // Извлечение не удалось — оставляем прежнюю память, повторим в следующий ход.
@@ -453,6 +468,7 @@ export class MemoryManager {
         taskFactCount: 0,
         profileAdded: [],
         consolidated: texts.length,
+        recall: false,
       };
     } catch {
       // Консолидация не удалась — профиль остаётся прежним.

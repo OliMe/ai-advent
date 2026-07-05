@@ -157,6 +157,21 @@ describe('MemoryManager', () => {
     assert.deepEqual(mgr.currentTask()?.details, ['цель: аудит', 'ограничение: read-only']);
   });
 
+  it('observe: помечает ход-воспоминание (recall=true) из извлечения', async t => {
+    const mgr = makeManager(t, () => ({
+      content: '{"task":[],"user":[],"recall":true}',
+      usage: undefined,
+    }));
+    const report = await mgr.observe([sys, { role: 'user', content: 'напомни, что мы решили' }]);
+    assert.equal(report?.recall, true);
+  });
+
+  it('observe: обычный знаниевый вопрос — recall=false (поле отсутствует)', async t => {
+    const mgr = makeManager(t, () => ({ content: '{"task":[],"user":[]}', usage: undefined }));
+    const report = await mgr.observe([sys, { role: 'user', content: 'в каком формате вывод?' }]);
+    assert.equal(report?.recall, false);
+  });
+
   it('инварианты: add/list/remove, блок и директива в контексте', async t => {
     const mgr = makeManager(t, () => ({ content: '{"task":[],"user":[]}', usage: undefined }));
     assert.deepEqual(mgr.invariantsList(), []);

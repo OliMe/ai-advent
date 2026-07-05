@@ -107,7 +107,9 @@ npm --prefix llm-cli start             # запустить CLI (node src/cli.ts
   `memory-invariants.ts` (`InvariantsMemory` — глобальные жёсткие ограничения),
   `memory-manager.ts` (`MemoryManager` — оркестрирует инварианты+профиль+задачу+короткую,
   подмешивает блоки и директивы персонализации/инвариантов, извлекает память из реплик,
-  консолидирует профиль). Хранилища: `profile-store.ts`, `task-store.ts`,
+  консолидирует профиль). Извлечение попутно метит **ход-воспоминание** (`MemoryWriteReport.recall`
+  — пользователь просит вспомнить/повторить уже сказанное, а не задаёт новый знаниевый вопрос);
+  сигнал для grounded-режима llm-cli отвечать из истории, а не искать заново (см. День 25). Хранилища: `profile-store.ts`, `task-store.ts`,
   `invariants-store.ts` (глобальный `~/.llm-cli/invariants.json`).
 - Пайплайн задач: `task-run.ts` (`TaskRun`/`Stage`/артефакты/`createRun` + **явный
   автомат жизненного цикла**), `run-store.ts` (`FileRunStore`: `<id>.json` + каталог
