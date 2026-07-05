@@ -43,4 +43,30 @@ describe('makeRewriter', () => {
     const rewrite = makeRewriter('hyde', complete);
     assert.equal(await rewrite('вопрос'), 'вопрос');
   });
+
+  it('hyde с языком корпуса → промпт велит перевести и писать на этом языке', async () => {
+    const { complete, systems } = fake('The deep profile is used for on-demand incident response.');
+    const rewrite = makeRewriter('hyde', complete, 'English');
+    const out = await rewrite('какой профиль для инцидент-реагирования?');
+    assert.equal(out, 'The deep profile is used for on-demand incident response.'); // гипотетич. документ на EN
+    assert.match(systems[0], /«English»/);
+    assert.match(systems[0], /перевед/i); // указание перевести смысл запроса
+    assert.doesNotMatch(systems[0], /как в запросе/); // не прежний фолбэк
+  });
+
+  it('expand с языком корпуса → синонимы на языке документации', async () => {
+    const { complete, systems } = fake('incident response, on-demand scan, deep profile');
+    const rewrite = makeRewriter('expand', complete, 'English');
+    assert.equal(
+      await rewrite('инцидент-реагирование'),
+      'инцидент-реагирование\nincident response, on-demand scan, deep profile',
+    );
+    assert.match(systems[0], /НА ЯЗЫКЕ «English»/);
+  });
+
+  it('пустой/пробельный язык → фолбэк «как в запросе»', async () => {
+    const { complete, systems } = fake('фрагмент');
+    await makeRewriter('hyde', complete, '   ')('вопрос');
+    assert.match(systems[0], /как в запросе/); // пробельный язык трактуется как «не задан»
+  });
 });
