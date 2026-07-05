@@ -60,6 +60,9 @@ import { resolveRagAnswer } from './citation-guard.ts';
 import { FAITHFULNESS_CHECKER_SYSTEM } from './faithfulness.ts';
 import {
   isConversationalReply,
+  isRecallTurn,
+  isRecallFallback,
+  RECALL_SYSTEM_PROMPT,
   groundedFocus,
   buildGroundedQuery,
   forcedRagSearch,
@@ -1019,6 +1022,33 @@ export async function runInteractive(
             // контекст. Дальше идёт обычный агентный ход (другие инструменты доступны) + гейт Дня 24.
             const groundedSources = currentSession.ragSources ?? [];
             const grounded = groundedSources.length > 0 && !isConversationalReply(userInput);
+            // Ход-воспоминание (День 25 Этап 3): «напомни/что мы решили…» — сперва пробуем
+            // ВОСПРОИЗВЕСТИ прошлый ответ из истории (temp=0, дословно, с «Источниками»), без
+            // форс-поиска и цитатного гейта. Не нашлось (сентинел) — молча откатываемся на обычный
+            // grounded-поиск ниже (пользователь сентинел не видит). Только на первой генерации хода
+            // (не при перегенерации контролёром инвариантов).
+            if (
+              grounded &&
+              feedback === undefined &&
+              isRecallTurn(userInput, writeReport?.recall ?? false)
+            ) {
+              const recalled = await askModel(
+                client,
+                [{ role: 'system' as const, content: RECALL_SYSTEM_PROMPT }, ...outgoing],
+                config.requestTimeoutMs,
+                limits,
+                disableThinking,
+                0,
+              );
+              if (!isRecallFallback(recalled.content)) {
+                usage = recalled.usage;
+                output.write(
+                  `${ASSISTANT_LABEL}: ${renderMarkdownForTerminal(recalled.content, isTty)}\n\n`,
+                );
+                return recalled.content;
+              }
+              // Сентинел — в истории ответа нет; идём на обычный grounded-путь.
+            }
             const forcedResults = grounded
               ? await forcedRagSearch(
                   chatTools,
