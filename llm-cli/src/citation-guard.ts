@@ -111,8 +111,9 @@ export function validateCitations(answer: string, chunks: SearchChunk[]): Citati
   if (citations.length === 0) {
     return { ok: false, reason: 'нет секции «Цитаты» или она пуста' };
   }
-  // Собираем ВСЕ провалы за один проход (адресный фидбэк): модель на перегенерации сразу видит
-  // каждый непринятый источник/цитату и правит их все разом, а не по одному за перегенерацию.
+  // Собираем ВСЕ провалы за один проход (адресный фидбэк). Источники сверяем строго (все ⊂ найденных
+  // — подделка источника недопустима); цитаты — мягче (День 25 п.2): весь ответ дословным НЕ требуем,
+  // синтез/пересборка в теле — норма, нужен лишь ОДИН дословный якорь.
   const issues: string[] = [];
   // Источник заявлен корректно, если в строке упомянут реальный чанк — по file, source или chunk_id.
   for (const source of sources) {
@@ -127,16 +128,21 @@ export function validateCitations(answer: string, chunks: SearchChunk[]): Citati
       issues.push(`источник не найден среди найденных: «${source}»`);
     }
   }
+  // Якорь: хотя бы одна цитата — дословная (нормализованная) подстрока фрагмента, не длиннее лимита.
+  // Достаточно одного; остальные записи (синтез, собранные команды) терпим — их не бракуем.
   const chunkTexts = chunks.map(chunk => normalizeForMatch(chunk.text));
-  for (const citation of citations) {
+  const hasAnchor = citations.some(citation => {
     if (citation.length > MAX_CITATION_LENGTH) {
-      issues.push(`цитата длиннее ${MAX_CITATION_LENGTH} символов: «${citation.slice(0, 40)}…»`);
-      continue;
+      return false;
     }
     const normalized = normalizeForMatch(citation);
-    if (!chunkTexts.some(text => text.includes(normalized))) {
-      issues.push(`цитата не найдена дословно в источниках: «${citation}»`);
-    }
+    return chunkTexts.some(text => text.includes(normalized));
+  });
+  if (!hasAnchor) {
+    issues.push(
+      'нет ни одной дословной цитаты-якоря — приведи ≥1 РЕАЛЬНУЮ выдержку (дословную подстроку ' +
+        'найденного фрагмента)',
+    );
   }
   if (issues.length > 0) {
     return { ok: false, reason: issues.join('; ') };

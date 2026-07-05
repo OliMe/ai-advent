@@ -103,35 +103,45 @@ describe('validateCitations', () => {
     assert.match(r.reason, /источник не найден/);
   });
 
-  it('слишком длинная цитата → отказ', () => {
+  it('слишком длинная цитата не годится в якорь → отказ (нет якоря)', () => {
     const long = 'a'.repeat(501);
     const r = validateCitations(`Ответ: x\nИсточники:\n- /d › doc.md · doc#0\nЦитаты:\n- ${long}`, [
       chunk({ text: long }),
     ]);
     assert.equal(r.ok, false);
-    assert.match(r.reason, /длиннее/);
+    assert.match(r.reason, /якоря/);
   });
 
-  it('невыводимая (не дословная) цитата → отказ', () => {
+  it('нет ни одной дословной цитаты (только не-дословная) → отказ', () => {
     const r = validateCitations(
       'Ответ: x\nИсточники:\n- /d › doc.md · doc#0\nЦитаты:\n- это выдуманная цитата',
       [chunk()],
     );
     assert.equal(r.ok, false);
-    assert.match(r.reason, /не найдена дословно/);
+    assert.match(r.reason, /якоря/);
   });
 
-  it('собирает ВСЕ провалы за проход (адресный фидбэк), а не первый', () => {
+  it('≥1 дословная цитата-якорь → ok (не-дословные записи терпим, синтез в теле)', () => {
+    const r = validateCitations(
+      'Ответ: собранная команда bumblebee scan --profile deep --root $HOME\n' +
+        'Источники:\n- /d › doc.md · doc#0\n' +
+        'Цитаты:\n- find_places ищет организации рядом\n- bumblebee scan --profile deep --root $HOME',
+      [chunk()],
+    );
+    assert.deepEqual(r, { ok: true, reason: '' }); // якорь есть, синтез-строка в цитатах не валит
+  });
+
+  it('источники собираются ВСЕ (адресно) и валят при подделке, даже если якорь есть', () => {
     const r = validateCitations(
       'Ответ: x\n' +
-        'Источники:\n- /d › doc.md · doc#0\n- other.md\n' +
-        'Цитаты:\n- find_places ищет организации рядом\n- выдуманная фраза',
+        'Источники:\n- /d › doc.md · doc#0\n- other.md\n- fake.md\n' +
+        'Цитаты:\n- find_places ищет организации рядом',
       [chunk()],
     );
     assert.equal(r.ok, false);
-    assert.match(r.reason, /источник не найден.*other\.md/); // назван плохой источник
-    assert.match(r.reason, /не найдена дословно.*выдуманная фраза/); // и плохая цитата
-    assert.match(r.reason, /;/); // причины объединены в одну — модель правит их разом
+    assert.match(r.reason, /источник не найден.*other\.md/); // оба плохих источника
+    assert.match(r.reason, /источник не найден.*fake\.md/);
+    assert.doesNotMatch(r.reason, /якоря/); // якорь-то есть — про цитаты не ругаемся
   });
 });
 
