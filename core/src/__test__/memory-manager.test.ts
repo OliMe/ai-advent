@@ -131,6 +131,32 @@ describe('MemoryManager', () => {
     assert.ok(result.some(m => m.content.includes('Текущая задача: Сайт')));
   });
 
+  it('prepare: пустое извлечение не затирает уже накопленные факты задачи', async t => {
+    let call = 0;
+    const mgr = makeManager(t, () => {
+      call += 1;
+      // 1-й ход — по существу задачи, извлекаем факты; 2-й (посторонний вопрос) —
+      // модель отдаёт пустой список task: факты задачи должны СОХРАНИТЬСЯ, не стереться.
+      return call === 1
+        ? {
+            content: '{"task":["цель: аудит","ограничение: read-only"],"user":[]}',
+            usage: undefined,
+          }
+        : { content: '{"task":[],"user":[]}', usage: undefined };
+    });
+    mgr.setTask('Аудит');
+    await mgr.prepare([sys, { role: 'user', content: 'зафиксируй детали аудита' }]);
+    assert.deepEqual(mgr.currentTask()?.details, ['цель: аудит', 'ограничение: read-only']);
+    await mgr.prepare([
+      sys,
+      { role: 'user', content: 'зафиксируй детали аудита' },
+      { role: 'assistant', content: 'ок' },
+      { role: 'user', content: 'а рецепт борща там есть?' },
+    ]);
+    // Пустое извлечение на офф-топике не стёрло контекст задачи.
+    assert.deepEqual(mgr.currentTask()?.details, ['цель: аудит', 'ограничение: read-only']);
+  });
+
   it('инварианты: add/list/remove, блок и директива в контексте', async t => {
     const mgr = makeManager(t, () => ({ content: '{"task":[],"user":[]}', usage: undefined }));
     assert.deepEqual(mgr.invariantsList(), []);

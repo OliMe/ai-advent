@@ -152,7 +152,15 @@ export class TaskMemory {
     if (this.task === null) {
       return false;
     }
-    this.task.details = rawDetails.filter((x): x is string => typeof x === 'string');
+    const details = rawDetails.filter((x): x is string => typeof x === 'string');
+    // Модель обязана возвращать ПОЛНЫЙ обновлённый список фактов, и мы его замещаем.
+    // Но на офф-топике/болтовне извлечение часто отдаёт пустой список — это НЕ команда
+    // «забыть задачу», а отсутствие новых фактов. Пустой список не должен затирать уже
+    // накопленные детали (иначе один посторонний вопрос стирает контекст задачи).
+    if (details.length === 0 && this.task.details.length > 0) {
+      return false;
+    }
+    this.task.details = details;
     this.task.updatedAt = new Date().toISOString();
     this.persist(this.task);
     return true;

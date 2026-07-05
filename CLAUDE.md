@@ -100,7 +100,10 @@ npm --prefix llm-cli start             # запустить CLI (node src/cli.ts
 - Сессии: `session.ts` (`Session`, `createSession`, `sessionId`) + `session-store.ts`
   (`FileSessionStore`, атомарная запись). Ветвление/переключение сессий.
 - Память (движок): `memory-strategy.ts` (короткая: window/summary/facts),
-  `memory-task.ts` (`TaskMemory`), `memory-profile.ts` (`ProfileMemory`),
+  `memory-task.ts` (`TaskMemory`; извлечение отдаёт ПОЛНЫЙ обновлённый список фактов задачи,
+  `applyDetails` их замещает — НО пустой список НЕ затирает уже накопленные детали: на
+  офф-топике/болтовне модель часто возвращает `task: []`, это «нет новых фактов», а не «забудь
+  задачу»), `memory-profile.ts` (`ProfileMemory`),
   `memory-invariants.ts` (`InvariantsMemory` — глобальные жёсткие ограничения),
   `memory-manager.ts` (`MemoryManager` — оркестрирует инварианты+профиль+задачу+короткую,
   подмешивает блоки и директивы персонализации/инвариантов, извлекает память из реплик,
