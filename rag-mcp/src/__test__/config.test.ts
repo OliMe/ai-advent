@@ -27,6 +27,7 @@ describe('loadRagConfig', () => {
     assert.equal(config.queryPrefix, 'search_query: ');
     assert.equal(config.docPrefix, 'search_document: ');
     assert.equal(config.rewrite, 'none');
+    assert.equal(config.docLanguage, undefined); // без RAG_DOC_LANG определяем сами
     assert.equal(config.chat, null); // без LLM_*/RAG_LLM_* фичи с моделью выключены
     assert.equal(config.chatDisableThinking, false);
   });
@@ -36,6 +37,11 @@ describe('loadRagConfig', () => {
     assert.equal(loadRagConfig(env({ RAG_REWRITE: 'hyde' })).rewrite, 'hyde');
     assert.equal(loadRagConfig(env({ RAG_REWRITE: 'wat' })).rewrite, 'none');
     assert.equal(loadRagConfig(env({ RAG_RERANK: 'llm' })).rerank, 'llm');
+  });
+
+  it('RAG_DOC_LANG задаёт язык документации (оверрайд автоопределения); пустой → undefined', () => {
+    assert.equal(loadRagConfig(env({ RAG_DOC_LANG: 'German' })).docLanguage, 'German');
+    assert.equal(loadRagConfig(env({ RAG_DOC_LANG: '  ' })).docLanguage, undefined);
   });
 
   it('chatDisableThinking включается по 1/true', () => {

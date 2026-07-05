@@ -27,6 +27,11 @@ export interface RagConfig {
   rerankLlmTop: number;
   /** Режим переписывания запроса (none/expand/hyde). */
   rewrite: RewriteMode;
+  /**
+   * Явный язык документации (английское название, напр. `English`) — оверрайд автоопределения по
+   * индексу для кросс-язычного rewrite. Пусто — определяем сами (кэш индекса → LLM → письменность).
+   */
+  docLanguage: string | undefined;
   /** Chat-модель для rewrite/LLM-реранка (RAG_LLM_* с фолбэком на LLM_*); null — фичи выключены. */
   chat: AppConfig | null;
   /** Отключать «рассуждения» chat-модели (нужно для GLM). */
@@ -146,6 +151,7 @@ export function loadRagConfig(env: NodeJS.ProcessEnv): RagConfig {
     mmrLambda: boundedNumber(env.RAG_MMR_LAMBDA, 0.7, 0, 1),
     rerankLlmTop: positiveInteger(env.RAG_RERANK_LLM_TOP, 8),
     rewrite: resolveRewrite(env.RAG_REWRITE),
+    docLanguage: env.RAG_DOC_LANG?.trim() || undefined,
     chat: loadChatConfig(env),
     chatDisableThinking:
       env.RAG_LLM_NO_THINKING?.trim() === '1' || env.RAG_LLM_NO_THINKING?.trim() === 'true',

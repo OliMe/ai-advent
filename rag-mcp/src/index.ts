@@ -15,6 +15,14 @@ export type {
 export { mmrRerank } from './mmr.ts';
 export { makeRewriter } from './rewrite.ts';
 export type { RewriteMode, ChatComplete } from './rewrite.ts';
+export {
+  resolveDocLanguage,
+  detectLanguageByScript,
+  parseLanguageReply,
+  pickProseSamples,
+  LANGUAGE_DETECT_SYSTEM,
+} from './language.ts';
+export type { ResolveDocLanguageOptions, DocLanguageResult } from './language.ts';
 export { makeLlmReranker, makeChatRerankProvider, parseScores } from './rerank-llm.ts';
 export type { RerankProvider, RerankScores } from './rerank-llm.ts';
 export { ensureIndex } from './index-cache.ts';
