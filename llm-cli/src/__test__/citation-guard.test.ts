@@ -120,6 +120,19 @@ describe('validateCitations', () => {
     assert.equal(r.ok, false);
     assert.match(r.reason, /не найдена дословно/);
   });
+
+  it('собирает ВСЕ провалы за проход (адресный фидбэк), а не первый', () => {
+    const r = validateCitations(
+      'Ответ: x\n' +
+        'Источники:\n- /d › doc.md · doc#0\n- other.md\n' +
+        'Цитаты:\n- find_places ищет организации рядом\n- выдуманная фраза',
+      [chunk()],
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /источник не найден.*other\.md/); // назван плохой источник
+    assert.match(r.reason, /не найдена дословно.*выдуманная фраза/); // и плохая цитата
+    assert.match(r.reason, /;/); // причины объединены в одну — модель правит их разом
+  });
 });
 
 describe('enforceCitations', () => {

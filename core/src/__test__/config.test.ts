@@ -89,7 +89,7 @@ describe('loadConfig', () => {
     assert.equal(config.usdToRub, 90);
     assert.equal(config.maxStageAgents, 4); // дефолт: команда до 4 агентов на этап
     assert.equal(config.stageAgentConcurrency, 2);
-    assert.equal(config.maxToolRounds, 12); // дефолт: до 12 раундов агентного цикла
+    assert.equal(config.maxToolRounds, 20); // дефолт: до 20 раундов агентного цикла
     assert.match(config.systemPrompt, /ассистент/i);
   });
 
@@ -99,13 +99,13 @@ describe('loadConfig', () => {
     process.env.LLM_MODEL = 'm';
     process.env.LLM_MAX_STAGE_AGENTS = '6';
     process.env.LLM_STAGE_AGENT_CONCURRENCY = '3';
-    process.env.LLM_MAX_TOOL_ROUNDS = '20';
+    process.env.LLM_MAX_TOOL_ROUNDS = '30';
 
     const config = loadConfig();
 
     assert.equal(config.maxStageAgents, 6);
     assert.equal(config.stageAgentConcurrency, 3);
-    assert.equal(config.maxToolRounds, 20);
+    assert.equal(config.maxToolRounds, 30);
   });
 
   it('откатывается к дефолтам команды агентов при невалидных значениях', () => {

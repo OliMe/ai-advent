@@ -49,7 +49,7 @@ const DEFAULT_PRICE_PER_1M = 0;
 const DEFAULT_USD_RUB = 90;
 const DEFAULT_MAX_STAGE_AGENTS = 4;
 const DEFAULT_STAGE_AGENT_CONCURRENCY = 2;
-const DEFAULT_MAX_TOOL_ROUNDS = 12;
+const DEFAULT_MAX_TOOL_ROUNDS = 20;
 
 /** Конечное неотрицательное число из env или значение по умолчанию. */
 function nonNegativeNumber(raw: string | undefined, fallback: number): number {

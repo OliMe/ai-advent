@@ -111,6 +111,9 @@ export function validateCitations(answer: string, chunks: SearchChunk[]): Citati
   if (citations.length === 0) {
     return { ok: false, reason: 'нет секции «Цитаты» или она пуста' };
   }
+  // Собираем ВСЕ провалы за один проход (адресный фидбэк): модель на перегенерации сразу видит
+  // каждый непринятый источник/цитату и правит их все разом, а не по одному за перегенерацию.
+  const issues: string[] = [];
   // Источник заявлен корректно, если в строке упомянут реальный чанк — по file, source или chunk_id.
   for (const source of sources) {
     const haystack = normalizeForMatch(source);
@@ -121,18 +124,22 @@ export function validateCitations(answer: string, chunks: SearchChunk[]): Citati
         .some(needle => needle.length >= 3 && haystack.includes(needle)),
     );
     if (!known) {
-      return { ok: false, reason: `источник не найден среди найденных: «${source}»` };
+      issues.push(`источник не найден среди найденных: «${source}»`);
     }
   }
   const chunkTexts = chunks.map(chunk => normalizeForMatch(chunk.text));
   for (const citation of citations) {
     if (citation.length > MAX_CITATION_LENGTH) {
-      return { ok: false, reason: `цитата длиннее ${MAX_CITATION_LENGTH} символов` };
+      issues.push(`цитата длиннее ${MAX_CITATION_LENGTH} символов: «${citation.slice(0, 40)}…»`);
+      continue;
     }
     const normalized = normalizeForMatch(citation);
     if (!chunkTexts.some(text => text.includes(normalized))) {
-      return { ok: false, reason: `цитата не найдена дословно в источниках: «${citation}»` };
+      issues.push(`цитата не найдена дословно в источниках: «${citation}»`);
     }
+  }
+  if (issues.length > 0) {
+    return { ok: false, reason: issues.join('; ') };
   }
   return { ok: true, reason: '' };
 }
@@ -145,7 +152,7 @@ export interface EnforceCitationsOptions {
   chunks: SearchChunk[];
   /** Перегенерация ответа с замечанием проверки. */
   regenerate: (feedback: string) => Promise<string>;
-  /** Сколько перегенераций допустимо (по умолчанию 2). */
+  /** Сколько перегенераций допустимо (по умолчанию 5). */
   maxRegenerations?: number;
   /** Колбэк на провал проверки (для печати): причина + номер попытки. */
   onFailure?: (reason: string, attempt: number) => void;
@@ -158,7 +165,7 @@ export interface EnforceCitationsOptions {
  * (до maxRegenerations раз). Не сошлось — возвращает безопасный фолбэк (не непроверенный ответ).
  */
 export async function enforceCitations(options: EnforceCitationsOptions): Promise<string> {
-  const max = options.maxRegenerations ?? 2;
+  const max = options.maxRegenerations ?? 5;
   const fallback = options.fallback ?? RAG_UNVERIFIED;
   let text = options.initial;
   for (let attempt = 0; attempt <= max; attempt++) {
@@ -168,14 +175,27 @@ export async function enforceCitations(options: EnforceCitationsOptions): Promis
     }
     options.onFailure?.(check.reason, attempt + 1);
     if (attempt < max) {
-      text = await options.regenerate(
-        `Проверка цитат не пройдена: ${check.reason}. Перепиши ответ в формате ` +
-          'Ответ/Источники/Цитаты, приводя ТОЛЬКО дословные цитаты из приведённых фрагментов и ' +
-          'реальные источники (source › section · chunk_id).',
-      );
+      text = await options.regenerate(citationFeedback(check.reason));
     }
   }
   return fallback;
+}
+
+/**
+ * Замечание для перегенерации: называет КОНКРЕТНЫЕ провалы (адресно) и даёт жёсткий шаблон
+ * трёх секций. Частый провал — модель вовсе опускает Источники/Цитаты; явный образец формата
+ * надёжнее общей просьбы «перепиши в формате».
+ */
+export function citationFeedback(reason: string): string {
+  return (
+    `Проверка цитат не пройдена: ${reason}.\n` +
+    'Ответ ОБЯЗАН содержать ровно три секции в таком виде:\n' +
+    'Ответ: <твой ответ>\n' +
+    'Источники:\n- <source › section · chunk_id>\n' +
+    'Цитаты:\n- «<дословная выдержка из фрагмента>»\n' +
+    'Источники — только реально приведённые ниже; цитаты — ТОЛЬКО дословные подстроки этих ' +
+    'фрагментов (скопируй символ в символ). Исправь каждый названный выше провал.'
+  );
 }
 
 /**
