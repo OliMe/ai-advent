@@ -88,16 +88,71 @@ describe('handleSearchDocs', () => {
     assert.match(out, /Найдено фрагментов: 1/);
   });
 
-  it('rewrite=expand с chat-моделью переписывает запрос (пометка в трассе)', async () => {
+  it('rewrite=expand: детектит язык корпуса и переписывает (язык в трассе)', async () => {
     const calls: string[] = [];
+    // Детект языка (system содержит «определяешь») → English; иначе — переписывание.
     const chatComplete = async (system: string) => {
       calls.push(system);
-      return 'синонимы';
+      return /определяешь/.test(system) ? 'English' : 'synonyms terms';
     };
     const { deps } = makeDeps({ chatComplete });
     const out = await handleSearchDocs(deps, { query: 'q', source: 's', rewrite: 'expand' });
-    assert.match(out, /запрос переписан/);
-    assert.equal(calls.length, 1); // модель вызвана для переписывания
+    assert.match(out, /запрос переписан→English/); // язык корпуса виден в трассе
+    assert.equal(calls.length, 2); // модель вызвана для детекта языка + переписывания
+  });
+
+  it('rewrite=expand без chat-модели → без переписывания (язык не считаем)', async () => {
+    const { deps } = makeDeps(); // без chatComplete
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's', rewrite: 'expand' });
+    assert.doesNotMatch(out, /запрос переписан/);
+  });
+
+  it('LLM-детект языка дозаписывается в кэш индекса (persistLanguage)', async () => {
+    const persisted: { source: string; strategy: ChunkStrategy; language: string | undefined }[] =
+      [];
+    const chatComplete = async (system: string) =>
+      /определяешь/.test(system) ? 'German' : 'hypothetisches Fragment';
+    const { deps } = makeDeps({
+      chatComplete,
+      persistLanguage: (source, strategy, index) =>
+        persisted.push({ source, strategy, language: index.language }),
+    });
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's', rewrite: 'hyde' });
+    assert.match(out, /запрос переписан→German/);
+    assert.deepEqual(persisted, [{ source: 's', strategy: 'structural', language: 'German' }]);
+  });
+
+  it('язык уже в кэше индекса → детект не зовём (source=cache)', async () => {
+    const calls: string[] = [];
+    const chatComplete = async (system: string) => {
+      calls.push(system);
+      return 'synonyms';
+    };
+    const { deps } = makeDeps({
+      chatComplete,
+      ensure: async () => ({ ...idx([ch('A', [1, 0])]), language: 'Spanish' }),
+    });
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's', rewrite: 'expand' });
+    assert.match(out, /запрос переписан→Spanish/); // язык взят из кэша индекса
+    assert.equal(calls.length, 1); // только переписывание — детект пропущен
+  });
+
+  it('RAG_DOC_LANG (оверрайд) → детект не зовём, язык из конфига, без дозаписи', async () => {
+    const calls: string[] = [];
+    const chatComplete = async (system: string) => {
+      calls.push(system);
+      return 'synonyms';
+    };
+    const persisted: string[] = [];
+    const { deps } = makeDeps({
+      config: loadRagConfig({ RAG_RERANK: 'none', RAG_DOC_LANG: 'French' } as NodeJS.ProcessEnv),
+      chatComplete,
+      persistLanguage: (source: string) => persisted.push(source),
+    });
+    const out = await handleSearchDocs(deps, { query: 'q', source: 's', rewrite: 'expand' });
+    assert.match(out, /запрос переписан→French/);
+    assert.equal(calls.length, 1); // только переписывание — детект пропущен (оверрайд)
+    assert.deepEqual(persisted, []); // оверрайд не дозаписываем
   });
 
   it('rerank=llm с chat-моделью реранжирует (llm в трассе)', async () => {

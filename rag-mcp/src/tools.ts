@@ -4,6 +4,7 @@ import { retrieve } from './retrieval.ts';
 import type { RerankMode, RetrieveHooks } from './retrieval.ts';
 import { makeRewriter } from './rewrite.ts';
 import type { ChatComplete, RewriteMode } from './rewrite.ts';
+import { resolveDocLanguage } from './language.ts';
 import { makeChatRerankProvider, makeLlmReranker } from './rerank-llm.ts';
 import { formatResults, formatIndexes } from './format.ts';
 
@@ -18,6 +19,8 @@ export interface ToolDeps {
   loadAllCached(): Index[];
   /** Chat-обращение для rewrite/LLM-реранка (если задана chat-модель); иначе не задан. */
   chatComplete?: ChatComplete;
+  /** Дозаписать определённый язык в кэш индекса источника (после дорогого LLM-детекта). Опц. */
+  persistLanguage?(source: string, strategy: ChunkStrategy, index: Index): void;
 }
 
 /** Текст ошибки из неизвестного значения. */
@@ -71,18 +74,49 @@ function buildHooks(
   chatComplete: ChatComplete | undefined,
   rewriteMode: RewriteMode,
   rerankMode: RerankMode,
+  targetLanguage?: string,
 ): RetrieveHooks {
   const hooks: RetrieveHooks = {};
   if (chatComplete === undefined) {
     return hooks;
   }
   if (rewriteMode !== 'none') {
-    hooks.rewrite = makeRewriter(rewriteMode, chatComplete);
+    hooks.rewrite = makeRewriter(rewriteMode, chatComplete, targetLanguage);
   }
   if (rerankMode === 'llm') {
     hooks.rerankLlm = makeLlmReranker(makeChatRerankProvider(chatComplete));
   }
   return hooks;
+}
+
+/**
+ * Язык корпуса для кросс-язычного rewrite: считаем только когда rewrite активен и есть chat-модель
+ * (иначе rewrite всё равно не строится). Приоритет override → кэш индекса → LLM-детект → письменность
+ * (resolveDocLanguage). Дорогой LLM-детект по одиночному source дозаписываем в кэш индекса
+ * (persistLanguage) — чтобы не считать язык на каждом поиске. Нет rewrite/модели → undefined.
+ */
+async function resolveTargetLanguage(
+  deps: ToolDeps,
+  config: RagConfig,
+  indexes: Index[],
+  rewriteMode: RewriteMode,
+  source: string | null,
+  strategy: ChunkStrategy,
+): Promise<string | undefined> {
+  if (rewriteMode === 'none' || deps.chatComplete === undefined) {
+    return undefined;
+  }
+  const resolved = await resolveDocLanguage({
+    override: config.docLanguage,
+    cachedLanguage: indexes.find(index => index.language !== undefined)?.language,
+    chunks: indexes.flatMap(index => index.chunks),
+    chatComplete: deps.chatComplete,
+  });
+  if (resolved.source === 'model' && source !== null && deps.persistLanguage !== undefined) {
+    indexes[0].language = resolved.language;
+    deps.persistLanguage(source, strategy, indexes[0]);
+  }
+  return resolved.language;
 }
 
 /**
@@ -111,7 +145,17 @@ export async function handleSearchDocs(
     if (indexes.length === 0) {
       return 'Нет source и пустой кэш. Укажите source (github-url / путь / url документации).';
     }
-    const hooks = buildHooks(deps.chatComplete, rewriteMode, rerankMode);
+    // Кросс-язычный rewrite: определяем язык корпуса и переводим/генерируем запрос НА НЕГО (иначе
+    // русский вопрос плохо матчит английские доки). Только когда rewrite активен и есть chat-модель.
+    const targetLanguage = await resolveTargetLanguage(
+      deps,
+      config,
+      indexes,
+      rewriteMode,
+      source,
+      strategy,
+    );
+    const hooks = buildHooks(deps.chatComplete, rewriteMode, rerankMode, targetLanguage);
     const { results, trace } = await retrieve(
       query,
       indexes,
@@ -128,7 +172,7 @@ export async function handleSearchDocs(
       deps.embed,
       hooks,
     );
-    return formatResults(query, results, trace);
+    return formatResults(query, results, { ...trace, rewriteLanguage: targetLanguage });
   } catch (error) {
     return errorText(error);
   }

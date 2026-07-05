@@ -12,6 +12,7 @@ import type { RagConfig } from './config.ts';
 import { embeddingScheme } from './config.ts';
 import { withPrefix } from './prefix.ts';
 import { ensureIndex } from './index-cache.ts';
+import { sourceKey } from './cache-key.ts';
 import type { ChatComplete } from './rewrite.ts';
 import type { ToolDeps } from './tools.ts';
 
@@ -75,5 +76,11 @@ export function createRuntimeDeps(config: RagConfig): ToolDeps {
     ? makeChatComplete(config.chat, config.chatDisableThinking)
     : undefined;
 
-  return { config, embed, ensure, loadAllCached, chatComplete };
+  // Дозапись определённого языка в кэш индекса под его ключом (индекс уже с проставленным language).
+  const persistLanguage = (source: string, strategy: ChunkStrategy, index: Index): void => {
+    const key = sourceKey(source, strategy, scheme);
+    new JsonIndexStore(indexPath(config.cacheDir, key)).save(index);
+  };
+
+  return { config, embed, ensure, loadAllCached, chatComplete, persistLanguage };
 }

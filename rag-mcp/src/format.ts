@@ -10,7 +10,9 @@ export function formatTrace(trace: RetrieveTrace): string {
   // Фолбэк LLM-реранка (модель не дала годных скоров) виден как «llm→mmr» — честно, что сработал MMR.
   const rerankLabel = trace.rerankFallback ? `${trace.rerank}→mmr` : trace.rerank;
   stages.push(`rerank(${rerankLabel}): ${trace.returned}`);
-  const rewrite = trace.rewritten ? ', запрос переписан' : '';
+  // Кросс-язычный rewrite: показываем язык корпуса, на который переведён/сгенерирован запрос.
+  const rewriteLang = trace.rewriteLanguage !== undefined ? `→${trace.rewriteLanguage}` : '';
+  const rewrite = trace.rewritten ? `, запрос переписан${rewriteLang}` : '';
   // Уверенность ретрива + пометка «(низкая)» — сигнал для режима «не знаю».
   const confidence = ` · уверенность ${trace.confidence.toFixed(2)}${trace.lowConfidence ? ' (низкая)' : ''}`;
   return `🔎 ${stages.join(' → ')}${rewrite}${confidence}`;

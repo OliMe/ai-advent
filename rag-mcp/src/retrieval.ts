@@ -98,6 +98,8 @@ export interface RetrieveTrace {
   rerankFallback: boolean;
   /** Итог после среза k. */
   returned: number;
+  /** Язык корпуса, на который переведён/сгенерирован кросс-язычный rewrite (для трассы). Опц. */
+  rewriteLanguage?: string;
 }
 
 /** Результат ретрива: сами чанки + трасса стадий. */
