@@ -2,6 +2,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isConversationalReply,
+  isRecallQuestion,
+  isRecallTurn,
+  isRecallFallback,
+  RECALL_SENTINEL,
+  RECALL_SYSTEM_PROMPT,
   groundedFocus,
   buildGroundedQuery,
   forcedRagSearch,
@@ -19,6 +24,48 @@ describe('isConversationalReply', () => {
     for (const t of ['как ограничить джобы?', 'спасибо, а как перезапустить?', 'что делает scan']) {
       assert.equal(isConversationalReply(t), false, `для «${t}»`);
     }
+  });
+});
+
+describe('isRecallQuestion', () => {
+  it('маркеры воспоминания → true (регистр/пунктуация не мешают)', () => {
+    for (const t of [
+      'Напомни, каким флагом передать каталог?',
+      'повтори последний ответ',
+      'с чего начали?',
+      'какая у нас задача',
+      'что ты называл про экосистемы',
+    ]) {
+      assert.equal(isRecallQuestion(t), true, `для «${t}»`);
+    }
+  });
+
+  it('обычный знаниевый вопрос → false', () => {
+    for (const t of ['в каком формате вывод?', 'как ограничить экосистемы?']) {
+      assert.equal(isRecallQuestion(t), false, `для «${t}»`);
+    }
+  });
+});
+
+describe('isRecallTurn (гибрид)', () => {
+  it('LLM-флаг true → true при любом тексте', () => {
+    assert.equal(isRecallTurn('в каком формате вывод?', true), true);
+  });
+  it('LLM-флаг false: решает лексический маркер', () => {
+    assert.equal(isRecallTurn('напомни про флаг', false), true);
+    assert.equal(isRecallTurn('в каком формате вывод?', false), false);
+  });
+});
+
+describe('isRecallFallback', () => {
+  it('сентинел (в т.ч. обёрнутый/иной регистр) → true; иначе false', () => {
+    assert.equal(isRecallFallback(RECALL_SENTINEL), true);
+    assert.equal(isRecallFallback(`бла ${RECALL_SENTINEL.toLowerCase()} бла`), true);
+    assert.equal(isRecallFallback('Каталог передаётся флагом --exposure-catalog.'), false);
+  });
+  it('RECALL_SYSTEM_PROMPT велит вернуть сентинел при отсутствии в истории', () => {
+    assert.match(RECALL_SYSTEM_PROMPT, new RegExp(RECALL_SENTINEL));
+    assert.match(RECALL_SYSTEM_PROMPT, /ДОСЛОВНО/);
   });
 });
 
