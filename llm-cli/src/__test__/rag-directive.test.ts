@@ -51,6 +51,10 @@ describe('ragSearchDirective', () => {
     assert.match(directive, /СИНТЕЗ/i); // синтез в теле разрешён (День 25 п.2)
     assert.match(directive, /Не знаю/i); // режим «не знаю»
     assert.match(directive, /НЕ конструируй команды/); // полный режим
+    // Формат УСЛОВНЫЙ: секции только когда искали по докам; обычные ответы — без них (иначе
+    // подключённый rag-mcp навязывал бы пустые Источники/Цитаты каждому ответу).
+    assert.match(directive, /ТОЛЬКО когда ответ построен на результатах search_docs/);
+    assert.match(directive, /БЕЗ секций «Источники» и «Цитаты»/);
     assert.equal(
       ragSearchDirective([{ name: 'srv__echo', description: '', parameters: {} }]),
       null,
