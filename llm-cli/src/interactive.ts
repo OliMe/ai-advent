@@ -55,6 +55,7 @@ import {
   ragSearchDirective,
   isSearchDocsTool,
   formatRagResultForDisplay,
+  queryMentionsSource,
 } from './rag-directive.ts';
 import { resolveRagAnswer } from './citation-guard.ts';
 import { FAITHFULNESS_CHECKER_SYSTEM } from './faithfulness.ts';
@@ -1005,12 +1006,16 @@ export async function runInteractive(
             if (directive !== null) {
               leading.push({ role: 'system' as const, content: directive });
             }
-            // Если подключён RAG-поиск (search_docs) — нацеливаем агента искать по документам.
+            const groundedSources = currentSession.ragSources ?? [];
+            // RAG-директиву (формат Источники/Цитаты + нацеливание на поиск) подмешиваем ТОЛЬКО когда
+            // RAG реально уместен: grounded-режим (/rag) ИЛИ источник назван в самом вопросе
+            // (github/URL/путь). Иначе подключённый rag-mcp навязывал бы формат КАЖДОМУ ответу (даже
+            // «напиши bubble sort») — слабая модель дописывала пустые «Источники:»/«Цитаты:».
             // RAG_ANSWER_COMPACT=1 — компактные источники/цитаты (для длинного чата).
-            const ragDirective = ragSearchDirective(
-              chatTools.specs(),
-              process.env.RAG_ANSWER_COMPACT === '1',
-            );
+            const ragRelevant = groundedSources.length > 0 || queryMentionsSource(userInput);
+            const ragDirective = ragRelevant
+              ? ragSearchDirective(chatTools.specs(), process.env.RAG_ANSWER_COMPACT === '1')
+              : null;
             if (ragDirective !== null) {
               leading.push({ role: 'system' as const, content: ragDirective });
             }
@@ -1020,7 +1025,6 @@ export async function runInteractive(
             // Grounded-режим (День 25): на содержательный вопрос детерминированно ищем по КАЖДОМУ
             // привязанному источнику (запрос обогащён целью/терминами задачи) и кладём фрагменты в
             // контекст. Дальше идёт обычный агентный ход (другие инструменты доступны) + гейт Дня 24.
-            const groundedSources = currentSession.ragSources ?? [];
             const grounded = groundedSources.length > 0 && !isConversationalReply(userInput);
             // Ход-воспоминание (День 25 Этап 3): «напомни/что мы решили…» — сперва пробуем
             // ВОСПРОИЗВЕСТИ прошлый ответ из истории (temp=0, дословно, с «Источниками»), без
