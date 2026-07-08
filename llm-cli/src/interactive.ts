@@ -1080,26 +1080,40 @@ export async function runInteractive(
             // Результаты search_docs за ход — против них цитатный гейт сверяет дословные цитаты
             // (grounded-режим предзаполняет их принудительным поиском).
             const ragResults: string[] = [...forcedResults];
-            const result = await completeWithTools(
-              client,
-              withTools,
-              chatTools,
-              config.requestTimeoutMs,
-              limits,
-              disableThinking,
-              temperature,
-              (name, args) => {
-                calledTools.push(name);
-                reportToolCall(name, args);
-              },
-              config.maxToolRounds,
-              (name, toolResult) => {
-                if (isSearchDocsTool(name)) {
-                  ragResults.push(toolResult);
-                }
-                reportToolResult(name, toolResult);
-              },
-            );
+            // Grounded-ответ — TOOL-FREE: фрагменты уже добыты принудительным поиском, модели остаётся
+            // лишь синтезировать ответ по ним. Полный агентный цикл в grounded давал слабой модели
+            // «играться» с посторонними инструментами (scheduler и т.п.) — вплоть до ВРЕДНЫХ побочных
+            // действий из вопроса про документацию. Перегенерация гейта и так tool-free — делаем первый
+            // проход консистентным. Не-grounded (в т.ч. «источник назван в запросе») — агентный цикл.
+            const result = grounded
+              ? await askModel(
+                  client,
+                  withTools,
+                  config.requestTimeoutMs,
+                  limits,
+                  disableThinking,
+                  temperature,
+                )
+              : await completeWithTools(
+                  client,
+                  withTools,
+                  chatTools,
+                  config.requestTimeoutMs,
+                  limits,
+                  disableThinking,
+                  temperature,
+                  (name, args) => {
+                    calledTools.push(name);
+                    reportToolCall(name, args);
+                  },
+                  config.maxToolRounds,
+                  (name, toolResult) => {
+                    if (isSearchDocsTool(name)) {
+                      ragResults.push(toolResult);
+                    }
+                    reportToolResult(name, toolResult);
+                  },
+                );
             usage = result.usage;
             // RAG-ход: слабый/пустой контекст → «не знаю»; иначе — гейт дословных цитат и источников
             // (перегенерация при провале, безопасный фолбэк). На не-RAG ходах ответ модели как есть.
