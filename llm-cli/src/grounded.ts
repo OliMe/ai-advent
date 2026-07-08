@@ -124,9 +124,14 @@ export function isRecallFallback(answer: string): boolean {
   return answer.toUpperCase().includes(RECALL_SENTINEL);
 }
 
-/** «Фокус» диалога для обогащения поискового запроса: цель задачи (title) + зафиксированные термины. */
-export function groundedFocus(task: Task | null, invariants: string[]): string[] {
-  return [...(task ? [task.title] : []), ...invariants];
+/**
+ * «Фокус» диалога для обогащения поискового запроса — ТОЛЬКО цель задачи (title). Инварианты сюда НЕ
+ * входят: это поведенческие правила ассистента (в контекст ответа подмешиваются отдельно), а к поиску
+ * по документам отношения не имеют — в запросе они лишь зашумляют эмбеддинг (напр. «Не добавлять в
+ * tasks.md…» уводил ретрив от темы вопроса).
+ */
+export function groundedFocus(task: Task | null): string[] {
+  return task ? [task.title] : [];
 }
 
 /**

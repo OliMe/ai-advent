@@ -1058,10 +1058,7 @@ export async function runInteractive(
               ? await forcedRagSearch(
                   chatTools,
                   groundedSources,
-                  buildGroundedQuery(
-                    userInput,
-                    groundedFocus(memoryManager.currentTask(), memoryManager.invariantsList()),
-                  ),
+                  buildGroundedQuery(userInput, groundedFocus(memoryManager.currentTask())),
                   (name, args, toolResult) => {
                     calledTools.push(name);
                     reportToolCall(name, args);

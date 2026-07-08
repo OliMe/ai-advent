@@ -71,13 +71,9 @@ describe('isRecallFallback', () => {
 
 describe('groundedFocus', () => {
   const task = { title: 'Цель диалога' } as Task;
-  it('нет задачи → только инварианты; есть задача → цель + инварианты', () => {
-    assert.deepEqual(groundedFocus(null, ['терм А']), ['терм А']);
-    assert.deepEqual(groundedFocus(task, ['терм А', 'терм Б']), [
-      'Цель диалога',
-      'терм А',
-      'терм Б',
-    ]);
+  it('нет задачи → пусто; есть задача → только её цель (инварианты в запрос НЕ идут)', () => {
+    assert.deepEqual(groundedFocus(null), []);
+    assert.deepEqual(groundedFocus(task), ['Цель диалога']);
   });
 });
 
