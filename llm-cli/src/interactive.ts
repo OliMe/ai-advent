@@ -64,6 +64,7 @@ import {
   isRecallTurn,
   isRecallFallback,
   RECALL_SYSTEM_PROMPT,
+  RAG_SEARCH_UNAVAILABLE,
   groundedFocus,
   buildGroundedQuery,
   forcedRagSearch,
@@ -1068,6 +1069,14 @@ export async function runInteractive(
                   },
                 )
               : [];
+            // Предохранитель: в grounded форс-поиск ДОЛЖЕН что-то вернуть. Пустой список = инструмент
+            // search_docs недоступен (rag-сервер отвалился) — фрагментов нет. НЕ пускаем сырой ответ
+            // модели (иначе галлюцинация несуществующих фактов/источников) — фейлимся видимо. Так же
+            // это делает корневую причину заметной вместо правдоподобной лжи.
+            if (grounded && forcedResults.length === 0) {
+              output.write(`${ASSISTANT_LABEL}: ${RAG_SEARCH_UNAVAILABLE}\n\n`);
+              return RAG_SEARCH_UNAVAILABLE;
+            }
             if (forcedResults.length > 0) {
               leading.push({
                 role: 'system' as const,
