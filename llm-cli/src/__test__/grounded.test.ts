@@ -7,6 +7,7 @@ import {
   isRecallFallback,
   RECALL_SENTINEL,
   RECALL_SYSTEM_PROMPT,
+  resolveRagAnswerTemperature,
   groundedFocus,
   buildGroundedQuery,
   forcedRagSearch,
@@ -54,6 +55,16 @@ describe('isRecallTurn (гибрид)', () => {
   it('LLM-флаг false: решает лексический маркер', () => {
     assert.equal(isRecallTurn('напомни про флаг', false), true);
     assert.equal(isRecallTurn('в каком формате вывод?', false), false);
+  });
+});
+
+describe('resolveRagAnswerTemperature', () => {
+  it('валидное неотрицательное → как есть; иначе → дефолт 0.2', () => {
+    assert.equal(resolveRagAnswerTemperature('0'), 0);
+    assert.equal(resolveRagAnswerTemperature('0.5'), 0.5);
+    assert.equal(resolveRagAnswerTemperature(undefined), 0.2); // не задано
+    assert.equal(resolveRagAnswerTemperature('abc'), 0.2); // не число
+    assert.equal(resolveRagAnswerTemperature('-1'), 0.2); // отрицательное
   });
 });
 

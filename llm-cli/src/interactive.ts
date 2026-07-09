@@ -65,6 +65,7 @@ import {
   isRecallFallback,
   RECALL_SYSTEM_PROMPT,
   RAG_SEARCH_UNAVAILABLE,
+  resolveRagAnswerTemperature,
   groundedFocus,
   buildGroundedQuery,
   forcedRagSearch,
@@ -261,6 +262,9 @@ export async function runInteractive(
   // RAG_QUIET=1 — прятать логи RAG-поиска (вызов + сводку): в grounded-режиме на ход несколько
   // поисков, и они засоряют чат. Ответ с секцией «Источники» при этом остаётся.
   const ragQuiet = process.env.RAG_QUIET === '1';
+  // Низкая температура синтеза grounded-ответа/перегенерации гейта (env RAG_ANSWER_TEMPERATURE, 0.2):
+  // ответ собирается по фрагментам — точность/достоверность важнее творчества, плюс меньше шума.
+  const ragAnswerTemperature = resolveRagAnswerTemperature(process.env.RAG_ANSWER_TEMPERATURE);
   // Печать вызова инструмента агентом (наблюдаемость tool-use). Для распознавания —
   // дружелюбная строка без технического пути; для прочих — имя инструмента и аргументы.
   const reportToolCall = (name: string, args: Record<string, unknown>): void => {
@@ -1098,7 +1102,7 @@ export async function runInteractive(
                   config.requestTimeoutMs,
                   limits,
                   disableThinking,
-                  temperature,
+                  ragAnswerTemperature,
                 )
               : await completeWithTools(
                   client,
@@ -1152,7 +1156,7 @@ export async function runInteractive(
                       config.requestTimeoutMs,
                       limits,
                       disableThinking,
-                      temperature,
+                      ragAnswerTemperature,
                     );
                     return fixed.content;
                   },

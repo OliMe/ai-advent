@@ -72,6 +72,17 @@ const RECALL_MARKERS = [
   'что зафиксировали',
 ];
 
+/**
+ * Температура синтеза grounded-ответа (и перегенерации цитатного гейта): НИЗКАЯ — ответ собирается
+ * строго по найденным фрагментам, творчество тут вредит (точность/достоверность + стабильность,
+ * меньше шума на повторных прогонах). env `RAG_ANSWER_TEMPERATURE`, дефолт 0.2; невалидное/отрицательное
+ * → дефолт. Не связано с `response_format`, поэтому безопасно для всех провайдеров (GLM/DeepSeek/локаль).
+ */
+export function resolveRagAnswerTemperature(raw: string | undefined): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : 0.2;
+}
+
 /** Лексический детектор вопроса-воспоминания: нормализованный текст содержит один из маркеров. */
 export function isRecallQuestion(text: string): boolean {
   const normalized = text
