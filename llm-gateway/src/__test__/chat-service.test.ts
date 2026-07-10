@@ -13,41 +13,33 @@ import {
   type StreamingChatClient,
 } from '../chat-service.ts';
 import { loadGatewayConfig, type GatewayConfig } from '../config.ts';
-import { findPersona } from '../personas.ts';
+import { DEFAULT_PERSONA } from '../personas.ts';
 import { RequestQueue } from '../request-queue.ts';
-import type { SystemMetrics } from '../system-metrics.ts';
 
-const PERSONA = findPersona('grumpy')!;
-
-/** Спокойный узел: чтобы настроение не мешало проверять механику сервиса. */
-const IDLE_METRICS: SystemMetrics = {
-  cpuIdlePercent: 99,
-  loadAverage1m: 0,
-  memoryAvailableRatio: 0.9,
-};
-
-/** Клиент-заглушка: отдаёт заранее заданные дельты и результат. */
-function fakeClient(deltas: StreamDelta[], result: CompletionResult): StreamingChatClient {
-  return {
+/** Клиент-заглушка: отдаёт заданные дельты и результат, запоминая опции вызова. */
+function fakeClient(deltas: StreamDelta[], result: CompletionResult) {
+  const seenOptions: CompleteOptions[] = [];
+  const client: StreamingChatClient = {
     async streamWithUsage(
       _messages: ChatMessage[],
-      _options: CompleteOptions,
+      options: CompleteOptions,
       onDelta: (delta: StreamDelta) => void,
     ): Promise<CompletionResult> {
+      seenOptions.push(options);
       deltas.forEach(onDelta);
       return result;
     },
   };
+  return { client, seenOptions };
 }
 
-/** Собирает сервис на управляемых часах и заглушках. */
+/** Собирает сервис на управляемых часах: каждый вызов now() двигает время на 5 секунд. */
 function buildService(client: StreamingChatClient, overrides: Partial<GatewayConfig> = {}) {
   const config = { ...loadGatewayConfig({}), ...overrides };
   let currentTimeMs = 0;
   return new ChatService({
     config,
     queue: new RequestQueue(config.maxQueueDepth),
-    readMetrics: () => IDLE_METRICS,
     createClient: () => client,
     now: () => {
       currentTimeMs += 5000;
@@ -59,49 +51,44 @@ function buildService(client: StreamingChatClient, overrides: Partial<GatewayCon
 /** Собирает всё, что сервис сообщил по ходу обслуживания. */
 function recordingHandlers() {
   const queued: number[] = [];
-  const moods: string[] = [];
   const chunks: string[] = [];
   return {
     queued,
-    moods,
     chunks,
     handlers: {
       onQueued: (waitingAhead: number) => queued.push(waitingAhead),
-      onMood: (mood: { key: string }) => moods.push(mood.key),
       onDelta: (text: string) => chunks.push(text),
     },
   };
 }
 
 test('слишком длинный запрос отклоняется до постановки в очередь', async () => {
-  const service = buildService(fakeClient([], { content: '' }), { maxPromptTokens: 1 });
+  const { client } = fakeClient([], { content: '' });
+  const service = buildService(client, { maxPromptTokens: 1 });
   const { handlers, queued } = recordingHandlers();
   await assert.rejects(
-    () =>
-      service.respond(
-        PERSONA,
-        'очень длинный запрос, который точно длиннее одного токена',
-        handlers,
-      ),
+    () => service.respond(DEFAULT_PERSONA, 'список продуктов длиннее одного токена', handlers),
     PromptTooLargeError,
   );
   assert.deepEqual(queued, []);
 });
 
-test('ответ стримится, настроение и позиция сообщаются, usage даёт число токенов', async () => {
-  const client = fakeClient(
-    [{ content: 'Ну ' }, { reasoning: 'размышляю' }, { content: 'ладно.' }],
-    { content: 'Ну ладно.', usage: { prompt_tokens: 10, completion_tokens: 60, total_tokens: 70 } },
+test('ответ стримится, позиция сообщается, usage даёт число токенов', async () => {
+  const { client } = fakeClient(
+    [{ content: 'Блюдо: ' }, { reasoning: 'размышляю' }, { content: 'омлет.' }],
+    {
+      content: 'Блюдо: омлет.',
+      usage: { prompt_tokens: 10, completion_tokens: 60, total_tokens: 70 },
+    },
   );
   const service = buildService(client);
-  const { handlers, queued, moods, chunks } = recordingHandlers();
+  const { handlers, queued, chunks } = recordingHandlers();
 
-  const outcome = await service.respond(PERSONA, 'Привет', handlers);
+  const outcome = await service.respond(DEFAULT_PERSONA, 'яйца, лук', handlers);
 
   assert.deepEqual(queued, [0]);
-  assert.deepEqual(moods, ['calm']);
-  assert.deepEqual(chunks, ['Ну ', 'ладно.']);
-  assert.equal(outcome.content, 'Ну ладно.');
+  assert.deepEqual(chunks, ['Блюдо: ', 'омлет.']);
+  assert.equal(outcome.content, 'Блюдо: омлет.');
   assert.equal(outcome.cost.generatedTokens, 60);
   // Часы шагают по 5 с: старт 5, дельты 10 и 15, финиш 20.
   assert.equal(outcome.cost.wallSeconds, 15);
@@ -110,22 +97,31 @@ test('ответ стримится, настроение и позиция со
   assert.equal(outcome.cost.cpuSeconds, 45);
 });
 
-test('ответ без единого текстового токена не ломает подсчёт времени', async () => {
-  const client = fakeClient([{ reasoning: 'только мысли' }], { content: '' });
+test('параметры генерации берутся из персоны', async () => {
+  const { client, seenOptions } = fakeClient([{ content: 'ок' }], { content: 'ок' });
   const service = buildService(client);
-  const { handlers, chunks } = recordingHandlers();
-  const outcome = await service.respond(PERSONA, 'Привет', handlers);
-  assert.deepEqual(chunks, []);
-  assert.equal(outcome.cost.tokensPerSecond, 0);
-  assert.equal(outcome.cost.timeToFirstTokenSeconds, outcome.cost.wallSeconds);
+  const { handlers } = recordingHandlers();
+  await service.respond(DEFAULT_PERSONA, 'яйца', handlers);
+  assert.equal(seenOptions[0].temperature, DEFAULT_PERSONA.temperature);
+  assert.equal(seenOptions[0].maxTokens, DEFAULT_PERSONA.maxTokens);
 });
 
 test('без usage число токенов оценивается по длине ответа', async () => {
-  const client = fakeClient([{ content: 'Коротко' }], { content: 'Коротко' });
+  const { client } = fakeClient([{ content: 'Коротко' }], { content: 'Коротко' });
   const service = buildService(client);
   const { handlers } = recordingHandlers();
-  const outcome = await service.respond(PERSONA, 'Привет', handlers);
+  const outcome = await service.respond(DEFAULT_PERSONA, 'яйца', handlers);
   assert.ok(outcome.cost.generatedTokens > 0);
+});
+
+test('ответ без единого текстового токена не ломает подсчёт времени', async () => {
+  const { client } = fakeClient([{ reasoning: 'только мысли' }], { content: '' });
+  const service = buildService(client);
+  const { handlers, chunks } = recordingHandlers();
+  const outcome = await service.respond(DEFAULT_PERSONA, 'яйца', handlers);
+  assert.deepEqual(chunks, []);
+  assert.equal(outcome.cost.tokensPerSecond, 0);
+  assert.equal(outcome.cost.timeToFirstTokenSeconds, outcome.cost.wallSeconds);
 });
 
 test('createUpstreamConfig подставляет модель персоны и адрес Ollama', () => {

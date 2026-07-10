@@ -1,26 +1,25 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PERSONAS, composeSystemPrompt, findPersona } from '../personas.ts';
+import { DEFAULT_PERSONA, PERSONAS, findPersona } from '../personas.ts';
 
-test('обе персоны объявлены и живут на разных моделях', () => {
-  assert.equal(PERSONAS.length, 2);
-  const models = PERSONAS.map(persona => persona.model);
-  assert.deepEqual(new Set(models).size, 2);
+test('персона одна, и она же по умолчанию', () => {
+  assert.equal(PERSONAS.length, 1);
+  assert.equal(DEFAULT_PERSONA.slug, 'kitchen');
+});
+
+test('модель выбрана по замеру генеративного русского', () => {
+  assert.equal(DEFAULT_PERSONA.model, 'qwen2.5:3b');
+});
+
+test('профиль генерации задан персоной, а не вызовом', () => {
+  assert.equal(DEFAULT_PERSONA.temperature, 0.7);
+  assert.equal(DEFAULT_PERSONA.maxTokens, 500);
 });
 
 test('findPersona: известный сегмент пути', () => {
-  const persona = findPersona('kitchen');
-  assert.equal(persona?.model, 'qwen2.5:3b');
+  assert.equal(findPersona('kitchen')?.title, 'Что в холодильнике');
 });
 
 test('findPersona: неизвестный сегмент', () => {
   assert.equal(findPersona('нет-такой'), undefined);
-});
-
-test('composeSystemPrompt: тон настроения дописывается к промпту персоны', () => {
-  const persona = findPersona('grumpy');
-  assert.ok(persona);
-  const prompt = composeSystemPrompt(persona, 'Отвечай ворчливо.');
-  assert.ok(prompt.startsWith(persona.systemPrompt));
-  assert.ok(prompt.endsWith('Отвечай ворчливо.'));
 });

@@ -8,10 +8,8 @@ import type {
 import { estimateTokens } from '../../core/src/index.ts';
 import { describeAnswerCost, type AnswerCost } from './answer-cost.ts';
 import type { GatewayConfig } from './config.ts';
-import { resolveMood, type NodeMood } from './mood.ts';
-import { composeSystemPrompt, type Persona } from './personas.ts';
+import type { Persona } from './personas.ts';
 import type { RequestQueue } from './request-queue.ts';
-import type { SystemMetrics } from './system-metrics.ts';
 
 /** Отказ: запрос длиннее, чем узел готов обрабатывать. */
 export class PromptTooLargeError extends Error {
@@ -37,8 +35,6 @@ export interface StreamingChatClient {
 export interface ChatHandlers {
   /** Запрос поставлен в очередь: столько ждут впереди него. */
   onQueued(waitingAhead: number): void;
-  /** Настроение узла на момент начала генерации. */
-  onMood(mood: NodeMood): void;
   /** Очередная порция текста. */
   onDelta(text: string): void;
 }
@@ -46,7 +42,6 @@ export interface ChatHandlers {
 /** Итог обслуженного запроса. */
 export interface ChatOutcome {
   content: string;
-  mood: NodeMood;
   cost: AnswerCost;
 }
 
@@ -54,7 +49,6 @@ export interface ChatOutcome {
 export interface ChatServiceDeps {
   config: GatewayConfig;
   queue: RequestQueue;
-  readMetrics: () => SystemMetrics;
   createClient: (model: string) => StreamingChatClient;
   now: () => number;
 }
@@ -85,8 +79,8 @@ export function createUpstreamConfig(config: GatewayConfig, model: string): AppC
 }
 
 /**
- * Сервис одного хода: проверяет длину запроса, ставит его в очередь, снимает метрики
- * узла, выводит из них настроение и просит модель ответить в соответствующем тоне.
+ * Сервис одного хода: проверяет длину запроса, ставит его в очередь (модель на CPU считает
+ * по одному запросу) и стримит ответ, попутно измеряя, во что он обошёлся.
  */
 export class ChatService {
   private readonly deps: ChatServiceDeps;
@@ -109,12 +103,8 @@ export class ChatService {
     return this.deps.queue.run(async waitingAhead => {
       handlers.onQueued(waitingAhead);
 
-      const metrics = this.deps.readMetrics();
-      const mood = resolveMood({ ...metrics, queueDepth: this.deps.queue.depth });
-      handlers.onMood(mood);
-
       const messages: ChatMessage[] = [
-        { role: 'system', content: composeSystemPrompt(persona, mood.toneInstruction) },
+        { role: 'system', content: persona.systemPrompt },
         { role: 'user', content: userMessage },
       ];
 
@@ -125,7 +115,7 @@ export class ChatService {
       const client = this.deps.createClient(persona.model);
       const result = await client.streamWithUsage(
         messages,
-        { temperature: mood.temperature, maxTokens: mood.maxTokens },
+        { temperature: persona.temperature, maxTokens: persona.maxTokens },
         delta => {
           if (delta.content !== undefined) {
             lastDeltaAtMs = this.deps.now();
@@ -148,7 +138,7 @@ export class ChatService {
         this.deps.config.quotaCores,
         generatedTokens,
       );
-      return { content: result.content, mood, cost };
+      return { content: result.content, cost };
     });
   }
 }

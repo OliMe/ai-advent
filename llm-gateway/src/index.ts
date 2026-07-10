@@ -1,6 +1,6 @@
 export { authorize, extractBearerToken, rateLimitIdentity } from './auth.ts';
 export { describeAnswerCost, formatAnswerCost } from './answer-cost.ts';
-export type { AnswerCost } from './answer-cost.ts';
+export type { AnswerCost, AnswerTimings } from './answer-cost.ts';
 export { ChatService, PromptTooLargeError, createUpstreamConfig } from './chat-service.ts';
 export type {
   ChatHandlers,
@@ -8,11 +8,14 @@ export type {
   ChatServiceDeps,
   StreamingChatClient,
 } from './chat-service.ts';
-export { loadGatewayConfig, readBearerTokens, readPositiveInteger } from './config.ts';
+export {
+  loadGatewayConfig,
+  readBasePath,
+  readBearerTokens,
+  readPositiveInteger,
+} from './config.ts';
 export type { GatewayConfig } from './config.ts';
-export { resolveMood } from './mood.ts';
-export type { MoodInputs, MoodKey, NodeMood } from './mood.ts';
-export { PERSONAS, composeSystemPrompt, findPersona } from './personas.ts';
+export { DEFAULT_PERSONA, PERSONAS, findPersona } from './personas.ts';
 export type { Persona } from './personas.ts';
 export { TokenBucketRateLimiter } from './rate-limit.ts';
 export type { RateLimitDecision } from './rate-limit.ts';

@@ -2,12 +2,11 @@ import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { ChatCompletionClient } from '../../core/src/index.ts';
-import { authorize, rateLimitIdentity } from './auth.ts';
 import { formatAnswerCost } from './answer-cost.ts';
+import { authorize, rateLimitIdentity } from './auth.ts';
 import { ChatService, PromptTooLargeError, createUpstreamConfig } from './chat-service.ts';
 import type { GatewayConfig } from './config.ts';
-import { resolveMood } from './mood.ts';
-import { PERSONAS, findPersona, type Persona } from './personas.ts';
+import { DEFAULT_PERSONA, PERSONAS, findPersona, type Persona } from './personas.ts';
 import { TokenBucketRateLimiter } from './rate-limit.ts';
 import { QueueOverflowError, RequestQueue } from './request-queue.ts';
 import { CpuIdleTracker, readSystemMetrics, type ProcFileSource } from './system-metrics.ts';
@@ -27,12 +26,10 @@ export function createGatewayHandler(config: GatewayConfig) {
     config.rateLimitRefillPerMinute,
   );
   const cpuTracker = new CpuIdleTracker();
-  const readMetrics = () => readSystemMetrics(PROC_SOURCE, cpuTracker);
 
   const chatService = new ChatService({
     config,
     queue,
-    readMetrics,
     createClient: model => new ChatCompletionClient(createUpstreamConfig(config, model)),
     now: () => Date.now(),
   });
@@ -90,7 +87,7 @@ export function createGatewayHandler(config: GatewayConfig) {
     if (!decision.allowed) {
       response.setHeader('Retry-After', String(decision.retryAfterSeconds));
       sendJson(response, 429, {
-        error: 'Узел оскорблён: слишком часто. Дайте ему передохнуть.',
+        error: 'Слишком часто. Узел один, дайте ему выдохнуть.',
         retryAfterSeconds: decision.retryAfterSeconds,
       });
       return false;
@@ -99,12 +96,10 @@ export function createGatewayHandler(config: GatewayConfig) {
     return true;
   };
 
-  /** Отдаёт пульс узла: метрики, настроение, очередь. */
+  /** Отдаёт состояние узла: метрики, очередь, действующие лимиты. */
   const handlePulse = (response: ServerResponse) => {
-    const metrics = readMetrics();
-    const mood = resolveMood({ ...metrics, queueDepth: queue.depth + 1 });
+    const metrics = readSystemMetrics(PROC_SOURCE, cpuTracker);
     sendJson(response, 200, {
-      mood: { key: mood.key, emoji: mood.emoji, title: mood.title, note: mood.note },
       metrics: {
         cpuIdlePercent: Math.round(metrics.cpuIdlePercent),
         loadAverage1m: metrics.loadAverage1m,
@@ -140,7 +135,6 @@ export function createGatewayHandler(config: GatewayConfig) {
     try {
       const outcome = await chatService.respond(persona, message, {
         onQueued: waitingAhead => emit('queued', { waitingAhead }),
-        onMood: mood => emit('mood', mood),
         onDelta: text => emit('delta', { text }),
       });
       emit('done', { cost: outcome.cost, costText: formatAnswerCost(outcome.cost) });
@@ -172,14 +166,12 @@ export function createGatewayHandler(config: GatewayConfig) {
     try {
       const outcome = await chatService.respond(persona, lastUserMessage.content, {
         onQueued: () => undefined,
-        onMood: () => undefined,
         onDelta: () => undefined,
       });
       sendJson(response, 200, {
         object: 'chat.completion',
         model: persona.slug,
         choices: [{ index: 0, message: { role: 'assistant', content: outcome.content } }],
-        node_mood: outcome.mood.key,
         node_cost: outcome.cost,
       });
     } catch (error) {
@@ -192,7 +184,7 @@ export function createGatewayHandler(config: GatewayConfig) {
     const path = url.pathname.replace(/\/+$/, '');
 
     if (request.method === 'GET' && (path === '' || path === '/')) {
-      response.writeHead(302, { Location: `${config.basePath}/grumpy` });
+      response.writeHead(302, { Location: `${config.basePath}/${DEFAULT_PERSONA.slug}` });
       response.end();
       return;
     }
