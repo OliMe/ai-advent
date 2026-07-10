@@ -151,10 +151,18 @@
         }
       }
 
-      element('save-token').addEventListener('click', () => {
+      function saveToken() {
         token = element('token').value.trim();
         localStorage.setItem(STORAGE_KEY, token);
         showChat();
+      }
+
+      element('save-token').addEventListener('click', saveToken);
+      element('token').addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          saveToken();
+        }
       });
 
       document.querySelectorAll('.chip').forEach(chip => {
