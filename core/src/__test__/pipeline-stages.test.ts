@@ -66,6 +66,23 @@ describe('разбор артефактов (C + фолбэк D)', () => {
     assert.equal(fallback.text, '- шаг1\n- шаг2\nпросто строка');
   });
 
+  it('parsePlanning: шаги-ОБЪЕКТЫ разворачиваются в строки (слабая модель)', () => {
+    // llama3.2:3b кладёт в steps объекты {name, description, result} — не теряем их молча.
+    const withObjects = parsePlanning(
+      '{"steps":[{"name":"Создать файл","description":"HTML-каркас","result":{"time":30}},' +
+        '{"description":"Добавить стили"}],"criteria":[{"criterion":"Страница открывается"}],"text":"t"}',
+    );
+    assert.deepEqual(withObjects.steps, ['Создать файл', 'Добавить стили']); // взято name / description
+    assert.deepEqual(withObjects.criteria, ['Страница открывается']); // взято criterion
+  });
+
+  it('parsePlanning: объект без текстового поля и не-объект отбрасываются', () => {
+    const dropped = parsePlanning(
+      '{"steps":[{"result":{"x":1}},42,"живой шаг"],"criteria":[],"text":"t"}',
+    );
+    assert.deepEqual(dropped.steps, ['живой шаг']); // объект без текста и число отброшены
+  });
+
   it('parseExecution: плоский результат + снятие markdown-ограждения', () => {
     // Обычный текст: summary — первая содержательная строка, text — результат целиком.
     const plain = parseExecution('первая строка\nвторая');
