@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{TITLE}}</title>
+    <style>
+      :root {
+        --bg: #12131a;
+        --panel: #1b1d27;
+        --line: #2c2f3d;
+        --text: #e6e7ee;
+        --dim: #8b8fa3;
+        --accent: #7aa2f7;
+        --warn: #e0af68;
+        --bad: #f7768e;
+        --good: #9ece6a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        justify-content: center;
+        padding: 24px 16px 60px;
+      }
+      main { width: 100%; max-width: 760px; }
+      h1 { font-size: 22px; margin: 0 0 2px; }
+      .sub { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
+      nav { display: flex; gap: 8px; margin-bottom: 18px; }
+      nav a {
+        color: var(--dim); text-decoration: none; font-size: 13px;
+        border: 1px solid var(--line); border-radius: 999px; padding: 5px 13px;
+      }
+      nav a.active { color: var(--accent); border-color: var(--accent); }
+      .panel {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 12px; padding: 14px 16px; margin-bottom: 14px;
+      }
+      .pulse { display: flex; align-items: center; gap: 14px; }
+      .face { font-size: 34px; line-height: 1; }
+      .mood-title { font-weight: 600; }
+      .mood-note { color: var(--dim); font-size: 13px; }
+      .bars { margin-left: auto; text-align: right; font-size: 12px; color: var(--dim); }
+      .bars b { color: var(--text); font-weight: 600; }
+      textarea {
+        width: 100%; min-height: 74px; resize: vertical;
+        background: #0e0f15; color: var(--text);
+        border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+        font: inherit;
+      }
+      .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+      button {
+        background: var(--accent); color: #0e0f15; border: 0;
+        border-radius: 8px; padding: 9px 18px; font-weight: 600; cursor: pointer;
+      }
+      button:disabled { opacity: 0.45; cursor: not-allowed; }
+      input[type="password"] {
+        flex: 1; background: #0e0f15; color: var(--text);
+        border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; font: inherit;
+      }
+      .status { color: var(--dim); font-size: 13px; min-height: 18px; }
+      .status.bad { color: var(--bad); }
+      .status.warn { color: var(--warn); }
+      #answer { white-space: pre-wrap; min-height: 24px; }
+      #answer:empty::before { content: "Ответ появится здесь."; color: var(--dim); }
+      .cost { color: var(--dim); font-size: 12px; margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+      .disclaimer { color: var(--dim); font-size: 12px; text-align: center; margin-top: 22px; }
+      code { color: var(--warn); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>{{TITLE}}</h1>
+      <div class="sub">
+        Локальная модель <code>{{MODEL}}</code> на VPS: 4 ядра, без видеокарты, рядом с другими сервисами.
+      </div>
+
+      <nav>
+        <a href="{{BASE}}/grumpy" id="nav-grumpy">Ворчливый узел</a>
+        <a href="{{BASE}}/kitchen" id="nav-kitchen">Что в холодильнике</a>
+      </nav>
+
+      <div class="panel pulse">
+        <div class="face" id="face">🫥</div>
+        <div>
+          <div class="mood-title" id="mood-title">Пульс не снят</div>
+          <div class="mood-note" id="mood-note">Введите токен, чтобы узел начал отвечать.</div>
+        </div>
+        <div class="bars">
+          CPU свободно <b id="cpu">—</b><br />
+          Память свободна <b id="mem">—</b><br />
+          В очереди <b id="queue">—</b>
+        </div>
+      </div>
+
+      <div class="panel" id="auth-panel">
+        <div class="status">Доступ закрыт bearer-токеном.</div>
+        <div class="row">
+          <input type="password" id="token" placeholder="Токен доступа" autocomplete="off" />
+          <button id="save-token">Войти</button>
+        </div>
+      </div>
+
+      <div class="panel" id="chat-panel" hidden>
+        <textarea id="prompt" placeholder="{{HINT}}"></textarea>
+        <div class="row">
+          <button id="send">Спросить</button>
+          <div class="status" id="status"></div>
+        </div>
+      </div>
+
+      <div class="panel" id="answer-panel" hidden>
+        <div id="answer"></div>
+        <div class="cost" id="cost" hidden></div>
+      </div>
+
+      <div class="disclaimer">
+        Модель на 3 миллиарда параметров. Она уверенно ошибается — не верьте ей на слово.
+      </div>
+    </main>
+
+    <script>
+      const SLUG = '{{SLUG}}';
+      const BASE = '{{BASE}}';
+      const STORAGE_KEY = 'llm-gateway-token';
+      const element = id => document.getElementById(id);
+      document.getElementById('nav-' + SLUG).classList.add('active');
+
+      let token = localStorage.getItem(STORAGE_KEY) || '';
+      let pulseTimer = null;
+
+      function authHeaders() {
+        return token ? { Authorization: 'Bearer ' + token } : {};
+      }
+
+      function showChat() {
+        element('auth-panel').hidden = true;
+        element('chat-panel').hidden = false;
+        startPulse();
+      }
+
+      async function refreshPulse() {
+        const response = await fetch(BASE + '/api/pulse', { headers: authHeaders() });
+        if (!response.ok) {
+          element('mood-note').textContent = 'Токен не принят.';
+          return;
+        }
+        const data = await response.json();
+        element('face').textContent = data.mood.emoji;
+        element('mood-title').textContent = data.mood.title;
+        element('mood-note').textContent = data.mood.note;
+        element('cpu').textContent = data.metrics.cpuIdlePercent + '%';
+        element('mem').textContent = data.metrics.memoryAvailablePercent + '%';
+        element('queue').textContent = data.queue.depth + ' / ' + data.queue.maxDepth;
+      }
+
+      function startPulse() {
+        refreshPulse();
+        if (pulseTimer === null) {
+          pulseTimer = setInterval(refreshPulse, 2500);
+        }
+      }
+
+      element('save-token').addEventListener('click', () => {
+        token = element('token').value.trim();
+        localStorage.setItem(STORAGE_KEY, token);
+        showChat();
+      });
+
+      element('send').addEventListener('click', async () => {
+        const message = element('prompt').value.trim();
+        if (!message) return;
+
+        const status = element('status');
+        const answer = element('answer');
+        element('answer-panel').hidden = false;
+        element('cost').hidden = true;
+        answer.textContent = '';
+        status.className = 'status';
+        status.textContent = 'Отправляю…';
+        element('send').disabled = true;
+
+        try {
+          const response = await fetch(BASE + '/api/' + SLUG + '/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ message }),
+          });
+
+          if (!response.ok) {
+            const problem = await response.json();
+            status.className = 'status bad';
+            status.textContent = problem.error;
+            return;
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            let separator;
+            while ((separator = buffer.indexOf('\n\n')) !== -1) {
+              const frame = buffer.slice(0, separator);
+              buffer = buffer.slice(separator + 2);
+              const event = /event: (.+)/.exec(frame)?.[1];
+              const data = JSON.parse(/data: (.+)/.exec(frame)?.[1] || '{}');
+
+              if (event === 'queued') {
+                status.textContent = data.waitingAhead > 0
+                  ? 'Впереди ' + data.waitingAhead + ' — узел занят'
+                  : 'Узел взялся за ответ…';
+              } else if (event === 'mood') {
+                element('face').textContent = data.emoji;
+                element('mood-title').textContent = data.title;
+                element('mood-note').textContent = data.note;
+                status.textContent = 'Отвечает (' + data.title.toLowerCase() + ')…';
+              } else if (event === 'delta') {
+                answer.textContent += data.text;
+              } else if (event === 'done') {
+                status.textContent = '';
+                element('cost').textContent = data.costText;
+                element('cost').hidden = false;
+              } else if (event === 'failed') {
+                status.className = 'status bad';
+                status.textContent = data.error;
+              }
+            }
+          }
+        } catch (error) {
+          status.className = 'status bad';
+          status.textContent = 'Сеть отвалилась: ' + error.message;
+        } finally {
+          element('send').disabled = false;
+          refreshPulse();
+        }
+      });
+
+      if (token) showChat();
+    </script>
+  </body>
+</html>

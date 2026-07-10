@@ -1,0 +1,31 @@
+{
+  "name": "llm-gateway",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "description": "Приватный HTTP-шлюз к локальной LLM: авторизация, rate limit, очередь, настроение узла.",
+  "scripts": {
+    "start": "node src/http.ts",
+    "typecheck": "tsc",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/http.ts' --test-coverage-exclude='src/server.ts' --test-coverage-exclude='src/index.ts' --test-coverage-exclude='src/__test__/**' --test-coverage-exclude='../core/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
+    "lint-prettier": "prettier \"src/**/*.ts\" --check",
+    "write-prettier": "prettier \"src/**/*.ts\" --write"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "printWidth": 100,
+    "arrowParens": "avoid",
+    "semi": true,
+    "trailingComma": "all",
+    "tabWidth": 2
+  }
+}
