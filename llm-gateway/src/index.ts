@@ -15,6 +15,15 @@ export {
   readPositiveInteger,
 } from './config.ts';
 export type { GatewayConfig } from './config.ts';
+export {
+  FOOD_GUARD_SYSTEM,
+  FOOD_GUARD_EXAMPLES,
+  buildFoodGuardMessages,
+  parseFoodVerdict,
+  formatFoodRefusal,
+  makeFoodAssessor,
+} from './food-guard.ts';
+export type { FoodVerdict, GuardChatClient } from './food-guard.ts';
 export { DEFAULT_PERSONA, PERSONAS, findPersona } from './personas.ts';
 export type { Persona } from './personas.ts';
 export { TokenBucketRateLimiter } from './rate-limit.ts';

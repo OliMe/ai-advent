@@ -8,6 +8,7 @@ import type {
 import { estimateTokens } from '../../core/src/index.ts';
 import { describeAnswerCost, type AnswerCost } from './answer-cost.ts';
 import type { GatewayConfig } from './config.ts';
+import { formatFoodRefusal, type FoodVerdict } from './food-guard.ts';
 import type { Persona } from './personas.ts';
 import type { RequestQueue } from './request-queue.ts';
 
@@ -42,7 +43,10 @@ export interface ChatHandlers {
 /** Итог обслуженного запроса. */
 export interface ChatOutcome {
   content: string;
-  cost: AnswerCost;
+  /** Отказ гейта: запрос не про еду, рецепт не генерировался. */
+  refused: boolean;
+  /** Ценник ответа; при отказе гейта отсутствует (рецепт не считался). */
+  cost?: AnswerCost;
 }
 
 /** Зависимости сервиса — всё внешнее инжектируется. */
@@ -50,6 +54,8 @@ export interface ChatServiceDeps {
   config: GatewayConfig;
   queue: RequestQueue;
   createClient: (model: string) => StreamingChatClient;
+  /** Гейт съедобности: решает, готовить рецепт или отказать. */
+  assessFood: (model: string, userMessage: string) => Promise<FoodVerdict>;
   now: () => number;
 }
 
@@ -103,6 +109,14 @@ export class ChatService {
     return this.deps.queue.run(async waitingAhead => {
       handlers.onQueued(waitingAhead);
 
+      // Гейт съедобности до генерации: посторонний запрос до рецепта не доходит.
+      const verdict = await this.deps.assessFood(persona.model, userMessage);
+      if (!verdict.edible) {
+        const refusal = formatFoodRefusal(verdict.reason);
+        handlers.onDelta(refusal);
+        return { content: refusal, refused: true };
+      }
+
       const messages: ChatMessage[] = [
         { role: 'system', content: persona.systemPrompt },
         { role: 'user', content: userMessage },
@@ -138,7 +152,7 @@ export class ChatService {
         this.deps.config.quotaCores,
         generatedTokens,
       );
-      return { content: result.content, cost };
+      return { content: result.content, refused: false, cost };
     });
   }
 }

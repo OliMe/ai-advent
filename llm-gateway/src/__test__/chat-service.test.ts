@@ -10,6 +10,7 @@ import {
   ChatService,
   PromptTooLargeError,
   createUpstreamConfig,
+  type ChatServiceDeps,
   type StreamingChatClient,
 } from '../chat-service.ts';
 import { loadGatewayConfig, type GatewayConfig } from '../config.ts';
@@ -33,14 +34,24 @@ function fakeClient(deltas: StreamDelta[], result: CompletionResult) {
   return { client, seenOptions };
 }
 
+/** Гейт-заглушка: по умолчанию пропускает всё как съедобное. */
+function allowAllFood() {
+  return async () => ({ edible: true, reason: '' });
+}
+
 /** Собирает сервис на управляемых часах: каждый вызов now() двигает время на 5 секунд. */
-function buildService(client: StreamingChatClient, overrides: Partial<GatewayConfig> = {}) {
+function buildService(
+  client: StreamingChatClient,
+  overrides: Partial<GatewayConfig> = {},
+  assessFood: ChatServiceDeps['assessFood'] = allowAllFood(),
+) {
   const config = { ...loadGatewayConfig({}), ...overrides };
   let currentTimeMs = 0;
   return new ChatService({
     config,
     queue: new RequestQueue(config.maxQueueDepth),
     createClient: () => client,
+    assessFood,
     now: () => {
       currentTimeMs += 5000;
       return currentTimeMs;
@@ -89,12 +100,34 @@ test('ответ стримится, позиция сообщается, usage 
   assert.deepEqual(queued, [0]);
   assert.deepEqual(chunks, ['Блюдо: ', 'омлет.']);
   assert.equal(outcome.content, 'Блюдо: омлет.');
+  assert.equal(outcome.refused, false);
+  assert.ok(outcome.cost);
   assert.equal(outcome.cost.generatedTokens, 60);
   // Часы шагают по 5 с: старт 5, дельты 10 и 15, финиш 20.
   assert.equal(outcome.cost.wallSeconds, 15);
   assert.equal(outcome.cost.timeToFirstTokenSeconds, 5);
   assert.equal(outcome.cost.tokensPerSecond, 12);
   assert.equal(outcome.cost.cpuSeconds, 45);
+});
+
+test('несъедобный запрос: гейт отказывает, рецепт не генерируется', async () => {
+  const { client, seenOptions } = fakeClient([{ content: 'НЕ ДОЛЖНО ПОЯВИТЬСЯ' }], {
+    content: 'НЕ ДОЛЖНО ПОЯВИТЬСЯ',
+  });
+  const refuse = async () => ({ edible: false, reason: 'Гвозди несъедобны.' });
+  const service = buildService(client, {}, refuse);
+  const { handlers, queued, chunks } = recordingHandlers();
+
+  const outcome = await service.respond(DEFAULT_PERSONA, 'молоток, гвозди', handlers);
+
+  assert.deepEqual(queued, [0]);
+  assert.equal(outcome.refused, true);
+  assert.equal(outcome.cost, undefined);
+  // Рецептурная модель НЕ вызывалась.
+  assert.equal(seenOptions.length, 0);
+  // Пользователь получил отказ с причиной, а не рецепт.
+  assert.equal(chunks.length, 1);
+  assert.match(chunks[0], /Гвозди несъедобны\./);
 });
 
 test('параметры генерации берутся из персоны', async () => {
@@ -111,6 +144,7 @@ test('без usage число токенов оценивается по дли�
   const service = buildService(client);
   const { handlers } = recordingHandlers();
   const outcome = await service.respond(DEFAULT_PERSONA, 'яйца', handlers);
+  assert.ok(outcome.cost);
   assert.ok(outcome.cost.generatedTokens > 0);
 });
 
@@ -120,6 +154,7 @@ test('ответ без единого текстового токена не л
   const { handlers, chunks } = recordingHandlers();
   const outcome = await service.respond(DEFAULT_PERSONA, 'яйца', handlers);
   assert.deepEqual(chunks, []);
+  assert.ok(outcome.cost);
   assert.equal(outcome.cost.tokensPerSecond, 0);
   assert.equal(outcome.cost.timeToFirstTokenSeconds, outcome.cost.wallSeconds);
 });

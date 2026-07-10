@@ -24,7 +24,7 @@ export interface Persona {
  */
 const KITCHEN: Persona = {
   slug: 'kitchen',
-  title: 'Что в холодильнике',
+  title: 'Что приготовить?',
   model: 'qwen2.5:3b',
   systemPrompt:
     'Ты — повар. По списку продуктов предложи ОДНО блюдо, которое из них можно приготовить. ' +

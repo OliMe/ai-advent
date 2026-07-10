@@ -73,7 +73,7 @@
       <h1>{{TITLE}}</h1>
       <div class="sub">
         Перечислите продукты — локальная модель <code>{{MODEL}}</code> придумает, что из них
-        приготовить. Всё считается на VPS с четырьмя ядрами, без видеокарты и без облака.
+        приготовить. Всё считается на VPS с четырьмя ядрами, без видеокарты.
       </div>
 
       <div class="panel node">
@@ -163,7 +163,7 @@
         });
       });
 
-      element('send').addEventListener('click', async () => {
+      async function submitRequest() {
         const message = element('prompt').value.trim();
         if (!message) return;
 
@@ -229,6 +229,16 @@
         } finally {
           element('send').disabled = false;
           refreshPulse();
+        }
+      }
+
+      element('send').addEventListener('click', submitRequest);
+
+      // Enter отправляет запрос, Shift+Enter — перенос строки.
+      element('prompt').addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          submitRequest();
         }
       });
 

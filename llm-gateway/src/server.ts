@@ -6,6 +6,7 @@ import { formatAnswerCost } from './answer-cost.ts';
 import { authorize, rateLimitIdentity } from './auth.ts';
 import { ChatService, PromptTooLargeError, createUpstreamConfig } from './chat-service.ts';
 import type { GatewayConfig } from './config.ts';
+import { makeFoodAssessor } from './food-guard.ts';
 import { DEFAULT_PERSONA, PERSONAS, findPersona, type Persona } from './personas.ts';
 import { TokenBucketRateLimiter } from './rate-limit.ts';
 import { QueueOverflowError, RequestQueue } from './request-queue.ts';
@@ -27,10 +28,13 @@ export function createGatewayHandler(config: GatewayConfig) {
   );
   const cpuTracker = new CpuIdleTracker();
 
+  const createClient = (model: string) =>
+    new ChatCompletionClient(createUpstreamConfig(config, model));
   const chatService = new ChatService({
     config,
     queue,
-    createClient: model => new ChatCompletionClient(createUpstreamConfig(config, model)),
+    createClient,
+    assessFood: makeFoodAssessor(createClient),
     now: () => Date.now(),
   });
 
@@ -137,7 +141,8 @@ export function createGatewayHandler(config: GatewayConfig) {
         onQueued: waitingAhead => emit('queued', { waitingAhead }),
         onDelta: text => emit('delta', { text }),
       });
-      emit('done', { cost: outcome.cost, costText: formatAnswerCost(outcome.cost) });
+      // При отказе гейта рецепт не считался — ценник не отправляем.
+      emit('done', outcome.cost ? { costText: formatAnswerCost(outcome.cost) } : { refused: true });
     } catch (error) {
       emit('failed', { error: describeError(error) });
     }
@@ -172,6 +177,7 @@ export function createGatewayHandler(config: GatewayConfig) {
         object: 'chat.completion',
         model: persona.slug,
         choices: [{ index: 0, message: { role: 'assistant', content: outcome.content } }],
+        node_refused: outcome.refused,
         node_cost: outcome.cost,
       });
     } catch (error) {
