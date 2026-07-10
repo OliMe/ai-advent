@@ -144,6 +144,11 @@ export interface RunControllerDeps {
   teamConfig?: { maxAgents: number; concurrency: number };
   /** Инструменты (MCP) для планировщика и исполнителя; не задан — без инструментов. */
   tools?: ToolSet;
+  /**
+   * Структурированный вывод этапов по JSON-схеме (`LLM_STRUCTURED_OUTPUTS=1`).
+   * Не задан/false — прежний путь, безопасный для z.ai/GLM.
+   */
+  structuredOutputs?: boolean;
   /** Пишет результат этапа в транскрипт основной сессии (если задан). */
   recordToSession?: (role: 'user' | 'assistant', content: string) => void;
 }
@@ -400,6 +405,7 @@ export class RunController {
         invariants: this.deps.invariants,
         teamConfig: this.deps.teamConfig,
         tools: this.deps.tools,
+        structuredOutputs: this.deps.structuredOutputs,
         hooks: {
           // Печатаем решение оркестратора только когда подобрана команда (>1 роли).
           onTeam: (stage, team) => {

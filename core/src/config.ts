@@ -37,6 +37,13 @@ export interface AppConfig {
    * отдельными раундами. По умолчанию 12 (хватает на длинные кросс-серверные сценарии).
    */
   maxToolRounds: number;
+  /**
+   * Структурированный вывод этапов пайплайна (constrained decoding по JSON-схеме).
+   * Включается ЯВНО (`LLM_STRUCTURED_OUTPUTS=1`) под модель, которая это умеет (Ollama);
+   * провайдера не детектим. По умолчанию выключен: `response_format` ломает z.ai/GLM,
+   * поэтому дефолтный путь остаётся прежним — JSON просим в промпте.
+   */
+  structuredOutputs: boolean;
 }
 
 const DEFAULT_TEMPERATURE = 0.7;
@@ -142,6 +149,8 @@ export function loadConfig(): AppConfig {
     ),
     // Потолок раундов агентного цикла чата с инструментами (длинный кросс-серверный флоу).
     maxToolRounds: positiveInteger(process.env.LLM_MAX_TOOL_ROUNDS, DEFAULT_MAX_TOOL_ROUNDS),
+    // Тумблер constrained decoding: только явное «1» включает схемы этапов.
+    structuredOutputs: process.env.LLM_STRUCTURED_OUTPUTS === '1',
   };
 }
 

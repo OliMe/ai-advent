@@ -13,6 +13,8 @@ import {
   extractJsonObject,
   Conversation,
   createRun,
+  structuredLimits,
+  PLANNING_SCHEMA,
 } from '../index.ts';
 import type { GenerationLimits, StageContext, TaskRun, TeamPlan, ToolSet } from '../index.ts';
 import { clientWith } from './helpers.ts';
@@ -666,5 +668,176 @@ describe('командное планирование (несколько аге
 
     assert.deepEqual(artifact.steps, ['solo']); // одиночный планировщик
     assert.equal(artifact.contributions, undefined); // соло-путь без вкладов команды
+  });
+});
+
+describe('структурированный вывод этапов (LLM_STRUCTURED_OUTPUTS)', () => {
+  /** Фабрика диалога, запоминающая limits каждого агента по его системному промпту. */
+  function capturingConversation(
+    t: TestContext,
+    content: string,
+    calls: Array<{ system: string; limits?: GenerationLimits }>,
+  ) {
+    return (system: string, limits?: GenerationLimits) => {
+      calls.push({ system, limits });
+      const client = clientWith(t, async () => ({ content, usage: undefined }));
+      return new Conversation(client, {
+        systemPrompt: system,
+        temperature: 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+  }
+
+  function schemaNameOf(limits?: GenerationLimits): string | undefined {
+    const format = limits?.responseFormat;
+    return format?.type === 'json_schema' ? format.json_schema.name : undefined;
+  }
+
+  it('structuredLimits: включено → схема; выключено → undefined (инвариант GLM)', () => {
+    const enabled = structuredLimits(true, PLANNING_SCHEMA);
+    assert.deepEqual(enabled, {
+      responseFormat: { type: 'json_schema', json_schema: PLANNING_SCHEMA },
+    });
+    assert.equal(structuredLimits(false, PLANNING_SCHEMA), undefined);
+    assert.equal(structuredLimits(undefined, PLANNING_SCHEMA), undefined);
+  });
+
+  it('включено: планировщик, проверяющий и завершающий получают свои схемы', async t => {
+    const run = createRun('Задача', { idSuffix: 'so-on' });
+    const calls: Array<{ system: string; limits?: GenerationLimits }> = [];
+    const ctx: StageContext = {
+      run,
+      makeConversation: capturingConversation(
+        t,
+        '{"steps":["s"],"criteria":["c"],"text":"t","passed":true,"issues":[],"summary":"i"}',
+        calls,
+      ),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      structuredOutputs: true,
+    };
+
+    run.artifacts.planning = await runPlanning(ctx);
+    run.artifacts.execution = await runExecution(ctx);
+    run.artifacts.verification = await runVerification(ctx);
+    await runCompletion(ctx);
+
+    const planner = calls.find(call => call.system.startsWith('Ты — планировщик'));
+    const executor = calls.find(call => call.system.startsWith('Ты — исполнитель'));
+    const verifier = calls.find(call => call.system.startsWith('Ты — проверяющий'));
+    const completer = calls.find(call => call.system.startsWith('Ты — завершающий'));
+    assert.equal(schemaNameOf(planner?.limits), 'planning_artifact');
+    assert.equal(schemaNameOf(verifier?.limits), 'verification_artifact');
+    assert.equal(schemaNameOf(completer?.limits), 'completion_artifact');
+    // Выполнение остаётся плоским текстом: схему ему НЕ навязываем.
+    assert.equal(executor?.limits, undefined);
+  });
+
+  it('включено: синтезатор командного плана тоже получает схему плана', async t => {
+    const run = createRun('Сложная', { idSuffix: 'so-team' });
+    const calls: Array<{ system: string; limits?: GenerationLimits }> = [];
+    const make = (system: string, limits?: GenerationLimits, temperature?: number) => {
+      calls.push({ system, limits });
+      const client = clientWith(t, async () => {
+        if (system.includes('оркестратор команды')) {
+          return {
+            content: '{"roles":[{"name":"архитектор"},{"name":"безопасность"}],"rationale":"r"}',
+            usage: undefined,
+          };
+        }
+        if (system.includes('в команде планирования')) {
+          return { content: '- вклад', usage: undefined };
+        }
+        return { content: '{"steps":["s"],"criteria":["c"],"text":"t"}', usage: undefined };
+      });
+      return new Conversation(client, {
+        systemPrompt: system,
+        temperature: temperature ?? 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+    const ctx: StageContext = {
+      run,
+      makeConversation: make,
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      maxStageAgents: 4,
+      structuredOutputs: true,
+    };
+
+    await runPlanning(ctx);
+
+    const synthesizer = calls.find(call => call.system.startsWith('Ты — ведущий планировщик'));
+    assert.equal(schemaNameOf(synthesizer?.limits), 'planning_artifact');
+    // Роль-эксперты отвечают прозой — схему им не навязываем.
+    const role = calls.find(call => call.system.includes('в команде планирования'));
+    assert.equal(role?.limits, undefined);
+  });
+
+  it('ВЫКЛЮЧЕНО по умолчанию: response_format не уходит провайдеру (GLM не задет)', async t => {
+    const run = createRun('Задача', { idSuffix: 'so-off' });
+    const calls: Array<{ system: string; limits?: GenerationLimits }> = [];
+    const ctx: StageContext = {
+      run,
+      makeConversation: capturingConversation(
+        t,
+        '{"steps":["s"],"criteria":["c"],"text":"t","passed":true,"issues":[],"summary":"i"}',
+        calls,
+      ),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      // structuredOutputs не задан — прежнее поведение
+    };
+
+    run.artifacts.planning = await runPlanning(ctx);
+    run.artifacts.execution = await runExecution(ctx);
+    run.artifacts.verification = await runVerification(ctx);
+    await runCompletion(ctx);
+
+    assert.ok(calls.length >= 4);
+    assert.ok(calls.every(call => call.limits === undefined));
+  });
+});
+
+describe('parseExecution: детерминированный ремонт обёртки', () => {
+  it('разворачивает {name, implementation, jsdocComments} → код', () => {
+    const artifact = parseExecution(
+      '{"name":"bubbleSort","implementation":"function bubbleSort(a){\\n  return a;\\n}",' +
+        '"jsdocComments":"/** сортировка */"}',
+    );
+    assert.equal(artifact.text, 'function bubbleSort(a){\n  return a;\n}');
+    assert.equal(artifact.summary, 'function bubbleSort(a){');
+  });
+
+  it('снимает ограждение внутри развёрнутого поля', () => {
+    const artifact = parseExecution('{"code":"```ts\\nconst a = 1;\\n```"}');
+    assert.equal(artifact.text, 'const a = 1;');
+  });
+
+  it('пустое поле-результат пропускается в пользу следующего', () => {
+    const artifact = parseExecution('{"code":"   ","text":"настоящий результат"}');
+    assert.equal(artifact.text, 'настоящий результат');
+  });
+
+  it('НЕ калечит задачу, чей результат сам по себе JSON (незнакомые ключи)', () => {
+    const source = '{"port":8080,"host":"localhost"}';
+    const artifact = parseExecution(source);
+    assert.equal(artifact.text, source);
+  });
+
+  it('знакомые ключи, но результат не строка → текст как есть', () => {
+    const source = '{"name":"x","implementation":42}';
+    const artifact = parseExecution(source);
+    assert.equal(artifact.text, source);
+  });
+
+  it('обычный плоский текст не трогает', () => {
+    const artifact = parseExecution('function f() {}\nвторая строка');
+    assert.equal(artifact.text, 'function f() {}\nвторая строка');
   });
 });

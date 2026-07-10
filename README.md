@@ -63,6 +63,7 @@ npm start             # см. README конкретного пакета
 | `LLM_RETRY_BASE_MS` | Базовая задержка бэкоффа, мс | `500` |
 | `LLM_STAGE_MAX_TOKENS` | Потолок генерации агентов пайплайна задач, токенов | дефолт провайдера |
 | `LLM_MAX_TOOL_ROUNDS` | Потолок раундов агентного цикла чата с MCP-инструментами (длинный кросс-серверный флоу) | `20` |
+| `LLM_STRUCTURED_OUTPUTS` | `1` — этапы пайплайна (планирование/проверка/завершение) генерируются по JSON-схеме (constrained decoding). Только для провайдеров, которые это умеют (Ollama). **Ломает z.ai/GLM** — потому не включается автоматически. Побочный эффект: планировщик перестаёт вызывать MCP-инструменты | выкл |
 | `LLM_EMBEDDINGS_URL` | Эндпоинт `/embeddings` для RAG (`core.EmbeddingsClient`); напр. Ollama `http://localhost:11434/v1/embeddings` | — |
 | `LLM_EMBEDDINGS_MODEL` | Модель эмбеддингов (напр. `nomic-embed-text`) | — |
 | `LLM_EMBEDDINGS_API_KEY` | Ключ для эмбеддингов (для Ollama не нужен) | — |

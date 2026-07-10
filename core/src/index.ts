@@ -86,6 +86,12 @@ export {
   parseCompletion,
 } from './pipeline-stages.ts';
 export type { StageContext } from './pipeline-stages.ts';
+export {
+  COMPLETION_SCHEMA,
+  PLANNING_SCHEMA,
+  VERIFICATION_SCHEMA,
+  structuredLimits,
+} from './pipeline-schemas.ts';
 export { extractJsonObject, parseJsonObject } from './json.ts';
 export {
   ORCHESTRATOR_SYSTEM,

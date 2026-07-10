@@ -8,6 +8,12 @@ import type {
   VerificationArtifact,
 } from './task-run.ts';
 import { parseJsonObject } from './json.ts';
+import {
+  COMPLETION_SCHEMA,
+  PLANNING_SCHEMA,
+  VERIFICATION_SCHEMA,
+  structuredLimits,
+} from './pipeline-schemas.ts';
 import { orchestrateTeam, runRoleExperts } from './stage-team.ts';
 import type { AgentRole, TeamPlan } from './stage-team.ts';
 import type { ToolSet } from './tool-set.ts';
@@ -44,6 +50,12 @@ export interface StageContext {
   reportTeam?: (team: TeamPlan) => void;
   /** Инструменты (function-calling) для решающих агентов планирования и выполнения. */
   tools?: ToolSet;
+  /**
+   * Структурированный вывод этапов по JSON-схеме (constrained decoding). Не задан/false —
+   * прежний путь: JSON просим в промпте, разбираем толерантным парсером. Включается явным
+   * тумблером пользователя, так как `response_format` ломает z.ai/GLM.
+   */
+  structuredOutputs?: boolean;
 }
 
 /** Генерация с контролем инвариантов, если он задан; иначе — обычная. */
@@ -97,13 +109,65 @@ function stripCodeFence(content: string): string {
   return match === null ? trimmed : match[1];
 }
 
+/** Поля-обёртки, в которые слабая модель кладёт САМ результат вместо плоского текста. */
+const EXECUTION_RESULT_KEYS = ['implementation', 'code', 'result', 'output', 'answer', 'text'];
+
+/** Поля-описания рядом с результатом: их наличие не мешает распознать обёртку. */
+const EXECUTION_META_KEYS = [
+  'name',
+  'title',
+  'language',
+  'summary',
+  'description',
+  'explanation',
+  'notes',
+  'comments',
+  'jsdoccomments',
+  'usage',
+  'example',
+  'examples',
+  'tests',
+];
+
+/**
+ * Детерминированный ремонт: слабая модель иногда игнорирует «верни плоский текст» и отдаёт
+ * `{name, implementation, jsdocComments}`. Достаём поле-результат — БЕЗ вызова модели.
+ *
+ * Правило намеренно узкое: разворачиваем, только если КАЖДЫЙ ключ объекта — известная обёртка
+ * или поле-описание. Иначе задача, чей результат сам по себе JSON (например «сгенерируй конфиг»),
+ * была бы искалечена вытаскиванием одного её поля. Не распознали — возвращаем null (текст как есть).
+ */
+function unwrapExecutionObject(content: string): string | null {
+  const object = parseJsonObject(content);
+  if (object === null) {
+    return null;
+  }
+  const byLowerCaseKey = new Map(
+    Object.entries(object).map(([key, value]) => [key.toLowerCase(), value]),
+  );
+  const known = [...byLowerCaseKey.keys()].every(
+    key => EXECUTION_RESULT_KEYS.includes(key) || EXECUTION_META_KEYS.includes(key),
+  );
+  if (!known) {
+    return null;
+  }
+  for (const key of EXECUTION_RESULT_KEYS) {
+    const value = byLowerCaseKey.get(key);
+    if (typeof value === 'string' && value.trim() !== '') {
+      return value;
+    }
+  }
+  return null;
+}
+
 /**
  * Разбирает артефакт выполнения: исполнитель возвращает плоский результат (не JSON,
- * иначе крупный код ломает экранирование). Снимаем ограждение; summary — первая
- * содержательная строка (для показа/контекста завершения), text — результат целиком.
+ * иначе крупный код ломает экранирование). Сначала детерминированный ремонт обёртки,
+ * затем снимаем ограждение; summary — первая содержательная строка (для показа/контекста
+ * завершения), text — результат целиком.
  */
 export function parseExecution(content: string): Omit<ExecutionArtifact, 'files'> {
-  const text = stripCodeFence(content);
+  const text = stripCodeFence(unwrapExecutionObject(content) ?? content);
   const firstMeaningful = text.split('\n').find(line => line.trim().length > 0) ?? '';
   return { summary: firstMeaningful.trim().slice(0, 200), log: [], text };
 }
@@ -301,7 +365,12 @@ async function planFromConversation(
 function planSolo(ctx: StageContext): Promise<PlanningArtifact> {
   return planFromConversation(
     ctx,
-    ctx.makeConversation(PLANNER_SYSTEM, undefined, PLANNER_TEMPERATURE, ctx.tools),
+    ctx.makeConversation(
+      PLANNER_SYSTEM,
+      structuredLimits(ctx.structuredOutputs, PLANNING_SCHEMA),
+      PLANNER_TEMPERATURE,
+      ctx.tools,
+    ),
     planningBrief(ctx),
   );
 }
@@ -334,7 +403,7 @@ async function planWithTeam(ctx: StageContext, team: TeamPlan): Promise<Planning
     .join('\n\n');
   const synthesizer = ctx.makeConversation(
     PLAN_SYNTHESIZER_SYSTEM,
-    undefined,
+    structuredLimits(ctx.structuredOutputs, PLANNING_SCHEMA),
     PLANNER_TEMPERATURE,
     ctx.tools,
   );
@@ -423,7 +492,11 @@ export async function runVerification(ctx: StageContext): Promise<VerificationAr
       text: 'Проверка невозможна: пустой план.',
     };
   }
-  const conversation = ctx.makeConversation(VERIFIER_SYSTEM, undefined, VERIFIER_TEMPERATURE);
+  const conversation = ctx.makeConversation(
+    VERIFIER_SYSTEM,
+    structuredLimits(ctx.structuredOutputs, VERIFICATION_SCHEMA),
+    VERIFIER_TEMPERATURE,
+  );
   const result = await conversation.ask(
     `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\n${basis}\n\n` +
       // Берём полный результат; если его нет — краткое резюме (хрупкость поля).
@@ -435,7 +508,11 @@ export async function runVerification(ctx: StageContext): Promise<VerificationAr
 /** Завершение: все артефакты → итоговое резюме. */
 export async function runCompletion(ctx: StageContext): Promise<CompletionArtifact> {
   const { planning, execution, verification } = ctx.run.artifacts;
-  const conversation = ctx.makeConversation(COMPLETER_SYSTEM, undefined, COMPLETER_TEMPERATURE);
+  const conversation = ctx.makeConversation(
+    COMPLETER_SYSTEM,
+    structuredLimits(ctx.structuredOutputs, COMPLETION_SCHEMA),
+    COMPLETER_TEMPERATURE,
+  );
   const prompt =
     `Задача: ${ctx.run.title}\n\nПлан:\n${planning?.text ?? ''}\n\n` +
     `Результат:\n${execution?.summary ?? ''}\n\nПроверка: ${verification?.passed ? 'пройдена' : 'с замечаниями'}`;

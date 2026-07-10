@@ -22,6 +22,7 @@ export function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     maxStageAgents: 1,
     stageAgentConcurrency: 2,
     maxToolRounds: 12,
+    structuredOutputs: false,
     ...overrides,
   };
 }

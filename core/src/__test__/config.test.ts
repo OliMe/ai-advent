@@ -22,6 +22,7 @@ const ENV_KEYS = [
   'LLM_MAX_STAGE_AGENTS',
   'LLM_STAGE_AGENT_CONCURRENCY',
   'LLM_MAX_TOOL_ROUNDS',
+  'LLM_STRUCTURED_OUTPUTS',
 ];
 
 describe('loadConfig', () => {
@@ -106,6 +107,21 @@ describe('loadConfig', () => {
     assert.equal(config.maxStageAgents, 6);
     assert.equal(config.stageAgentConcurrency, 3);
     assert.equal(config.maxToolRounds, 30);
+  });
+
+  it('structuredOutputs: включается только явной «1», иначе выключен (инвариант GLM)', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+
+    delete process.env.LLM_STRUCTURED_OUTPUTS;
+    assert.equal(loadConfig().structuredOutputs, false);
+
+    process.env.LLM_STRUCTURED_OUTPUTS = 'true'; // любое иное значение не считается
+    assert.equal(loadConfig().structuredOutputs, false);
+
+    process.env.LLM_STRUCTURED_OUTPUTS = '1';
+    assert.equal(loadConfig().structuredOutputs, true);
   });
 
   it('откатывается к дефолтам команды агентов при невалидных значениях', () => {

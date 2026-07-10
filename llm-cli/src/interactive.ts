@@ -324,6 +324,8 @@ export async function runInteractive(
     invariants: () => memoryManager.invariantsList(),
     // Инструменты MCP — планировщику и исполнителю (с поддержкой локальных путей).
     tools: chatTools ?? undefined,
+    // Constrained decoding этапов — только по явному тумблеру (ломает z.ai/GLM).
+    structuredOutputs: config.structuredOutputs,
     // Команда агентов на этап: потолок ролей и конкурентность веера из конфига.
     teamConfig: {
       maxAgents: config.maxStageAgents,

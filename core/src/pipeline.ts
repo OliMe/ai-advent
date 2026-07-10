@@ -81,6 +81,11 @@ export interface PipelineDeps {
   teamConfig?: { maxAgents: number; concurrency: number };
   /** Инструменты (function-calling) для решающих агентов планирования/выполнения. */
   tools?: ToolSet;
+  /**
+   * Структурированный вывод этапов по JSON-схеме. Не задан/false — прежний путь
+   * (JSON в промпте + толерантный парсер), безопасный для z.ai/GLM.
+   */
+  structuredOutputs?: boolean;
 }
 
 /**
@@ -128,6 +133,7 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
     stageAgentConcurrency: deps.teamConfig?.concurrency,
     reportTeam: team => hooks.onTeam?.(run.stage, team),
     tools: deps.tools,
+    structuredOutputs: deps.structuredOutputs,
     // Защищённая генерация решающих этапов: контролёр сверяет результат с инвариантами.
     enforce: produce =>
       enforceInvariants({
