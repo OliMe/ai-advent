@@ -45,6 +45,8 @@ interface FactoryHooks {
   onPrompt?: (stage: Stage, prompt: string) => void;
   /** Ловит промпт каждого хода аналитика (для проверки адаптивности). */
   onClarifier?: (prompt: string) => void;
+  /** Ловит температуру диалога аналитика (для проверки её значения). */
+  onClarifierTemp?: (temperature: number | undefined) => void;
 }
 
 /**
@@ -58,8 +60,9 @@ function factory(
   hooks: FactoryHooks = {},
   clarifier: string[] = ['{"done":true}'],
 ): ConversationFactory {
-  return (systemPrompt, limits) => {
+  return (systemPrompt, limits, temperature) => {
     const isClarifier = systemPrompt.includes('аналитик требований');
+    if (isClarifier) hooks.onClarifierTemp?.(temperature);
     const stage = stageOf(systemPrompt);
     let clarifierTurn = 0;
     const client = clientWith(t, async messages => {
@@ -217,16 +220,25 @@ describe('RunController', () => {
     const out = makeCollector();
     const { bridge, details } = fakeBridge();
     const clarifierPrompts: string[] = [];
+    const clarifierTemps: (number | undefined)[] = [];
     const askPrompts: string[] = [];
     const queue = ['бюджет 100к', '', 'да']; // 1-й вопрос; пустой (примет предложение); подтверждение
     let answerIndex = 0;
     const controller = new RunController({
       store: fakeStore(),
-      makeConversation: factory(t, content(), { onClarifier: p => clarifierPrompts.push(p) }, [
-        '{"question":"Какой бюджет?","suggestion":"100к"}',
-        '{"question":"Какие сроки?","suggestion":"месяц"}',
-        '{"done":true}',
-      ]),
+      makeConversation: factory(
+        t,
+        content(),
+        {
+          onClarifier: p => clarifierPrompts.push(p),
+          onClarifierTemp: temp => clarifierTemps.push(temp),
+        },
+        [
+          '{"question":"Какой бюджет?","suggestion":"100к"}',
+          '{"question":"Какие сроки?","suggestion":"месяц"}',
+          '{"done":true}',
+        ],
+      ),
       output: out.stream,
       ask: async prompt => {
         askPrompts.push(prompt);
@@ -247,6 +259,8 @@ describe('RunController', () => {
     // Следующий вопрос задаётся с учётом предыдущего ответа (адаптивность).
     assert.match(clarifierPrompts[1] ?? '', /Ответ пользователя: бюджет 100к/);
     assert.match(text, /завершена и подтверждена/);
+    // Аналитик идёт на низко-умеренной температуре (0.3), а не на сессионной.
+    assert.ok(clarifierTemps.length > 0 && clarifierTemps.every(temp => temp === 0.3));
   });
 
   it('опрос требований: слово-стоп завершает сбор досрочно', async t => {

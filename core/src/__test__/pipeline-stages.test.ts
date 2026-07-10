@@ -184,6 +184,40 @@ describe('раннеры этапов', () => {
     assert.equal(seen.get('Ты — завершающий.'), false);
   });
 
+  it('этапы идут на своих температурах: планирование 0.3, выполнение 0.2, проверка 0, завершение 0.2', async t => {
+    const temps = new Map<string, number | undefined>(); // персона → температура
+    const make: StageContext['makeConversation'] = (systemPrompt, limits, temperature) => {
+      const persona = systemPrompt.split(' ').slice(0, 3).join(' ');
+      if (!temps.has(persona)) temps.set(persona, temperature);
+      const client = clientWith(t, async () => ({
+        content: '{"steps":["s"],"criteria":["c"],"text":"п","passed":true,"summary":"и"}',
+        usage: undefined,
+      }));
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: temperature ?? 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+    const run = createRun('Задача');
+    const ctx: StageContext = {
+      run,
+      makeConversation: make,
+      writeArtifact: () => null,
+      memoryContext: () => '',
+    };
+    run.artifacts.planning = await runPlanning(ctx);
+    run.artifacts.execution = await runExecution(ctx);
+    run.artifacts.verification = await runVerification(ctx);
+    await runCompletion(ctx);
+    assert.equal(temps.get('Ты — планировщик.'), 0.3);
+    assert.equal(temps.get('Ты — исполнитель.'), 0.2);
+    assert.equal(temps.get('Ты — проверяющий.'), 0);
+    assert.equal(temps.get('Ты — завершающий.'), 0.2);
+  });
+
   it('runPlanning: учитывает правку пользователя в промпте', async t => {
     const run = { ...createRun('Сайт'), correction: 'добавь тёмную тему' };
     let prompt = '';
@@ -590,6 +624,11 @@ describe('командное планирование (несколько аге
       call => call.system.includes('в команде планирования') && call.system.includes('архитектор'),
     );
     assert.equal(architectCall?.temperature, 0.2);
+    // Синтезатор плана идёт на температуре планирования (0.3), не на сессионной.
+    // Именно синтезатор (его персона начинается с «Ты — ведущий планировщик»), а не роль-эксперт,
+    // в промпте которого эта фраза тоже встречается.
+    const synthCall = calls.find(call => call.system.startsWith('Ты — ведущий планировщик'));
+    assert.equal(synthCall?.temperature, 0.3);
   });
 
   it('все эксперты упали → откат к одиночному плану', async t => {

@@ -181,6 +181,16 @@ const COMPLETER_SYSTEM =
 /** Низкая температура проверяющего — для стабильного, воспроизводимого вердикта. */
 const VERIFIER_TEMPERATURE = 0;
 
+/**
+ * Температуры этапов пайплайна (структурированный вывод — низкая, творчество вредит формату и
+ * стабильности; провайдеро-безопасно, с response_format не связано). Планирование/синтез — чуть
+ * выше (немного широты для полноты плана), выполнение/завершение — ниже (код/резюме). Роли команды
+ * берут свою температуру от оркестратора (там разнообразие уместно) — их эти константы не трогают.
+ */
+const PLANNER_TEMPERATURE = 0.3;
+const EXECUTOR_TEMPERATURE = 0.2;
+const COMPLETER_TEMPERATURE = 0.2;
+
 /** Персона роль-эксперта планирования: предложения со своего ракурса (без JSON). */
 function plannerRoleSystem(role: AgentRole): string {
   return (
@@ -291,7 +301,7 @@ async function planFromConversation(
 function planSolo(ctx: StageContext): Promise<PlanningArtifact> {
   return planFromConversation(
     ctx,
-    ctx.makeConversation(PLANNER_SYSTEM, undefined, undefined, ctx.tools),
+    ctx.makeConversation(PLANNER_SYSTEM, undefined, PLANNER_TEMPERATURE, ctx.tools),
     planningBrief(ctx),
   );
 }
@@ -325,7 +335,7 @@ async function planWithTeam(ctx: StageContext, team: TeamPlan): Promise<Planning
   const synthesizer = ctx.makeConversation(
     PLAN_SYNTHESIZER_SYSTEM,
     undefined,
-    undefined,
+    PLANNER_TEMPERATURE,
     ctx.tools,
   );
   const artifact = await planFromConversation(
@@ -358,7 +368,12 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
   const issues = ctx.run.artifacts.verification?.issues ?? [];
   // Предыдущий результат — чтобы доработать его целиком, а не пересоздавать с нуля.
   const previous = ctx.run.artifacts.execution?.text ?? '';
-  const conversation = ctx.makeConversation(EXECUTOR_SYSTEM, undefined, undefined, ctx.tools);
+  const conversation = ctx.makeConversation(
+    EXECUTOR_SYSTEM,
+    undefined,
+    EXECUTOR_TEMPERATURE,
+    ctx.tools,
+  );
   // Шаги, а если их нет — план прозой (модель иногда кладёт план в text).
   const planBody = plan?.steps.length ? plan.steps.join('\n') : (plan?.text ?? '');
   // Доработка (после провала проверки или отказа): требуем ПОЛНЫЙ результат, а не дельту,
@@ -420,7 +435,7 @@ export async function runVerification(ctx: StageContext): Promise<VerificationAr
 /** Завершение: все артефакты → итоговое резюме. */
 export async function runCompletion(ctx: StageContext): Promise<CompletionArtifact> {
   const { planning, execution, verification } = ctx.run.artifacts;
-  const conversation = ctx.makeConversation(COMPLETER_SYSTEM);
+  const conversation = ctx.makeConversation(COMPLETER_SYSTEM, undefined, COMPLETER_TEMPERATURE);
   const prompt =
     `Задача: ${ctx.run.title}\n\nПлан:\n${planning?.text ?? ''}\n\n` +
     `Результат:\n${execution?.summary ?? ''}\n\nПроверка: ${verification?.passed ? 'пройдена' : 'с замечаниями'}`;

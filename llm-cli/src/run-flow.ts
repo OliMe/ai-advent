@@ -32,6 +32,13 @@ export type ConversationFactory = (
 /** Максимум вопросов аналитика за один сбор требований (страховка от зацикливания). */
 const MAX_CLARIFIER_QUESTIONS = 20;
 
+/**
+ * Низко-умеренная температура аналитика: уточняющие вопросы и подсказки-дефолты стабильнее и по
+ * делу (слабая модель на 0.7 давала мета-описания вместо конкретных ответов-подсказок). С
+ * response_format не связано → безопасно для всех провайдеров.
+ */
+const CLARIFIER_TEMPERATURE = 0.3;
+
 /** Слова пользователя, завершающие опрос требований досрочно. */
 const STOP_WORDS = new Set(['стоп', 'достаточно', 'хватит', 'хорош', 'всё', 'все']);
 
@@ -260,7 +267,11 @@ export class RunController {
     cycle: number,
     signal: AbortSignal,
   ): Promise<{ collected: string[] }> {
-    const conversation = this.deps.makeConversation(CLARIFIER_SYSTEM);
+    const conversation = this.deps.makeConversation(
+      CLARIFIER_SYSTEM,
+      undefined,
+      CLARIFIER_TEMPERATURE,
+    );
     const context = this.deps.taskBridge.memoryContext();
     // Инварианты — первыми: аналитик не должен предлагать нарушающие их варианты.
     const prefix = this.invariantsBlock() + (context ? `${context}\n\n` : '');
