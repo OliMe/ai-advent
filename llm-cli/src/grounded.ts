@@ -1,5 +1,6 @@
-import type { Task, ToolSet } from '../../core/src/index.ts';
+import type { ChatMessage, Task, ToolSet } from '../../core/src/index.ts';
 import { isSearchDocsTool } from './rag-directive.ts';
+import { normalizeForMatch } from './citation-guard.ts';
 
 /** Явно разговорные реплики (не вопросы к документам) — на них grounded-поиск не запускается. */
 const FILLERS = new Set([
@@ -133,6 +134,41 @@ export const RAG_SEARCH_UNAVAILABLE =
  */
 export function isRecallFallback(answer: string): boolean {
   return answer.toUpperCase().includes(RECALL_SENTINEL);
+}
+
+/** Минимум подряд идущих слов совпадения — якорь; короче терпит случайные совпадения. */
+const RECALL_ANCHOR_MIN_WORDS = 6;
+
+/**
+ * Заякорен ли ответ-воспоминание в истории: настоящий recall ДОСЛОВНО воспроизводит прошлый ответ,
+ * поэтому его тело должно содержать непрерывную нормализованную подстроку (≥ `RECALL_ANCHOR_MIN_WORDS`
+ * слов) из прежних ассистентских сообщений. Детерминированный откат, НЕ зависящий от того, честно ли
+ * слабая модель вернула сентинел: LLM-флаг `recall` ложно-положителен на слабых моделях, и без якоря
+ * recall-проба выдаёт галлюцинацию вместо реального воспроизведения. Нет прошлых ответов (первый ход)
+ * → якоря быть не может → false → откат на grounded. Гибкость recall не теряется: проба идёт всегда,
+ * отсекается лишь НЕподтверждённый результат.
+ */
+export function recallAnchoredInHistory(recallAnswer: string, history: ChatMessage[]): boolean {
+  const haystack = history
+    .filter(message => message.role === 'assistant')
+    .map(message => normalizeForMatch(message.content))
+    .join(' ');
+  if (haystack === '') {
+    return false;
+  }
+  const words = normalizeForMatch(recallAnswer)
+    .split(' ')
+    .filter(word => word.length > 0);
+  if (words.length < RECALL_ANCHOR_MIN_WORDS) {
+    return false;
+  }
+  for (let start = 0; start + RECALL_ANCHOR_MIN_WORDS <= words.length; start++) {
+    const window = words.slice(start, start + RECALL_ANCHOR_MIN_WORDS).join(' ');
+    if (haystack.includes(window)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

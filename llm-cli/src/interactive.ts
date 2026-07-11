@@ -63,6 +63,7 @@ import {
   isConversationalReply,
   isRecallTurn,
   isRecallFallback,
+  recallAnchoredInHistory,
   RECALL_SYSTEM_PROMPT,
   RAG_SEARCH_UNAVAILABLE,
   resolveRagAnswerTemperature,
@@ -1057,14 +1058,22 @@ export async function runInteractive(
                 disableThinking,
                 0,
               );
-              if (!isRecallFallback(recalled.content)) {
+              // Показываем recall-ответ ТОЛЬКО если он заякорен в истории (дословная подстрока
+              // прежних ответов). Слабая модель на ложном recall галлюцинирует вместо сентинела —
+              // якорь ловит это детерминированно (сентинелу доверять нельзя). Нет якоря → откат
+              // на обычный grounded-поиск ниже.
+              if (
+                !isRecallFallback(recalled.content) &&
+                recallAnchoredInHistory(recalled.content, currentSession.messages)
+              ) {
                 usage = recalled.usage;
+                responseMs = Date.now() - started;
                 output.write(
                   `${ASSISTANT_LABEL}: ${renderMarkdownForTerminal(recalled.content, isTty)}\n\n`,
                 );
                 return recalled.content;
               }
-              // Сентинел — в истории ответа нет; идём на обычный grounded-путь.
+              // Сентинел ИЛИ незаякоренная выдумка — в истории ответа нет; идём на grounded-путь.
             }
             const forcedResults = grounded
               ? await forcedRagSearch(

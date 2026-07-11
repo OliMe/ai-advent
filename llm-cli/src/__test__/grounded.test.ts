@@ -5,6 +5,7 @@ import {
   isRecallQuestion,
   isRecallTurn,
   isRecallFallback,
+  recallAnchoredInHistory,
   RECALL_SENTINEL,
   RECALL_SYSTEM_PROMPT,
   resolveRagAnswerTemperature,
@@ -12,7 +13,7 @@ import {
   buildGroundedQuery,
   forcedRagSearch,
 } from '../index.ts';
-import type { Task, ToolSet, ToolSpec } from '../../../core/src/index.ts';
+import type { ChatMessage, Task, ToolSet, ToolSpec } from '../../../core/src/index.ts';
 
 describe('isConversationalReply', () => {
   it('приветствия/благодарности/да-нет/короткие → true', () => {
@@ -55,6 +56,58 @@ describe('isRecallTurn (гибрид)', () => {
   it('LLM-флаг false: решает лексический маркер', () => {
     assert.equal(isRecallTurn('напомни про флаг', false), true);
     assert.equal(isRecallTurn('в каком формате вывод?', false), false);
+  });
+});
+
+describe('recallAnchoredInHistory (валидация recall против истории)', () => {
+  const prior = (content: string): ChatMessage => ({ role: 'assistant', content });
+  const answered = [
+    { role: 'user', content: 'какие профили?' } as ChatMessage,
+    prior('Профили сканирования: baseline для регулярной лёгкой инвентаризации, deep для проверок'),
+  ];
+
+  it('дословное воспроизведение прошлого ответа → заякорено (true)', () => {
+    // ≥6 слов подряд из истории — настоящий recall.
+    assert.equal(
+      recallAnchoredInHistory(
+        'baseline для регулярной лёгкой инвентаризации, deep для проверок',
+        answered,
+      ),
+      true,
+    );
+  });
+
+  it('галлюцинация (новые слова, не из истории) → НЕ заякорено (false)', () => {
+    assert.equal(
+      recallAnchoredInHistory(
+        'Профили: default базовый, full полный, custom пользовательский',
+        answered,
+      ),
+      false,
+    );
+  });
+
+  it('нет прошлых ассистентских ответов (первый ход) → false', () => {
+    const firstTurn = [{ role: 'user', content: 'какие профили?' } as ChatMessage];
+    assert.equal(
+      recallAnchoredInHistory('baseline для регулярной лёгкой инвентаризации', firstTurn),
+      false,
+    );
+  });
+
+  it('короткий ответ (< порога слов) → false, даже при совпадении', () => {
+    assert.equal(recallAnchoredInHistory('baseline для регулярной', answered), false); // 3 слова
+  });
+
+  it('короткое совпадение (< порога подряд) не проходит за якорь', () => {
+    // «профили сканирования» — только 2 слова подряд из истории, остальное новое.
+    assert.equal(
+      recallAnchoredInHistory(
+        'профили сканирования бывают разных неизвестных типов совсем',
+        answered,
+      ),
+      false,
+    );
   });
 });
 
