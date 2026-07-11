@@ -112,4 +112,5 @@ GATEWAY_TOKENS=секрет npm --prefix llm-gateway start
 HTTP-клиент к модели переиспользуется из `core` (`ChatCompletionClient`).
 
 Деплой на VPS: `/opt/ai-advent`, unit `llm-gateway.service` (`CPUWeight=30`, `MemoryMax=300M`
-— другие сервисы узла важнее), Caddy проксирует `/ai/*` с `flush_interval -1` (иначе SSE буферизуется).
+— другие сервисы узла важнее), Caddy проксирует `/ai/*` с `flush_interval -1` (иначе SSE
+буферизуется).
