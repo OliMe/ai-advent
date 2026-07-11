@@ -14,6 +14,11 @@ export interface ConversationConfig {
   /** Системный промпт (персона/инструкция); кладётся первым сообщением. */
   systemPrompt: string;
   temperature: number;
+  /**
+   * Модель этого диалога; не задана — берётся из конфигурации клиента. Позволяет роли
+   * (напр. этапу выполнения) идти на свою модель без отдельного клиента.
+   */
+  model?: string;
   /** Контекст модели агента — по нему история обрезается скользящим окном. */
   contextTokens: number;
   /** Таймаут запроса/простоя в мс. */
@@ -107,6 +112,7 @@ export class Conversation {
             idleTimeoutMs: this.config.requestTimeoutMs,
             disableThinking: this.config.disableThinking,
             temperature: this.config.temperature,
+            model: this.config.model,
             ...this.config.limits,
           },
           delta => {
@@ -119,6 +125,7 @@ export class Conversation {
           signal: AbortSignal.timeout(this.config.requestTimeoutMs),
           disableThinking: this.config.disableThinking,
           temperature: this.config.temperature,
+          model: this.config.model,
           ...this.config.limits,
         });
     this.messages.push({ role: 'assistant', content: result.content });
@@ -139,6 +146,7 @@ export class Conversation {
         signal: AbortSignal.timeout(this.config.requestTimeoutMs),
         disableThinking: this.config.disableThinking,
         temperature: this.config.temperature,
+        model: this.config.model,
         ...this.config.limits,
         tools: definitions,
       });

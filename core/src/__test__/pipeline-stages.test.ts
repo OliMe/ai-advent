@@ -203,6 +203,50 @@ describe('раннеры этапов', () => {
     assert.equal(seen.get('Ты — завершающий.'), false);
   });
 
+  it('executorModel уходит роли выполнения, остальные роли — на дефолтную модель', async t => {
+    const models = new Map<string, string | undefined>(); // персона → модель диалога
+    const make: StageContext['makeConversation'] = (
+      systemPrompt,
+      limits,
+      temperature,
+      tools,
+      model,
+    ) => {
+      const persona = systemPrompt.split(' ').slice(0, 3).join(' ');
+      if (!models.has(persona)) models.set(persona, model);
+      const client = clientWith(t, async () => ({
+        content: '{"steps":["s"],"criteria":["c"],"text":"п","passed":true,"summary":"и"}',
+        usage: undefined,
+      }));
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: temperature ?? 0.5,
+        model,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+    const run = createRun('Задача', { idSuffix: 'exec-model' });
+    const ctx: StageContext = {
+      run,
+      makeConversation: make,
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      executorModel: 'qwen2.5-coder:7b',
+    };
+
+    run.artifacts.planning = await runPlanning(ctx);
+    run.artifacts.execution = await runExecution(ctx);
+    run.artifacts.verification = await runVerification(ctx);
+    await runCompletion(ctx);
+
+    assert.equal(models.get('Ты — исполнитель.'), 'qwen2.5-coder:7b'); // роль выполнения → своя модель
+    assert.equal(models.get('Ты — планировщик.'), undefined); // остальные — дефолтная (фолбэк)
+    assert.equal(models.get('Ты — проверяющий.'), undefined);
+    assert.equal(models.get('Ты — завершающий.'), undefined);
+  });
+
   it('этапы идут на своих температурах: планирование 0.3, выполнение 0.2, проверка 0, завершение 0.2', async t => {
     const temps = new Map<string, number | undefined>(); // персона → температура
     const make: StageContext['makeConversation'] = (systemPrompt, limits, temperature) => {

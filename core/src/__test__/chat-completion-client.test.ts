@@ -60,6 +60,21 @@ describe('ChatCompletionClient.complete', () => {
     assert.deepEqual(body.response_format, { type: 'json_object' });
   });
 
+  it('model в опциях переопределяет модель клиента в теле запроса', async t => {
+    let capturedInit: RequestInit | undefined;
+    const client = clientWithFetch(t, async (_url, init) => {
+      capturedInit = init;
+      return completionResponse('ок');
+    });
+
+    await client.complete([{ role: 'user', content: 'hi' }], { model: 'qwen2.5-coder:7b' });
+    assert.equal(JSON.parse(String(capturedInit?.body)).model, 'qwen2.5-coder:7b');
+
+    // Без override — модель клиента (фолбэк через ??).
+    await client.complete([{ role: 'user', content: 'hi' }], {});
+    assert.equal(JSON.parse(String(capturedInit?.body)).model, 'test-model');
+  });
+
   it('инструменты: кладёт tools/tool_choice; пустой список не добавляется', async t => {
     const tools = [
       {

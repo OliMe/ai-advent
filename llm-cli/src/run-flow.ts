@@ -27,6 +27,7 @@ export type ConversationFactory = (
   limits?: GenerationLimits,
   temperature?: number,
   tools?: ToolSet,
+  model?: string,
 ) => Conversation;
 
 /** Максимум вопросов аналитика за один сбор требований (страховка от зацикливания). */
@@ -92,11 +93,13 @@ export function makeConversationFactory(
   onUsage?: (usage: Usage) => void,
   onToolCall?: (name: string, args: Record<string, unknown>) => void,
 ): ConversationFactory {
-  return (systemPrompt, limits, temperatureOverride, tools) =>
+  return (systemPrompt, limits, temperatureOverride, tools, model) =>
     new Conversation(client, {
       systemPrompt,
       // Этап может задать свою температуру (напр. проверяющий — низкую); иначе общая.
       temperature: temperatureOverride ?? temperature,
+      // Роль может уйти на свою модель (напр. execution → code-модель); не задана — модель клиента.
+      model,
       contextTokens: config.contextTokens,
       requestTimeoutMs: config.requestTimeoutMs,
       disableThinking,
@@ -154,6 +157,11 @@ export interface RunControllerDeps {
    * Не задан/false — прежний путь, безопасный для z.ai/GLM.
    */
   structuredOutputs?: boolean;
+  /**
+   * Модель роли выполнения (`LLM_EXECUTOR_MODEL`, напр. code-модель). Не задана — этап идёт
+   * на общую модель. Смена стоит переключения в Ollama, если модели не резидентны вместе.
+   */
+  executorModel?: string;
   /** Пишет результат этапа в транскрипт основной сессии (если задан). */
   recordToSession?: (role: 'user' | 'assistant', content: string) => void;
 }
@@ -411,6 +419,7 @@ export class RunController {
         teamConfig: this.deps.teamConfig,
         tools: this.deps.tools,
         structuredOutputs: this.deps.structuredOutputs,
+        executorModel: this.deps.executorModel,
         hooks: {
           // Печатаем решение оркестратора только когда подобрана команда (>1 роли).
           onTeam: (stage, team) => {

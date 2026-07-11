@@ -23,6 +23,7 @@ const ENV_KEYS = [
   'LLM_STAGE_AGENT_CONCURRENCY',
   'LLM_MAX_TOOL_ROUNDS',
   'LLM_STRUCTURED_OUTPUTS',
+  'LLM_EXECUTOR_MODEL',
 ];
 
 describe('loadConfig', () => {
@@ -122,6 +123,21 @@ describe('loadConfig', () => {
 
     process.env.LLM_STRUCTURED_OUTPUTS = '1';
     assert.equal(loadConfig().structuredOutputs, true);
+  });
+
+  it('executorModel: задаётся непустой LLM_EXECUTOR_MODEL, иначе не задан (фолбэк на LLM_MODEL)', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+
+    delete process.env.LLM_EXECUTOR_MODEL;
+    assert.equal(loadConfig().executorModel, undefined);
+
+    process.env.LLM_EXECUTOR_MODEL = '   '; // пробелы — как незаданный
+    assert.equal(loadConfig().executorModel, undefined);
+
+    process.env.LLM_EXECUTOR_MODEL = '  qwen2.5-coder:7b  '; // обрезаем пробелы
+    assert.equal(loadConfig().executorModel, 'qwen2.5-coder:7b');
   });
 
   it('откатывается к дефолтам команды агентов при невалидных значениях', () => {

@@ -44,6 +44,12 @@ export interface CompleteOptions extends GenerationLimits {
   temperature?: number;
   /** Инструменты, доступные модели в этом запросе (function-calling). */
   tools?: ToolDefinition[];
+  /**
+   * Модель для ЭТОГО запроса; не задана — берётся из конфигурации клиента. Позволяет
+   * разным ролям (напр. этапу выполнения) идти на свою локальную модель, не заводя
+   * отдельного клиента.
+   */
+  model?: string;
 }
 
 /** Сообщение об ответе, обрезанном по лимиту до появления видимого текста. */
@@ -209,7 +215,7 @@ export class ChatCompletionClient {
     stream: boolean,
   ): ChatCompletionRequest {
     const body: ChatCompletionRequest = {
-      model: this.config.model,
+      model: options.model ?? this.config.model,
       messages,
       temperature: options.temperature ?? this.config.temperature,
       stream,

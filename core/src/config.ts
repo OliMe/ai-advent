@@ -44,6 +44,12 @@ export interface AppConfig {
    * поэтому дефолтный путь остаётся прежним — JSON просим в промпте.
    */
   structuredOutputs: boolean;
+  /**
+   * Модель роли ВЫПОЛНЕНИЯ пайплайна (`LLM_EXECUTOR_MODEL`) — напр. специализированная
+   * code-модель. Не задана — этап выполнения идёт на общую `LLM_MODEL`, как остальные роли.
+   * Смена модели за роль стоит переключения в Ollama, если модели не помещаются в память вместе.
+   */
+  executorModel?: string;
 }
 
 const DEFAULT_TEMPERATURE = 0.7;
@@ -151,6 +157,10 @@ export function loadConfig(): AppConfig {
     maxToolRounds: positiveInteger(process.env.LLM_MAX_TOOL_ROUNDS, DEFAULT_MAX_TOOL_ROUNDS),
     // Тумблер constrained decoding: только явное «1» включает схемы этапов.
     structuredOutputs: process.env.LLM_STRUCTURED_OUTPUTS === '1',
+    // Модель роли выполнения; задаётся только непустой строкой, иначе не задаём (фолбэк на LLM_MODEL).
+    ...(process.env.LLM_EXECUTOR_MODEL?.trim()
+      ? { executorModel: process.env.LLM_EXECUTOR_MODEL.trim() }
+      : {}),
   };
 }
 

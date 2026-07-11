@@ -65,6 +65,7 @@ npm start             # см. README конкретного пакета
 | `LLM_STAGE_MAX_TOKENS` | Потолок генерации агентов пайплайна задач, токенов | дефолт провайдера |
 | `LLM_MAX_TOOL_ROUNDS` | Потолок раундов агентного цикла чата с MCP-инструментами (длинный кросс-серверный флоу) | `20` |
 | `LLM_STRUCTURED_OUTPUTS` | `1` — этапы пайплайна (планирование/проверка/завершение) генерируются по JSON-схеме (constrained decoding). Только для провайдеров, которые это умеют (Ollama). **Ломает z.ai/GLM** — потому не включается автоматически. Побочный эффект: планировщик перестаёт вызывать MCP-инструменты | выкл |
+| `LLM_EXECUTOR_MODEL` | Модель роли **выполнения** пайплайна (напр. `qwen2.5-coder:7b` — code-модель). Остальные роли идут на `LLM_MODEL`. Не задан → всё на `LLM_MODEL`. На локали смена модели за роль стоит переключения в Ollama, если модели не помещаются в память резидентно (`OLLAMA_MAX_LOADED_MODELS`) | = `LLM_MODEL` |
 | `LLM_EMBEDDINGS_URL` | Эндпоинт `/embeddings` для RAG (`core.EmbeddingsClient`); напр. Ollama `http://localhost:11434/v1/embeddings` | — |
 | `LLM_EMBEDDINGS_MODEL` | Модель эмбеддингов (напр. `nomic-embed-text`) | — |
 | `LLM_EMBEDDINGS_API_KEY` | Ключ для эмбеддингов (для Ollama не нужен) | — |

@@ -63,6 +63,7 @@ export interface PipelineDeps {
     limits?: GenerationLimits,
     temperature?: number,
     tools?: ToolSet,
+    model?: string,
   ) => Conversation;
   /** Кооперативная отмена/пауза: проверяется между этапами. */
   signal: AbortSignal;
@@ -86,6 +87,11 @@ export interface PipelineDeps {
    * (JSON в промпте + толерантный парсер), безопасный для z.ai/GLM.
    */
   structuredOutputs?: boolean;
+  /**
+   * Модель для роли выполнения (специализированная code-модель). Не задана — этап идёт на
+   * дефолтную модель, как остальные роли.
+   */
+  executorModel?: string;
 }
 
 /**
@@ -134,6 +140,7 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
     reportTeam: team => hooks.onTeam?.(run.stage, team),
     tools: deps.tools,
     structuredOutputs: deps.structuredOutputs,
+    executorModel: deps.executorModel,
     // Защищённая генерация решающих этапов: контролёр сверяет результат с инвариантами.
     enforce: produce =>
       enforceInvariants({

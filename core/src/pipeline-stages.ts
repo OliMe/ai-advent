@@ -21,12 +21,13 @@ import type { ToolSet } from './tool-set.ts';
 /** Контекст этапа: всё, что нужно раннеру для одного прогона этапа. */
 export interface StageContext {
   run: TaskRun;
-  /** Фабрика диалога для агента этапа (промпт, ограничения, температура, опц. инструменты). */
+  /** Фабрика диалога для агента этапа (промпт, ограничения, температура, опц. инструменты, опц. модель). */
   makeConversation: (
     systemPrompt: string,
     limits?: GenerationLimits,
     temperature?: number,
     tools?: ToolSet,
+    model?: string,
   ) => Conversation;
   /** Пишет файл-артефакт прогона; null — хранилище отключено (--ephemeral). */
   writeArtifact: (name: string, content: string) => string | null;
@@ -56,6 +57,12 @@ export interface StageContext {
    * тумблером пользователя, так как `response_format` ломает z.ai/GLM.
    */
   structuredOutputs?: boolean;
+  /**
+   * Модель для роли ВЫПОЛНЕНИЯ (напр. специализированная code-модель). Не задана — этап идёт
+   * на дефолтную модель клиента, как остальные роли. Смена модели за роль стоит переключения
+   * в Ollama, если модели не помещаются в память резидентно.
+   */
+  executorModel?: string;
 }
 
 /** Генерация с контролем инвариантов, если он задан; иначе — обычная. */
@@ -473,6 +480,7 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
     undefined,
     EXECUTOR_TEMPERATURE,
     ctx.tools,
+    ctx.executorModel,
   );
   // Шаги, а если их нет — план прозой (модель иногда кладёт план в text).
   const planBody = plan?.steps.length ? plan.steps.join('\n') : (plan?.text ?? '');

@@ -326,6 +326,8 @@ export async function runInteractive(
     tools: chatTools ?? undefined,
     // Constrained decoding этапов — только по явному тумблеру (ломает z.ai/GLM).
     structuredOutputs: config.structuredOutputs,
+    // Модель роли выполнения (LLM_EXECUTOR_MODEL); не задана — общая модель.
+    executorModel: config.executorModel,
     // Команда агентов на этап: потолок ролей и конкурентность веера из конфига.
     teamConfig: {
       maxAgents: config.maxStageAgents,
