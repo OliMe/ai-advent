@@ -70,6 +70,37 @@ describe('historyTokens / requestCostUsd / formatUsageStats', () => {
     assert.match(line, /\[сжатие · вход 7 · выход 5/);
   });
 
+  it('formatUsageStats: скорость ток/с при заданном времени ответа', () => {
+    // 60 токенов за 2000 мс = 30 ток/с.
+    const line = formatUsageStats(
+      { prompt_tokens: 10, completion_tokens: 60, total_tokens: 70 },
+      0,
+      makeConfig(),
+      undefined,
+      2000,
+    );
+    assert.match(line, /· 2\.0с · 30 ток\/с/);
+  });
+
+  it('formatUsageStats: скорость НЕ показывается без времени, при нулевом времени и без токенов выхода', () => {
+    const usage = { prompt_tokens: 10, completion_tokens: 60, total_tokens: 70 };
+    // время не задано
+    assert.doesNotMatch(formatUsageStats(usage, 0, makeConfig()), /ток\/с/);
+    // время нулевое
+    assert.doesNotMatch(formatUsageStats(usage, 0, makeConfig(), undefined, 0), /ток\/с/);
+    // нет токенов выхода — делить не на что показывать
+    assert.doesNotMatch(
+      formatUsageStats(
+        { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        0,
+        makeConfig(),
+        undefined,
+        1000,
+      ),
+      /ток\/с/,
+    );
+  });
+
   it('formatSessionTotals: суммарные токены без тарифов', () => {
     const line = formatSessionTotals(
       { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },

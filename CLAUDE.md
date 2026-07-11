@@ -98,6 +98,9 @@ npm --prefix llm-cli start             # запустить CLI (node src/cli.ts
   Держит транскрипт, на `ask(userInput, onDelta?)` шлёт окно истории и возвращает ответ;
   `onDelta` → стрим. На нём строятся интерактив, этапы пайплайна и будущие субагенты.
 - `tokens.ts` — оценка токенов, бюджет истории, обрезка скользящим окном, стоимость.
+  `formatUsageStats` печатает строку статистики под ответом; опц. `elapsedMs` добавляет
+  время и скорость генерации (ток/с) — для ручного сравнения квантов/параметров (см.
+  `docs/local-llm.md`). llm-cli замеряет время последнего прохода генерации в `produce`.
 - Сессии: `session.ts` (`Session`, `createSession`, `sessionId`) + `session-store.ts`
   (`FileSessionStore`, атомарная запись). Ветвление/переключение сессий.
 - Память (движок): `memory-strategy.ts` (короткая: window/summary/facts),

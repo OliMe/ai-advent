@@ -49,13 +49,16 @@ export function requestCostUsd(usage: Usage, config: AppConfig): number {
 /**
  * Строка статистики под ответом: токены входа/выхода запроса, размер истории
  * сессии и стоимость в $ и ₽. Если usage не пришёл — «н/д»; если тарифы не
- * заданы — подсказка задать LLM_PRICE_*.
+ * заданы — подсказка задать LLM_PRICE_*. Если задано время ответа (`elapsedMs`) и
+ * есть токены выхода — добавляет скорость генерации (секунды + токены/сек), чтобы
+ * скорость модели была видна пользователю (сравнение квантов/параметров вручную).
  */
 export function formatUsageStats(
   usage: Usage | undefined,
   historyTokenCount: number,
   config: AppConfig,
   label?: string,
+  elapsedMs?: number,
 ): string {
   const prefix = label ? `${label} · ` : '';
   if (usage === undefined) {
@@ -66,9 +69,17 @@ export function formatUsageStats(
   const cost = hasPricing
     ? ` · ≈ $${usd.toFixed(6)} / ${(usd * config.usdToRub).toFixed(4)} ₽`
     : ' · цена: задайте LLM_PRICE_INPUT_PER_1M / LLM_PRICE_OUTPUT_PER_1M';
+  // Скорость показываем только когда есть и время (>0), и токены выхода.
+  const speed =
+    elapsedMs !== undefined && elapsedMs > 0 && usage.completion_tokens > 0
+      ? ` · ${(elapsedMs / 1000).toFixed(1)}с · ${(
+          usage.completion_tokens /
+          (elapsedMs / 1000)
+        ).toFixed(0)} ток/с`
+      : '';
   return (
     `[${prefix}вход ${usage.prompt_tokens} · выход ${usage.completion_tokens} · ` +
-    `история ~${historyTokenCount}${cost}]`
+    `история ~${historyTokenCount}${speed}${cost}]`
   );
 }
 

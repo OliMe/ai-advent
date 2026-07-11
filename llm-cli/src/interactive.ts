@@ -995,8 +995,12 @@ export async function runInteractive(
       );
       try {
         let usage: Usage | undefined;
+        // Время последнего прохода генерации (для скорости ток/с в статистике). При
+        // перегенерации контролёром перезаписывается — так же как usage; показываем последний.
+        let responseMs: number | undefined;
         // Один ход генерации (с учётом feedback контролёра при перегенерации).
         const produce = async (feedback?: string): Promise<string> => {
+          const started = Date.now();
           const outgoing =
             feedback === undefined
               ? windowed
@@ -1129,6 +1133,7 @@ export async function runInteractive(
                   },
                 );
             usage = result.usage;
+            responseMs = Date.now() - started;
             // RAG-ход: слабый/пустой контекст → «не знаю»; иначе — гейт дословных цитат и источников
             // (перегенерация при провале, безопасный фолбэк). На не-RAG ходах ответ модели как есть.
             // RAG_FAITHFULNESS_CHECK=1 — опциональный рантайм-судья достоверности поверх локального гейта.
@@ -1197,6 +1202,7 @@ export async function runInteractive(
               () => output.write(`${ASSISTANT_LABEL}: `),
             );
             usage = result.usage;
+            responseMs = Date.now() - started;
             output.write('\n\n');
             return result.content;
           }
@@ -1209,6 +1215,7 @@ export async function runInteractive(
             temperature,
           );
           usage = result.usage;
+          responseMs = Date.now() - started;
           output.write(
             `\n${ASSISTANT_LABEL}: ${renderMarkdownForTerminal(result.content, isTty)}\n\n`,
           );
@@ -1228,9 +1235,9 @@ export async function runInteractive(
         // Сохраняем сессию после завершённого обмена (store=null при --ephemeral).
         currentSession.updatedAt = new Date().toISOString();
         store?.save(currentSession);
-        // Статистика по запросу и истории под ответом.
+        // Статистика по запросу и истории под ответом (+ скорость ток/с за последний проход).
         output.write(
-          `${formatUsageStats(usage, historyTokens(currentSession.messages), config)}\n\n`,
+          `${formatUsageStats(usage, historyTokens(currentSession.messages), config, undefined, responseMs)}\n\n`,
         );
         // Накапливаем итог за сессию (если провайдер прислал usage).
         if (usage !== undefined) {
