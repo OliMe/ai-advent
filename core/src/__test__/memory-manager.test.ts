@@ -581,6 +581,19 @@ describe('MemoryManager', () => {
     refused.declineProposal('Бот');
     await refused.prepare([sys, { role: 'user', content: 'x' }]);
     assert.equal(refused.takeProposal(), null); // отклонённое имя не предлагаем
+
+    // Идёт АКТИВНАЯ задача — предложение подавлено даже при другом имени (isNewTask ненадёжен).
+    const busy = makeManager(t, propose('Другая тема'));
+    busy.setTask('Текущая работа');
+    await busy.prepare([sys, { role: 'user', content: 'обычный вопрос по задаче' }]);
+    assert.equal(busy.takeProposal(), null);
+
+    // Задача закрыта (done → нет активной) — предложение снова работает.
+    const freed = makeManager(t, propose('Свежая'));
+    freed.setTask('Старая');
+    freed.closeTask();
+    await freed.prepare([sys, { role: 'user', content: 'давай свежую' }]);
+    assert.equal(freed.takeProposal(), 'Свежая');
   });
 
   it('setTask и reset снимают висящее предложение', async t => {

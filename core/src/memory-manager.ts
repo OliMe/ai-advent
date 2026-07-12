@@ -319,14 +319,18 @@ export class MemoryManager {
       return { taskUpdated: false, profileAdded: [], recall: false }; // невалидный JSON — пропускаем ход
     }
     // Авто-определение новой задачи: предлагаем, если уверены, тема отличается от
-    // текущей и пользователь раньше от такого имени не отказывался.
+    // текущей и пользователь раньше от такого имени не отказывался. НЕ предлагаем, пока идёт
+    // АКТИВНАЯ незавершённая задача: `isNewTask` — ненадёжный LLM-флаг (слабая модель метит им
+    // обычный знаниевый вопрос), и предложение на каждый вопрос по ходу задачи лишь мешает.
+    // Смену задачи пользователь делает явно (/task); нет задачи или она done — предложение работает.
     const proposedTitle =
       typeof parsed.proposedTitle === 'string' ? parsed.proposedTitle.trim() : '';
     if (
       parsed.isNewTask === true &&
       proposedTitle.length > 0 &&
       proposedTitle !== this.tasks.current()?.title &&
-      !this.declined.has(proposedTitle)
+      !this.declined.has(proposedTitle) &&
+      this.tasks.current()?.status !== 'active'
     ) {
       this.proposal = proposedTitle;
     }
