@@ -3,7 +3,7 @@
  * распаковка архива) — исключена из покрытия; вся логика фильтрации/обхода/разбора — в чистых
  * модулях local/web/github/resolve, которые сюда инжектируются.
  */
-import { readFileSync, readdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -17,9 +17,16 @@ import type { SourceLoaders } from './resolve.ts';
 /** Каталоги, которые при обходе пропускаем целиком. */
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.cache']);
 
-/** Реальный ввод-вывод локальной папки: рекурсивный обход (с пропуском мусорных каталогов). */
+/**
+ * Реальный ввод-вывод локального источника: рекурсивный обход папки (с пропуском мусорных каталогов)
+ * либо ОДИН файл, если источником указан файл. Файл-источник нужен, чтобы индексировать документацию
+ * точечно (`README.md`, `openapi.yaml`), не утаскивая в индекс весь код репозитория.
+ */
 export const nodeLocalIo: LocalIo = {
   listFiles(root: string): string[] {
+    if (statSync(root).isFile()) {
+      return [root];
+    }
     const files: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {

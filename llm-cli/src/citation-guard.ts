@@ -211,6 +211,12 @@ export function citationFeedback(reason: string): string {
  */
 export async function resolveRagAnswer(options: {
   ragResults: string[];
+  /**
+   * Доказательства помимо RAG — фрагменты КОДА, прочитанные инструментами (День 31). Код в индекс не
+   * кладётся, поэтому ответ о коде не мог бы сослаться ни на что и гейт валил бы его; здесь код
+   * становится таким же проверяемым доказательством, как фрагмент документации.
+   */
+  extraChunks?: SearchChunk[];
   initial: string;
   regenerate: (feedback: string) => Promise<string>;
   onFailure?: (reason: string, attempt: number) => void;
@@ -221,9 +227,12 @@ export async function resolveRagAnswer(options: {
   };
 }): Promise<string> {
   const parsed = options.ragResults.map(parseSearchResult);
-  const chunks = parsed.flatMap(result => result.chunks);
+  const extraChunks = options.extraChunks ?? [];
+  const chunks = [...parsed.flatMap(result => result.chunks), ...extraChunks];
   const allLow = parsed.length > 0 && parsed.every(result => result.lowConfidence);
-  if (chunks.length === 0 || allLow) {
+  // «Не знаю» — когда доказательств нет вовсе: ни фрагментов, ни кода. Слабый док-контекст сам по
+  // себе не повод молчать, если ответ опирается на прочитанный код (он добыт точечно, не ранжирован).
+  if (chunks.length === 0 || (allLow && extraChunks.length === 0)) {
     return RAG_DONT_KNOW;
   }
   const local = await enforceCitations({

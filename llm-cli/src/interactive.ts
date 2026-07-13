@@ -43,6 +43,13 @@ import {
   removeProjectRoot,
 } from './project.ts';
 import { resolveProjectRoot, realGitRunner } from './project-source.ts';
+import {
+  parseProjectQuestion,
+  answerProjectQuestion,
+  ASK_USAGE,
+  ASK_NO_PROJECT,
+  ASK_NO_TOOLS,
+} from './project-answer.ts';
 import { askModel, streamAnswer, completeWithTools } from './chat.ts';
 import { newSession, branchNameTaken, resolveBranch } from './session-flow.ts';
 import { makeConversationFactory, RunController } from './run-flow.ts';
@@ -622,6 +629,8 @@ export async function runInteractive(
         output.write('Системный промпт обновлён.\n\n');
       },
     },
+    // Вопрос о проекте без вопроса — подсказка (сам «/ask <вопрос>» разбирается до реестра).
+    { matches: input => input === '/ask', run: () => output.write(ASK_USAGE) },
     // Рабочее пространство проектов (День 31). Порядок: точные раньше префиксных.
     {
       matches: input => input === '/project off',
@@ -1028,7 +1037,15 @@ export async function runInteractive(
       }
       if (!userInput) continue;
       if (userInput === '/exit' || userInput === '/quit') break;
-      const command = commands.find(entry => entry.matches(userInput));
+      // Вопрос о проекте (`/ask <вопрос>`, День 31): разбираем ДО реестра команд и дальше ведём как
+      // обычную реплику — так ход переиспользует общий путь (память, инварианты, статистика), а не
+      // дублирует его внутри команды. Отличается только способом получить ответ (см. askProject).
+      const projectQuestion = parseProjectQuestion(userInput);
+      const askProject = projectQuestion !== null;
+      if (projectQuestion !== null) {
+        userInput = projectQuestion;
+      }
+      const command = askProject ? undefined : commands.find(entry => entry.matches(userInput));
       if (command !== undefined) {
         await command.run(userInput);
         continue;
@@ -1111,6 +1128,43 @@ export async function runInteractive(
             feedback === undefined
               ? windowed
               : [...windowed, { role: 'user' as const, content: feedback }];
+          // Ход `/ask` (День 31): ассистент разработчика отвечает по документации проектов (форс-поиск)
+          // и по КОДУ, который читает инструментами git; ответ проходит цитатный гейт, где код —
+          // такое же доказательство, как фрагмент документации. Инструментов нет — отвечать нечем.
+          if (askProject) {
+            if (chatTools === null) {
+              output.write(`\n${ASK_NO_TOOLS}`);
+              return ASK_NO_TOOLS;
+            }
+            const projects = workspace();
+            if (projects.length === 0) {
+              output.write(`\n${ASK_NO_PROJECT}`);
+              return ASK_NO_PROJECT;
+            }
+            output.write('\n');
+            const answer = await answerProjectQuestion({
+              client,
+              history: outgoing,
+              question: userInput,
+              projects,
+              tools: chatTools,
+              limits,
+              requestTimeoutMs: config.requestTimeoutMs,
+              disableThinking,
+              temperature: ragAnswerTemperature,
+              onToolCall: reportToolCall,
+              onToolResult: reportToolResult,
+              onCitationFailure: (reason, attempt) =>
+                output.write(`⚠ Цитаты не подтвердились (попытка ${attempt}): ${reason}\n`),
+            });
+            usage = answer.usage;
+            responseMs = Date.now() - started;
+            output.write(formatToolTrace(answer.calledTools));
+            output.write(
+              `${ASSISTANT_LABEL}: ${renderMarkdownForTerminal(answer.content, isTty)}\n\n`,
+            );
+            return answer.content;
+          }
           // С подключённым MCP чат идёт агентным циклом (без стрима): доступны инструменты
           // MCP и клиентский get_my_location (набор непуст всегда, когда MCP включён).
           if (chatTools !== null) {
