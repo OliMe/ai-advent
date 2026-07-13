@@ -7,6 +7,19 @@ export { SESSION_VERSION, sessionId, createSession, sessionPreview, summarize } 
 export type { Session, SessionSummary } from './session.ts';
 export { FileSessionStore } from './session-store.ts';
 export type { SessionStore } from './session-store.ts';
+// Проект как сущность (День 31): корень репозитория, его документация и команды.
+export {
+  nodeProjectIo,
+  detectProjectRoot,
+  discoverDocSources,
+  detectPackageManager,
+  detectProjectCommands,
+  detectOrigin,
+  loadProjectContext,
+  formatProjectContext,
+  formatWorkspace,
+} from './project-context.ts';
+export type { ProjectIo, ProjectContext, ProjectCommands } from './project-context.ts';
 export {
   PROFILE_VERSION,
   DEFAULT_PROFILE_NAME,

@@ -106,6 +106,8 @@ describe('helpText / formatSessionList / newSession', () => {
     assert.match(text, /\/mcp reload/);
     assert.match(text, /\/rag /); // grounded-режим документирован
     assert.match(text, /\/rag off/);
+    assert.match(text, /\/project add/); // рабочее пространство проектов документировано
+    assert.match(text, /\/project remove/);
   });
 
   it('formatSessionList: пусто, с именем ветки и с пустым превью', () => {

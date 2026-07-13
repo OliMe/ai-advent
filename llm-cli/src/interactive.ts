@@ -31,6 +31,18 @@ import type {
   MemoryKind,
   MemoryWriteReport,
 } from '../../core/src/index.ts';
+import { existsSync } from 'node:fs';
+import { nodeProjectIo, loadProjectContext } from '../../core/src/index.ts';
+import type { ProjectContext } from '../../core/src/index.ts';
+import {
+  resolveWorkspace,
+  docSourcesOverride,
+  fetchGitBranch,
+  formatProjectCard,
+  formatProjectList,
+  removeProjectRoot,
+} from './project.ts';
+import { resolveProjectRoot, realGitRunner } from './project-source.ts';
 import { askModel, streamAnswer, completeWithTools } from './chat.ts';
 import { newSession, branchNameTaken, resolveBranch } from './session-flow.ts';
 import { makeConversationFactory, RunController } from './run-flow.ts';
@@ -352,6 +364,72 @@ export async function runInteractive(
     }
   };
 
+  // Рабочее пространство проектов (День 31): привязанные проекты сессии, иначе автодетект по cwd.
+  // Пересчитывается на каждом обращении — привязка могла измениться командой /project.
+  const projectDocs = docSourcesOverride(process.env.LLM_PROJECT_DOCS);
+  const workspace = (): ProjectContext[] =>
+    resolveWorkspace(currentSession, process.cwd(), nodeProjectIo, projectDocs);
+  // Ветки проектов через git-mcp; сервера нет или он упал — null (ветку не выдумываем).
+  const projectBranches = async (projects: ProjectContext[]): Promise<(string | null)[]> => {
+    const branches: (string | null)[] = [];
+    for (const project of projects) {
+      if (chatTools === null) {
+        branches.push(null);
+        continue;
+      }
+      try {
+        branches.push(await fetchGitBranch(chatTools, project.root));
+      } catch {
+        branches.push(null); // сбой git-сервера не должен ронять команду
+      }
+    }
+    return branches;
+  };
+  // Служебная строка (ход привязки проекта, автодетект) — отдельной строкой, без пустой снизу.
+  const note = (message: string): void => {
+    output.write(`${message}\n`);
+  };
+  const listProjects = async (): Promise<void> => {
+    const projects = workspace();
+    output.write(formatProjectList(projects, await projectBranches(projects)));
+  };
+  const addProject = async (source: string): Promise<void> => {
+    let root: string;
+    try {
+      // Локальный путь берётся как есть, git-URL клонируется в кэш (повторная привязка — fetch).
+      root = resolveProjectRoot(source, {
+        runner: realGitRunner,
+        exists: existsSync,
+        onProgress: note,
+      });
+    } catch (error) {
+      output.write(`${describeError(error)}\n\n`);
+      return;
+    }
+    const project = loadProjectContext(root, nodeProjectIo, projectDocs);
+    if (project === null) {
+      output.write(`Не git-репозиторий: ${root}\n\n`);
+      return;
+    }
+    const roots = currentSession.projects ?? [];
+    if (!roots.includes(root)) {
+      currentSession.projects = [...roots, root];
+      store?.save(currentSession);
+    }
+    const branches = await projectBranches([project]);
+    output.write(`Проект привязан.\n\n${formatProjectCard(project, branches[0])}\n\n`);
+  };
+  const removeProject = (nameOrPath: string): void => {
+    const remaining = removeProjectRoot(currentSession.projects ?? [], nameOrPath);
+    if (remaining === null) {
+      output.write(`Проект не привязан: ${nameOrPath}\n\n`);
+      return;
+    }
+    currentSession.projects = remaining.length === 0 ? undefined : remaining;
+    store?.save(currentSession);
+    output.write(`Проект отвязан: ${nameOrPath}\n\n`);
+  };
+
   // Команды управления MCP-серверами (доступны только при включённом MCP).
   const listMcp = (): void => {
     if (mcp === null) {
@@ -543,6 +621,25 @@ export async function runInteractive(
         store?.save(currentSession);
         output.write('Системный промпт обновлён.\n\n');
       },
+    },
+    // Рабочее пространство проектов (День 31). Порядок: точные раньше префиксных.
+    {
+      matches: input => input === '/project off',
+      run: () => {
+        currentSession.projects = undefined;
+        store?.save(currentSession);
+        output.write('Проекты отвязаны (остаётся автодетект по текущему каталогу).\n\n');
+      },
+    },
+    { matches: input => input === '/project' || input === '/projects', run: () => listProjects() },
+    {
+      matches: input => input.startsWith('/project add '),
+      // Ввод обрезан, поэтому после «/project add » гарантированно есть непустой источник.
+      run: input => addProject(input.slice('/project add '.length).trim()),
+    },
+    {
+      matches: input => input.startsWith('/project remove '),
+      run: input => removeProject(input.slice('/project remove '.length).trim()),
     },
     // Grounded-режим RAG (День 25): привязать источники / показать / выключить. Порядок важен —
     // точные «/rag off» и «/rag» раньше префиксного «/rag ».
@@ -903,6 +1000,14 @@ export async function runInteractive(
   if (mcp !== null) {
     for (const [name, serverConfig] of mcp.store.load()) {
       await connectMcpServer(name, serverConfig);
+    }
+  }
+  // Автодетект проекта: если к сессии ничего не привязано, но CLI запущен внутри репозитория —
+  // работаем с ним (сообщаем явно, чтобы «понимание проекта» не было молчаливым допущением).
+  if ((currentSession.projects ?? []).length === 0) {
+    const detected = workspace();
+    if (detected.length > 0) {
+      note(`📁 Проект (по текущему каталогу): ${detected[0].name} — ${detected[0].root}`);
     }
   }
 
