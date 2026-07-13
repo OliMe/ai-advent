@@ -127,7 +127,10 @@ describe('detectProjectCommands', () => {
 
   it('нет package.json или он битый — команд нет', () => {
     assert.deepEqual(detectProjectCommands('/repo', fakeIo({})), {});
-    assert.deepEqual(detectProjectCommands('/repo', fakeIo({ '/repo/package.json': '{битый' })), {});
+    assert.deepEqual(
+      detectProjectCommands('/repo', fakeIo({ '/repo/package.json': '{битый' })),
+      {},
+    );
   });
 
   it('манифест без scripts (в том числе scripts: null)', () => {

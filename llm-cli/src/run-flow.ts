@@ -162,6 +162,13 @@ export interface RunControllerDeps {
    * на общую модель. Смена стоит переключения в Ollama, если модели не резидентны вместе.
    */
   executorModel?: string;
+  /**
+   * Карточки привязанных проектов (День 31) — контекст всех агентов этапов. Не задан — пайплайн
+   * работает как прежде (без проекта).
+   */
+  projectContext?: () => string;
+  /** Поиск по документации проектов — подключается адресно (планирование, проверка). */
+  retrieveProjectDocs?: (query: string) => Promise<string[]>;
   /** Пишет результат этапа в транскрипт основной сессии (если задан). */
   recordToSession?: (role: 'user' | 'assistant', content: string) => void;
 }
@@ -420,6 +427,8 @@ export class RunController {
         tools: this.deps.tools,
         structuredOutputs: this.deps.structuredOutputs,
         executorModel: this.deps.executorModel,
+        projectContext: this.deps.projectContext,
+        retrieveProjectDocs: this.deps.retrieveProjectDocs,
         hooks: {
           // Печатаем решение оркестратора только когда подобрана команда (>1 роли).
           onTeam: (stage, team) => {

@@ -32,10 +32,11 @@ import type {
   MemoryWriteReport,
 } from '../../core/src/index.ts';
 import { existsSync } from 'node:fs';
-import { nodeProjectIo, loadProjectContext } from '../../core/src/index.ts';
+import { nodeProjectIo, loadProjectContext, formatWorkspace } from '../../core/src/index.ts';
 import type { ProjectContext } from '../../core/src/index.ts';
 import {
   resolveWorkspace,
+  workspaceDocSources,
   docSourcesOverride,
   fetchGitBranch,
   formatProjectCard,
@@ -348,6 +349,23 @@ export async function runInteractive(
     structuredOutputs: config.structuredOutputs,
     // Модель роли выполнения (LLM_EXECUTOR_MODEL); не задана — общая модель.
     executorModel: config.executorModel,
+    // Проекты (День 31): карточки — контекст ВСЕХ агентов этапов (план и результат должны быть про
+    // конкретный репозиторий); документация — адресно, только на планировании и проверке (там она
+    // меняет результат). Провайдеры ленивые: привязка проекта могла измениться между прогонами.
+    projectContext: () => formatWorkspace(workspace()),
+    retrieveProjectDocs:
+      chatTools === null
+        ? undefined
+        : query =>
+            forcedRagSearch(
+              chatTools,
+              workspaceDocSources(workspace()),
+              query,
+              (name, args, result) => {
+                reportToolCall(name, args);
+                reportToolResult(name, result);
+              },
+            ),
     // Команда агентов на этап: потолок ролей и конкурентность веера из конфига.
     teamConfig: {
       maxAgents: config.maxStageAgents,

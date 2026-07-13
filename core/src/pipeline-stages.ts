@@ -63,6 +63,18 @@ export interface StageContext {
    * в Ollama, если модели не помещаются в память резидентно.
    */
   executorModel?: string;
+  /**
+   * Карточки привязанных проектов (День 31): корень, ветка, документация, команды тестов/сборки.
+   * Идут в контекст ВСЕХ агентов этапов — дёшево и меняет качество: план и результат должны быть
+   * про КОНКРЕТНЫЙ репозиторий, а не «в воздухе». Не задан — прежнее поведение.
+   */
+  projectContext?: () => string;
+  /**
+   * Поиск по документации проектов (RAG). Подключается АДРЕСНО — только там, где меняет результат
+   * (планирование, проверка): каждый вызов стоит запросов, а на выполнении/завершении добор данных
+   * ничего не решает. Не задан — этапы работают как прежде.
+   */
+  retrieveProjectDocs?: (query: string) => Promise<string[]>;
 }
 
 /** Генерация с контролем инвариантов, если он задан; иначе — обычная. */
@@ -338,6 +350,26 @@ function memoryPrefix(ctx: StageContext): string {
   return context ? `${context}\n\n` : '';
 }
 
+/** Карточки проектов для агента этапа (или пусто, если проект не привязан). */
+function projectPrefix(ctx: StageContext): string {
+  const context = ctx.projectContext?.() ?? '';
+  return context ? `${context}\n\n` : '';
+}
+
+/**
+ * Фрагменты документации проекта по запросу — для этапов, где они меняют результат. Пусто, если
+ * поиск не подключён (проекта нет / нет rag-сервера) или ничего не нашлось: выдумывать нельзя.
+ */
+async function projectDocs(ctx: StageContext, query: string): Promise<string> {
+  if (ctx.retrieveProjectDocs === undefined) {
+    return '';
+  }
+  const fragments = await ctx.retrieveProjectDocs(query);
+  return fragments.length === 0
+    ? ''
+    : `\n\nДокументация проекта по теме задачи (опирайся на неё, это правда о проекте):\n${fragments.join('\n\n')}`;
+}
+
 /** Безопасное имя файла из роли (не-буквы/цифры → дефис). */
 function fileSlug(text: string): string {
   return text
@@ -360,11 +392,14 @@ function requirementsBlock(ctx: StageContext): string {
 }
 
 /** Базовое задание планировщику: задача с памятью, требованиями и (опц.) правкой пользователя. */
-function planningBrief(ctx: StageContext): string {
+function planningBrief(ctx: StageContext, docs: string): string {
   const correction = ctx.run.correction
     ? `\n\nУчти правку пользователя: ${ctx.run.correction}`
     : '';
-  return `${memoryPrefix(ctx)}Задача: ${ctx.run.title}${requirementsBlock(ctx)}${correction}`;
+  return (
+    `${projectPrefix(ctx)}${memoryPrefix(ctx)}Задача: ${ctx.run.title}` +
+    `${requirementsBlock(ctx)}${docs}${correction}`
+  );
 }
 
 /**
@@ -400,7 +435,7 @@ async function planFromConversation(
 }
 
 /** Одиночное планирование: один планировщик (исходный режим). */
-function planSolo(ctx: StageContext): Promise<PlanningArtifact> {
+function planSolo(ctx: StageContext, docs: string): Promise<PlanningArtifact> {
   return planFromConversation(
     ctx,
     ctx.makeConversation(
@@ -409,7 +444,7 @@ function planSolo(ctx: StageContext): Promise<PlanningArtifact> {
       PLANNER_TEMPERATURE,
       ctx.tools,
     ),
-    planningBrief(ctx),
+    planningBrief(ctx, docs),
   );
 }
 
@@ -417,8 +452,12 @@ function planSolo(ctx: StageContext): Promise<PlanningArtifact> {
  * Командное планирование: роль-эксперты дают предложения (ограниченно-параллельно),
  * синтезатор сводит их в единый план. Все эксперты упали → откат к одиночному режиму.
  */
-async function planWithTeam(ctx: StageContext, team: TeamPlan): Promise<PlanningArtifact> {
-  const brief = planningBrief(ctx);
+async function planWithTeam(
+  ctx: StageContext,
+  team: TeamPlan,
+  docs: string,
+): Promise<PlanningArtifact> {
+  const brief = planningBrief(ctx, docs);
   const contributions = await runRoleExperts({
     roles: team.roles,
     makeConversation: ctx.makeConversation,
@@ -427,7 +466,7 @@ async function planWithTeam(ctx: StageContext, team: TeamPlan): Promise<Planning
     concurrency: ctx.stageAgentConcurrency ?? 1,
   });
   if (contributions.length === 0) {
-    return planSolo(ctx);
+    return planSolo(ctx, docs);
   }
   // Вклады экспертов — файлами-артефактами (наблюдаемость) и в задание синтезатора.
   contributions.forEach((contribution, index) =>
@@ -458,6 +497,9 @@ async function planWithTeam(ctx: StageContext, team: TeamPlan): Promise<Planning
  * команда ролей → эксперты + синтез в единый план. Память+правка идут в обе ветки.
  */
 export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> {
+  // Документация проекта — на планировании она решает: план должен быть в терминах реальной
+  // структуры и соглашений репозитория, а не абстрактным. Добывается один раз на этап.
+  const docs = await projectDocs(ctx, ctx.run.title);
   const team = await orchestrateTeam({
     makeConversation: ctx.makeConversation,
     task: ctx.run.title,
@@ -466,7 +508,7 @@ export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> 
     maxAgents: ctx.maxStageAgents ?? 1,
   });
   ctx.reportTeam?.(team);
-  return team.roles.length <= 1 ? planSolo(ctx) : planWithTeam(ctx, team);
+  return team.roles.length <= 1 ? planSolo(ctx, docs) : planWithTeam(ctx, team, docs);
 }
 
 /** Выполнение: план (+проблемы проверки/правка) → результат; крупный текст в файл. */
@@ -496,8 +538,8 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
         (ctx.run.correction ? `\n\nПравка пользователя: ${ctx.run.correction}` : '')
       : '';
   const prompt =
-    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}${requirementsBlock(ctx)}\n\nПлан:\n${planBody}\n\n` +
-    `Критерии приёмки:\n${(plan?.criteria ?? []).join('\n')}${revision}`;
+    `${projectPrefix(ctx)}${memoryPrefix(ctx)}Задача: ${ctx.run.title}${requirementsBlock(ctx)}` +
+    `\n\nПлан:\n${planBody}\n\nКритерии приёмки:\n${(plan?.criteria ?? []).join('\n')}${revision}`;
   const text = await guarded(ctx, feedback =>
     conversation.ask(feedback ?? prompt).then(result => result.content),
   );
@@ -536,8 +578,11 @@ export async function runVerification(ctx: StageContext): Promise<VerificationAr
     structuredLimits(ctx.structuredOutputs, VERIFICATION_SCHEMA),
     VERIFIER_TEMPERATURE,
   );
+  // Документация проекта и на проверке решает: результат сверяется с соглашениями проекта,
+  // а не только с критериями плана.
+  const docs = await projectDocs(ctx, ctx.run.title);
   const result = await conversation.ask(
-    `${memoryPrefix(ctx)}Задача: ${ctx.run.title}\n\n${basis}\n\n` +
+    `${projectPrefix(ctx)}${memoryPrefix(ctx)}Задача: ${ctx.run.title}${docs}\n\n${basis}\n\n` +
       // Берём полный результат; если его нет — краткое резюме (хрупкость поля).
       `Результат на проверку:\n${execution?.text || execution?.summary || ''}`,
   );
@@ -553,7 +598,7 @@ export async function runCompletion(ctx: StageContext): Promise<CompletionArtifa
     COMPLETER_TEMPERATURE,
   );
   const prompt =
-    `Задача: ${ctx.run.title}\n\nПлан:\n${planning?.text ?? ''}\n\n` +
+    `${projectPrefix(ctx)}Задача: ${ctx.run.title}\n\nПлан:\n${planning?.text ?? ''}\n\n` +
     `Результат:\n${execution?.summary ?? ''}\n\nПроверка: ${verification?.passed ? 'пройдена' : 'с замечаниями'}`;
   const text = await guarded(ctx, feedback =>
     conversation.ask(feedback ?? prompt).then(result => result.content),

@@ -902,3 +902,86 @@ describe('parseExecution: детерминированный ремонт обё
     assert.equal(artifact.text, 'function f() {}\nвторая строка');
   });
 });
+
+describe('контекст проекта в этапах (День 31)', () => {
+  /** Прогон всех этапов с записью промптов каждого агента. */
+  async function runAllStages(options: {
+    t: TestContext;
+    projectContext?: () => string;
+    retrieveProjectDocs?: (query: string) => Promise<string[]>;
+  }): Promise<{ prompts: string[]; queries: string[] }> {
+    const prompts: string[] = [];
+    const queries: string[] = [];
+    const run = createRun('Добавить эндпоинт /orders');
+    const ctx: StageContext = {
+      run,
+      makeConversation: makeConv(
+        options.t,
+        '{"steps":["шаг"],"criteria":["критерий"],"text":"план","passed":true,"issues":[],"summary":"итог"}',
+        prompt => prompts.push(prompt),
+      ),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      ...(options.projectContext === undefined ? {} : { projectContext: options.projectContext }),
+      ...(options.retrieveProjectDocs === undefined
+        ? {}
+        : {
+            retrieveProjectDocs: async (query: string) => {
+              queries.push(query);
+              return options.retrieveProjectDocs!(query);
+            },
+          }),
+    };
+
+    run.artifacts.planning = await runPlanning(ctx);
+    run.artifacts.execution = await runExecution(ctx);
+    run.artifacts.verification = await runVerification(ctx);
+    await runCompletion(ctx);
+    return { prompts, queries };
+  }
+
+  it('карточка проекта уходит ВСЕМ этапам — работаем в конкретном репозитории, а не в воздухе', async t => {
+    const { prompts } = await runAllStages({
+      t,
+      projectContext: () =>
+        'Проект «shop-api»\n- корень: /work/shop-api\n- команды: тесты: `npm test`',
+    });
+
+    assert.ok(prompts.length >= 4);
+    for (const prompt of prompts) {
+      assert.match(prompt, /Проект «shop-api»/);
+    }
+  });
+
+  it('документация проекта — адресно: планирование и проверка, но не выполнение и завершение', async t => {
+    const { prompts, queries } = await runAllStages({
+      t,
+      retrieveProjectDocs: async () => [
+        '[1] README.md#1 · docs › README (0.9)\nЭндпоинты — в src/routes.',
+      ],
+    });
+
+    // Запрос строится по цели задачи; поиск идёт ровно дважды — планирование и проверка.
+    assert.deepEqual(queries, ['Добавить эндпоинт /orders', 'Добавить эндпоинт /orders']);
+    const withDocs = prompts.filter(prompt => prompt.includes('Эндпоинты — в src/routes.'));
+    assert.equal(withDocs.length, 2);
+  });
+
+  it('без проекта поведение прежнее — ни карточки, ни поиска (регресса нет)', async t => {
+    const { prompts, queries } = await runAllStages({ t });
+
+    assert.deepEqual(queries, []);
+    for (const prompt of prompts) {
+      assert.doesNotMatch(prompt, /Проект «/);
+      assert.doesNotMatch(prompt, /Документация проекта/);
+    }
+  });
+
+  it('поиск ничего не нашёл — блок документации не добавляется (выдумывать нечего)', async t => {
+    const { prompts } = await runAllStages({ t, retrieveProjectDocs: async () => [] });
+
+    for (const prompt of prompts) {
+      assert.doesNotMatch(prompt, /Документация проекта/);
+    }
+  });
+});

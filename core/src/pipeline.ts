@@ -80,6 +80,13 @@ export interface PipelineDeps {
    * многоагентность выключена (однопроходный режим, оркестратор не вызывается).
    */
   teamConfig?: { maxAgents: number; concurrency: number };
+  /**
+   * Карточки привязанных проектов (День 31) — контекст всех агентов этапов. Не задан — прежнее
+   * поведение (пайплайн «в воздухе»).
+   */
+  projectContext?: () => string;
+  /** Поиск по документации проектов (RAG) — подключается адресно (планирование, проверка). */
+  retrieveProjectDocs?: (query: string) => Promise<string[]>;
   /** Инструменты (function-calling) для решающих агентов планирования/выполнения. */
   tools?: ToolSet;
   /**
@@ -141,6 +148,8 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
     tools: deps.tools,
     structuredOutputs: deps.structuredOutputs,
     executorModel: deps.executorModel,
+    projectContext: deps.projectContext,
+    retrieveProjectDocs: deps.retrieveProjectDocs,
     // Защищённая генерация решающих этапов: контролёр сверяет результат с инвариантами.
     enforce: produce =>
       enforceInvariants({

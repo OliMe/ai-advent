@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { clientWithStream, driveInteractive, fakeStore, makeSession } from './helpers.ts';
+import {
+  clientWithStream,
+  taskRunClient,
+  driveInteractive,
+  fakeStore,
+  makeSession,
+} from './helpers.ts';
 import { makeConfig } from '../../../core/src/__test__/helpers.ts';
 import { McpToolSet } from '../../../mcp-client/src/index.ts';
 import type { ConnectFn, McpServerConfig } from '../../../mcp-client/src/index.ts';
@@ -236,5 +242,54 @@ describe('/project', () => {
     // cwd тестов — пакет llm-cli внутри репозитория ai-advent: он и определяется как проект.
     assert.match(text(), /📁 Проект \(по текущему каталогу\): ai-advent/);
     assert.match(text(), /Проекты \(1\)/);
+  });
+});
+
+describe('проект в пайплайне (/run)', () => {
+  it('планирование и проверка ищут в документации проекта, а карточка идёт всем этапам', async t => {
+    const searched: string[] = [];
+    const prompts: string[] = [];
+    const client = taskRunClient(t);
+    // Перехватываем промпты этапов: карточка проекта должна быть в контексте каждого агента.
+    const original = client.completeWithUsage.bind(client);
+    t.mock.method(client, 'completeWithUsage', async (messages: Parameters<typeof original>[0]) => {
+      prompts.push(messages.map(message => message.content).join('\n'));
+      return original(messages);
+    });
+
+    const ragServer: ConnectFn = async name => ({
+      name,
+      tools: () => [{ name: 'search_docs', description: 'поиск', parameters: { type: 'object' } }],
+      call: async (_tool: string, args: Record<string, unknown>) => {
+        searched.push(String(args.query));
+        return '[1] README.md#1 · docs › README › Обзор (0.9)\nПроект собирается через npm test.';
+      },
+      close: async () => {},
+    });
+
+    const session = makeSession();
+    session.projects = [projectRoot];
+    const { finished } = driveInteractive(
+      client,
+      ['/run Добавить функцию суммы', 'да', 'да', '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+      'window',
+      6,
+      undefined,
+      { toolSet: new McpToolSet(ragServer), store: memoryStore(new Map([['rag', STDIO]])) },
+    );
+    await finished;
+
+    // Поиск по докам проекта — ровно на тех этапах, где он решает (планирование и проверка),
+    // по КАЖДОМУ источнику документации проекта (README.md + docs) → 2 этапа × 2 источника.
+    assert.equal(searched.length, 4);
+    assert.ok(searched.every(query => query === 'Добавить функцию суммы'));
+    // Карточка проекта — в контексте агентов этапов (имя временного проекта в промптах).
+    const projectName = projectRoot.split('/').at(-1) as string;
+    assert.ok(prompts.some(prompt => prompt.includes(`Проект «${projectName}»`)));
   });
 });
