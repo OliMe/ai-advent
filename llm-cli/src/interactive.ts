@@ -44,6 +44,7 @@ import {
   removeProjectRoot,
 } from './project.ts';
 import { resolveProjectRoot, realGitRunner } from './project-source.ts';
+import { findGitServerName, allowRepositoryInGitServer } from './git-allowlist.ts';
 import {
   parseProjectQuestion,
   answerProjectQuestion,
@@ -414,6 +415,37 @@ export async function runInteractive(
   const note = (message: string): void => {
     output.write(`${message}\n`);
   };
+  /**
+   * Разрешает привязанный репозиторий в git-сервере и переподключает его. Привязка проекта
+   * пользователем И ЕСТЬ разрешение: иначе на КАЖДЫЙ вызов инструмента (за `/ask` их 5–8) сервер
+   * спрашивал бы подтверждение. Чужой (не привязанный) репозиторий по-прежнему требует «да».
+   */
+  const allowProjectInGitServer = async (root: string): Promise<void> => {
+    if (mcp === null || chatTools === null) {
+      return;
+    }
+    const serverName = findGitServerName(chatTools.specs().map(spec => spec.name));
+    if (serverName === null) {
+      return; // git-сервер не подключён — разрешать нечего
+    }
+    const result = allowRepositoryInGitServer(mcp.store, serverName, root);
+    if (result.kind === 'unavailable') {
+      note(
+        `⚠ Репозиторий не добавлен в allow-list: ${result.reason} — операции спросят подтверждение.`,
+      );
+      return;
+    }
+    if (result.kind === 'already') {
+      return;
+    }
+    try {
+      await mcp.toolSet.removeServer(serverName);
+      await mcp.toolSet.addServer(serverName, result.config);
+      note(`🔌 git-сервер «${serverName}»: репозиторий разрешён, сервер переподключён.`);
+    } catch (error) {
+      note(`⚠ git-сервер «${serverName}» не переподключился: ${describeError(error)}`);
+    }
+  };
   const listProjects = async (): Promise<void> => {
     const projects = workspace();
     output.write(formatProjectList(projects, await projectBranches(projects)));
@@ -441,6 +473,8 @@ export async function runInteractive(
       currentSession.projects = [...roots, root];
       store?.save(currentSession);
     }
+    // Разрешаем репозиторий git-серверу ДО первого обращения к нему (иначе он спросит подтверждение).
+    await allowProjectInGitServer(root);
     const branches = await projectBranches([project]);
     output.write(`Проект привязан.\n\n${formatProjectCard(project, branches[0])}\n\n`);
   };
@@ -1193,6 +1227,13 @@ export async function runInteractive(
               { role: 'system' as const, content: currentTimeContext(new Date()) },
               { role: 'system' as const, content: TOOL_HONESTY_DIRECTIVE },
             ];
+            // Карточки привязанных проектов: без них модель не знает КОРНЕЙ и подставляет в git-
+            // инструменты имя проекта вместо пути («ai-advent» вместо /Users/…/ai-advent) — а оно
+            // резолвится от чужого репозитория, и ответ выходит «это не git-репозиторий».
+            const workspaceCard = formatWorkspace(workspace());
+            if (workspaceCard !== '') {
+              leading.push({ role: 'system' as const, content: workspaceCard });
+            }
             const directive = recognizeTextDirective(chatTools.specs());
             if (directive !== null) {
               leading.push({ role: 'system' as const, content: directive });

@@ -179,6 +179,166 @@ describe('/project', () => {
     }
   });
 
+  it('привязка проекта разрешает репозиторий git-серверу (без подтверждений на каждый вызов)', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    const store = memoryStore(
+      new Map([
+        ['git', { transport: 'stdio', command: 'node', args: ['/cli.ts'] } as McpServerConfig],
+      ]),
+    );
+    const mcp = {
+      toolSet: new McpToolSet(gitServer(() => 'Репозиторий: /x\nВетка: main')),
+      store,
+    };
+    const { finished, text } = driveInteractive(
+      client,
+      [`/project add ${projectRoot}`, '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+      'window',
+      6,
+      undefined,
+      mcp,
+    );
+    await finished;
+
+    // Корень проекта прописан в окружении git-сервера, сервер переподключён.
+    const config = store.load().get('git');
+    assert.ok(
+      config?.transport === 'stdio' && config.env?.GIT_ALLOWED_REPOS?.includes(projectRoot),
+    );
+    assert.match(text(), /репозиторий разрешён, сервер переподключён/);
+  });
+
+  it('git-сервера нет (подключён только rag) — привязка молча работает без allow-list', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    const ragOnly: ConnectFn = async name => ({
+      name,
+      tools: () => [{ name: 'search_docs', description: 'поиск', parameters: { type: 'object' } }],
+      call: async () => 'фрагменты',
+      close: async () => {},
+    });
+    const { finished, text } = driveInteractive(
+      client,
+      [`/project add ${projectRoot}`, '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+      'window',
+      6,
+      undefined,
+      { toolSet: new McpToolSet(ragOnly), store: memoryStore(new Map([['rag', STDIO]])) },
+    );
+    await finished;
+
+    assert.match(text(), /Проект привязан/);
+    assert.doesNotMatch(text(), /allow-list|разрешён/);
+  });
+
+  it('повторная привязка не трогает allow-list (репозиторий уже разрешён)', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    const store = memoryStore(
+      new Map([
+        ['git', { transport: 'stdio', command: 'node', args: ['/cli.ts'] } as McpServerConfig],
+      ]),
+    );
+    const { finished, text } = driveInteractive(
+      client,
+      [`/project add ${projectRoot}`, `/project add ${projectRoot}`, '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+      'window',
+      6,
+      undefined,
+      { toolSet: new McpToolSet(gitServer(() => 'Ветка: main')), store },
+    );
+    await finished;
+
+    // Разрешение прописано один раз, дубля в списке нет.
+    const config = store.load().get('git');
+    const repos = (
+      config?.transport === 'stdio' ? (config.env?.GIT_ALLOWED_REPOS ?? '') : ''
+    ).split(',');
+    assert.equal(repos.filter(repo => repo === projectRoot).length, 1);
+    assert.equal(text().match(/сервер переподключён/g)?.length, 1);
+  });
+
+  it('git-сервер не переподключился — сообщаем, привязка остаётся', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    let connects = 0;
+    const flaky: ConnectFn = async name => {
+      connects++;
+      if (connects > 1) {
+        throw new Error('сервер не поднялся');
+      }
+      return {
+        name,
+        tools: () => [{ name: 'git_branch', description: 'ветка', parameters: { type: 'object' } }],
+        call: async () => 'Ветка: main',
+        close: async () => {},
+      };
+    };
+    const store = memoryStore(
+      new Map([
+        ['git', { transport: 'stdio', command: 'node', args: ['/cli.ts'] } as McpServerConfig],
+      ]),
+    );
+    const { finished, text } = driveInteractive(
+      client,
+      [`/project add ${projectRoot}`, '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+      'window',
+      6,
+      undefined,
+      { toolSet: new McpToolSet(flaky), store },
+    );
+    await finished;
+
+    assert.match(text(), /не переподключился/);
+    assert.deepEqual(session.projects, [projectRoot]);
+  });
+
+  it('git-сервер по HTTP: allow-list не наш — предупреждаем, а не молчим', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    const store = memoryStore(
+      new Map([['git', { transport: 'http', url: 'https://example.com/mcp' } as McpServerConfig]]),
+    );
+    const { finished, text } = driveInteractive(
+      client,
+      [`/project add ${projectRoot}`, '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+      'window',
+      6,
+      undefined,
+      { toolSet: new McpToolSet(gitServer(() => 'Ветка: main')), store },
+    );
+    await finished;
+
+    assert.match(text(), /Репозиторий не добавлен в allow-list/);
+    assert.match(text(), /Проект привязан/);
+  });
+
   it('с подключённым git-mcp карточка показывает настоящую ветку', async t => {
     const client = clientWithStream(t, () => 'X');
     const session = makeSession();

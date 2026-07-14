@@ -8,7 +8,12 @@ export {
 export type { ResolvedPath } from './sandbox.ts';
 export { nodeGitIo, commandErrorOutput } from './operations.ts';
 export type { GitIo, GitResult } from './operations.ts';
-export { loadAllowedRepos, loadMaxOutputChars, cloneCacheDir } from './config.ts';
+export {
+  loadAllowedRepos,
+  loadMaxOutputChars,
+  cloneCacheDir,
+  workingRepositoryRoot,
+} from './config.ts';
 export {
   limitOutput,
   handleGitBranch,

@@ -1,6 +1,31 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { normalizeAllowedRepos } from './sandbox.ts';
+
+/**
+ * Корень репозитория над рабочим каталогом (вверх до `.git`); нет репозитория — сам каталог.
+ *
+ * Разрешать надо именно КОРЕНЬ, а не рабочий каталог: клиент запускается из своего пакета
+ * (`…/ai-advent/llm-cli`), а проектом считается репозиторий (`…/ai-advent`) — он СНАРУЖИ рабочего
+ * каталога, и без этого сервер требовал подтверждение на собственный проект пользователя (найдено
+ * регресс-прогоном).
+ */
+export function workingRepositoryRoot(
+  startDirectory: string,
+  exists: (path: string) => boolean,
+): string {
+  let current = startDirectory;
+  for (;;) {
+    if (exists(join(current, '.git'))) {
+      return current;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      return startDirectory;
+    }
+    current = parent;
+  }
+}
 
 /**
  * Кэш клонов удалённых проектов (`/project add <git URL>` в llm-cli). Всегда разрешён: репозитории
@@ -11,9 +36,14 @@ export function cloneCacheDir(): string {
 }
 
 /**
- * Разрешённые репозитории: позиционные аргументы, иначе `GIT_ALLOWED_REPOS` (через запятую), иначе
- * текущий каталог. К списку всегда добавляется кэш клонов. Пустого списка не бывает — первый
- * элемент служит репозиторием по умолчанию для инструментов без аргумента `repo`.
+ * Разрешённые репозитории — ОБЪЕДИНЕНИЕ источников, а не «или-или»: позиционные аргументы (ручная
+ * настройка пользователя) + `GIT_ALLOWED_REPOS` (туда `llm-cli` дописывает привязанные проекты) +
+ * рабочий каталог + кэш клонов.
+ *
+ * Именно объединение: клиент, добавляя проект, НЕ должен незаметно отбирать доступ к тому, что уже
+ * работало. Рабочий каталог разрешён всегда — сервер запускается в каталоге пользователя, и это тот
+ * самый проект, из которого его позвали (llm-cli и определяет его как проект по умолчанию).
+ * Пустого списка не бывает: первый элемент — репозиторий по умолчанию для вызовов без `repo`.
  */
 export function loadAllowedRepos(
   args: string[],
@@ -25,9 +55,12 @@ export function loadAllowedRepos(
     .split(',')
     .map(value => value.trim())
     .filter(Boolean);
-  const explicit = fromArgs.length > 0 ? fromArgs : fromEnv;
-  const repos = explicit.length > 0 ? explicit : [workingDirectory];
-  return normalizeAllowedRepos([...repos, cloneCacheDir()]);
+  // Порядок важен: первый элемент — репозиторий ПО УМОЛЧАНИЮ (вызов без `repo`) и база для
+  // относительных путей. Сначала ручная настройка пользователя, затем рабочий каталог (там и
+  // запущен клиент — это «текущий» проект), и только потом проекты, добавленные автоматически:
+  // иначе привязка чужого клона молча делала бы ЕГО дефолтом, и «какая ветка?» отвечало про него.
+  const all = normalizeAllowedRepos([...fromArgs, workingDirectory, ...fromEnv, cloneCacheDir()]);
+  return [...new Set(all)];
 }
 
 /** Потолок вывода инструмента по умолчанию: длинный diff/лог не должен съедать окно контекста. */

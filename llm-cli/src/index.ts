@@ -63,6 +63,7 @@ export * from './faithfulness.ts';
 export * from './grounded.ts';
 export * from './project.ts';
 export * from './project-source.ts';
+export * from './git-allowlist.ts';
 export * from './project-answer.ts';
 export * from './code-search.ts';
 export * from './evidence.ts';
