@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadReviewConfig, parsePlatform } from '../index.ts';
+import { loadReviewConfig, parsePlatform, parseMinSeverity } from '../index.ts';
 
 describe('parsePlatform', () => {
   it('gitlab только для явного значения, иначе github', () => {
@@ -9,6 +9,15 @@ describe('parsePlatform', () => {
     assert.equal(parsePlatform('github'), 'github');
     assert.equal(parsePlatform(undefined), 'github');
     assert.equal(parsePlatform('что-то'), 'github');
+  });
+});
+
+describe('parseMinSeverity', () => {
+  it('известная категория, иначе nitpick (порог не режет)', () => {
+    assert.equal(parseMinSeverity('bug'), 'bug');
+    assert.equal(parseMinSeverity(' Architecture '), 'architecture');
+    assert.equal(parseMinSeverity(undefined), 'nitpick');
+    assert.equal(parseMinSeverity('выдумка'), 'nitpick');
   });
 });
 
@@ -26,7 +35,18 @@ describe('loadReviewConfig', () => {
       temperature: 0.2,
       topKDocs: 5,
       disableThinking: false,
+      minSeverity: 'nitpick',
+      maxInline: 20,
     });
+  });
+
+  it('PR_REVIEW_MIN_SEVERITY и PR_REVIEW_MAX_INLINE', () => {
+    const config = loadReviewConfig(
+      { PR_REVIEW_MIN_SEVERITY: 'architecture', PR_REVIEW_MAX_INLINE: '5' },
+      '/x',
+    );
+    assert.equal(config.minSeverity, 'architecture');
+    assert.equal(config.maxInline, 5);
   });
 
   it('переменные окружения переопределяют, base URL без хвостового слэша', () => {

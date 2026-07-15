@@ -1,3 +1,6 @@
+import { SEVERITY_ORDER } from './schema.ts';
+import type { FindingSeverity } from './schema.ts';
+
 /** Платформа хостинга репозитория. */
 export type Platform = 'github' | 'gitlab';
 
@@ -22,6 +25,10 @@ export interface ReviewConfig {
   topKDocs: number;
   /** Гасить рассуждения модели (нужно GLM). */
   disableThinking: boolean;
+  /** Минимальная категория для ИНЛАЙН-комментария; менее серьёзные уходят в сводку. */
+  minSeverity: FindingSeverity;
+  /** Потолок числа инлайн-комментариев на PR; сверх — в сводку. */
+  maxInline: number;
 }
 
 /** Положительное целое из строки в границах или значение по умолчанию. */
@@ -42,6 +49,12 @@ function parseTemperature(raw: string | undefined, fallback: number): number {
 /** Платформа из строки; неизвестное/пусто → github. */
 export function parsePlatform(raw: string | undefined): Platform {
   return raw?.trim().toLowerCase() === 'gitlab' ? 'gitlab' : 'github';
+}
+
+/** Категория из строки; неизвестное/пусто → `nitpick` (порог не режет — инлайн всё). */
+export function parseMinSeverity(raw: string | undefined): FindingSeverity {
+  const value = raw?.trim().toLowerCase();
+  return SEVERITY_ORDER.find(severity => severity === value) ?? 'nitpick';
 }
 
 /** База API по умолчанию для платформы. */
@@ -73,5 +86,7 @@ export function loadReviewConfig(env: NodeJS.ProcessEnv, workingDirectory: strin
     temperature: parseTemperature(env.PR_REVIEW_TEMPERATURE, 0.2),
     topKDocs: boundedInt(env.PR_REVIEW_TOP_K_DOCS, 5, 0, 50),
     disableThinking: env.PR_REVIEW_NO_THINKING === '1',
+    minSeverity: parseMinSeverity(env.PR_REVIEW_MIN_SEVERITY),
+    maxInline: boundedInt(env.PR_REVIEW_MAX_INLINE, 20, 1, 200),
   };
 }

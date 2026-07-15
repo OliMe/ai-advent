@@ -8,8 +8,10 @@ export { generateReview } from './review.ts';
 export type { ReviewInput, ReviewDeps } from './review.ts';
 export { groundDocs, readChangedFiles } from './grounding.ts';
 export type { GroundingDeps } from './grounding.ts';
-export { loadReviewConfig, parsePlatform } from './config.ts';
+export { loadReviewConfig, parsePlatform, parseMinSeverity } from './config.ts';
 export type { Platform, ReviewConfig } from './config.ts';
+export { severityRank, meetsSeverity, dedupeFindings, postprocessFindings } from './postprocess.ts';
+export type { PostprocessOptions } from './postprocess.ts';
 export { requestJson } from './platform.ts';
 export type {
   FetchLike,

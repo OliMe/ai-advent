@@ -22,6 +22,7 @@ import type { DiffFile } from './diff.ts';
 import { groundDocs, readChangedFiles } from './grounding.ts';
 import { generateReview } from './review.ts';
 import { validateFindings } from './validate.ts';
+import { postprocessFindings } from './postprocess.ts';
 import { buildPublication } from './render.ts';
 import { createGithubPlatform } from './github.ts';
 import type { PullChanges } from './platform.ts';
@@ -122,7 +123,12 @@ async function main(): Promise<void> {
   );
 
   const validated = validateFindings(result.findings, changes.files);
-  const publication = buildPublication(result.summary, validated);
+  // Пост-обработка: дедуп по строке, порог важности (мелочи → в сводку), лимит инлайна.
+  const processed = postprocessFindings(validated, {
+    minSeverity: review.minSeverity,
+    maxInline: review.maxInline,
+  });
+  const publication = buildPublication(result.summary, processed);
 
   if (dryRun || diffPath !== undefined) {
     console.log('\n===== DRY-RUN: ревью не публикуется =====\n');
