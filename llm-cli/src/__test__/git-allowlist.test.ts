@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { findGitServerName, allowRepositoryInGitServer } from '../index.ts';
+import {
+  findGitServerName,
+  allowRepositoryInGitServer,
+  revokeRepositoryInGitServer,
+} from '../index.ts';
 import type { McpStore } from '../index.ts';
 import type { McpServerConfig } from '../../../mcp-client/src/index.ts';
 
@@ -79,5 +83,74 @@ describe('allowRepositoryInGitServer', () => {
     const remote = allowRepositoryInGitServer(http, 'git', '/work/api');
     assert.equal(remote.kind, 'unavailable');
     assert.match(remote.kind === 'unavailable' ? remote.reason : '', /HTTP/);
+  });
+});
+
+describe('revokeRepositoryInGitServer', () => {
+  it('убирает репозиторий из GIT_ALLOWED_REPOS, остальные сохраняет', () => {
+    const store = memoryStore({
+      git: {
+        transport: 'stdio',
+        command: 'node',
+        args: ['/cli.ts'],
+        env: { GIT_ALLOWED_REPOS: '/work/api,/work/web' },
+      },
+    });
+
+    const result = revokeRepositoryInGitServer(store, 'git', '/work/api');
+
+    assert.equal(result.kind, 'removed');
+    const config = store.load().get('git');
+    assert.equal(config?.transport === 'stdio' ? config.env?.GIT_ALLOWED_REPOS : '', '/work/web');
+  });
+
+  it('последний репозиторий убран — ключ GIT_ALLOWED_REPOS удаляется целиком', () => {
+    const store = memoryStore({
+      git: {
+        transport: 'stdio',
+        command: 'node',
+        args: ['/cli.ts'],
+        env: { GIT_ALLOWED_REPOS: '/work/api' },
+      },
+    });
+
+    revokeRepositoryInGitServer(store, 'git', '/work/api');
+
+    const config = store.load().get('git');
+    // Список опустел — env целиком убран, а не оставлен пустой строкой.
+    assert.deepEqual(config, { transport: 'stdio', command: 'node', args: ['/cli.ts'] });
+  });
+
+  it('прочие переменные окружения при опустевшем списке сохраняются', () => {
+    const store = memoryStore({
+      git: {
+        transport: 'stdio',
+        command: 'node',
+        args: ['/cli.ts'],
+        env: { GIT_ALLOWED_REPOS: '/work/api', GIT_MAX_OUTPUT_CHARS: '5000' },
+      },
+    });
+
+    revokeRepositoryInGitServer(store, 'git', '/work/api');
+
+    const config = store.load().get('git');
+    assert.deepEqual(config?.transport === 'stdio' ? config.env : {}, {
+      GIT_MAX_OUTPUT_CHARS: '5000',
+    });
+  });
+
+  it('репозитория нет в нашем списке (ручной аргумент/рабочий каталог) — не наша запись, absent', () => {
+    const store = memoryStore({
+      git: { transport: 'stdio', command: 'node', args: ['/cli.ts', '/work/manual'] },
+    });
+
+    // Прописанное вручную (в args) клиент не убирает — только свою env-часть.
+    assert.deepEqual(revokeRepositoryInGitServer(store, 'git', '/work/manual'), { kind: 'absent' });
+  });
+
+  it('сервера нет или он по HTTP — allow-list не наш', () => {
+    assert.equal(revokeRepositoryInGitServer(memoryStore({}), 'git', '/x').kind, 'unavailable');
+    const http = memoryStore({ git: { transport: 'http', url: 'https://example.com/mcp' } });
+    assert.equal(revokeRepositoryInGitServer(http, 'git', '/x').kind, 'unavailable');
   });
 });

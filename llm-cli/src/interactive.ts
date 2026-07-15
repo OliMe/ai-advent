@@ -44,7 +44,11 @@ import {
   removeProjectRoot,
 } from './project.ts';
 import { resolveProjectRoot, realGitRunner } from './project-source.ts';
-import { findGitServerName, allowRepositoryInGitServer } from './git-allowlist.ts';
+import {
+  findGitServerName,
+  allowRepositoryInGitServer,
+  revokeRepositoryInGitServer,
+} from './git-allowlist.ts';
 import {
   parseProjectQuestion,
   answerProjectQuestion,
@@ -415,20 +419,36 @@ export async function runInteractive(
   const note = (message: string): void => {
     output.write(`${message}\n`);
   };
+  /** Имя подключённого git-сервера (по его инструменту) или null — сервера нет. */
+  const gitServerName = (): string | null =>
+    mcp === null || chatTools === null
+      ? null
+      : findGitServerName(chatTools.specs().map(spec => spec.name));
+  /** Переподключает git-сервер под изменённый конфиг (allow-list прочитается заново). */
+  const reconnectGitServer = async (
+    serverName: string,
+    config: McpServerConfig,
+    doneMessage: string,
+  ): Promise<void> => {
+    try {
+      await mcp!.toolSet.removeServer(serverName);
+      await mcp!.toolSet.addServer(serverName, config);
+      note(doneMessage);
+    } catch (error) {
+      note(`⚠ git-сервер «${serverName}» не переподключился: ${describeError(error)}`);
+    }
+  };
   /**
    * Разрешает привязанный репозиторий в git-сервере и переподключает его. Привязка проекта
    * пользователем И ЕСТЬ разрешение: иначе на КАЖДЫЙ вызов инструмента (за `/ask` их 5–8) сервер
    * спрашивал бы подтверждение. Чужой (не привязанный) репозиторий по-прежнему требует «да».
    */
   const allowProjectInGitServer = async (root: string): Promise<void> => {
-    if (mcp === null || chatTools === null) {
-      return;
-    }
-    const serverName = findGitServerName(chatTools.specs().map(spec => spec.name));
+    const serverName = gitServerName();
     if (serverName === null) {
       return; // git-сервер не подключён — разрешать нечего
     }
-    const result = allowRepositoryInGitServer(mcp.store, serverName, root);
+    const result = allowRepositoryInGitServer(mcp!.store, serverName, root);
     if (result.kind === 'unavailable') {
       note(
         `⚠ Репозиторий не добавлен в allow-list: ${result.reason} — операции спросят подтверждение.`,
@@ -438,13 +458,31 @@ export async function runInteractive(
     if (result.kind === 'already') {
       return;
     }
-    try {
-      await mcp.toolSet.removeServer(serverName);
-      await mcp.toolSet.addServer(serverName, result.config);
-      note(`🔌 git-сервер «${serverName}»: репозиторий разрешён, сервер переподключён.`);
-    } catch (error) {
-      note(`⚠ git-сервер «${serverName}» не переподключился: ${describeError(error)}`);
+    await reconnectGitServer(
+      serverName,
+      result.config,
+      `🔌 git-сервер «${serverName}»: репозиторий разрешён, сервер переподключён.`,
+    );
+  };
+  /**
+   * Снимает разрешение с отвязанного репозитория — зеркало `allowProjectInGitServer`. Репозиторий,
+   * прописанный вручную или являющийся рабочим каталогом (`absent`), не наш — молчим. Так `/project
+   * remove` возвращает всё в исходное состояние, а не копит разрешения.
+   */
+  const revokeProjectFromGitServer = async (root: string): Promise<void> => {
+    const serverName = gitServerName();
+    if (serverName === null) {
+      return;
     }
+    const result = revokeRepositoryInGitServer(mcp!.store, serverName, root);
+    if (result.kind !== 'removed') {
+      return; // absent / unavailable — своей записи нет, трогать нечего
+    }
+    await reconnectGitServer(
+      serverName,
+      result.config,
+      `🔌 git-сервер «${serverName}»: разрешение снято, сервер переподключён.`,
+    );
   };
   const listProjects = async (): Promise<void> => {
     const projects = workspace();
@@ -478,8 +516,9 @@ export async function runInteractive(
     const branches = await projectBranches([project]);
     output.write(`Проект привязан.\n\n${formatProjectCard(project, branches[0])}\n\n`);
   };
-  const removeProject = (nameOrPath: string): void => {
-    const remaining = removeProjectRoot(currentSession.projects ?? [], nameOrPath);
+  const removeProject = async (nameOrPath: string): Promise<void> => {
+    const before = currentSession.projects ?? [];
+    const remaining = removeProjectRoot(before, nameOrPath);
     if (remaining === null) {
       output.write(`Проект не привязан: ${nameOrPath}\n\n`);
       return;
@@ -487,6 +526,10 @@ export async function runInteractive(
     currentSession.projects = remaining.length === 0 ? undefined : remaining;
     store?.save(currentSession);
     output.write(`Проект отвязан: ${nameOrPath}\n\n`);
+    // Снимаем разрешение с фактически убранных корней (removeProjectRoot принимает имя ИЛИ путь).
+    for (const root of before.filter(root => !remaining.includes(root))) {
+      await revokeProjectFromGitServer(root);
+    }
   };
 
   // Команды управления MCP-серверами (доступны только при включённом MCP).
@@ -686,10 +729,14 @@ export async function runInteractive(
     // Рабочее пространство проектов (День 31). Порядок: точные раньше префиксных.
     {
       matches: input => input === '/project off',
-      run: () => {
+      run: async () => {
+        const roots = currentSession.projects ?? [];
         currentSession.projects = undefined;
         store?.save(currentSession);
         output.write('Проекты отвязаны (остаётся автодетект по текущему каталогу).\n\n');
+        for (const root of roots) {
+          await revokeProjectFromGitServer(root);
+        }
       },
     },
     { matches: input => input === '/project' || input === '/projects', run: () => listProjects() },

@@ -74,3 +74,61 @@ export function allowRepositoryInGitServer(
   store.save(servers);
   return { kind: 'added', config: updated };
 }
+
+/** Итог попытки снять разрешение с репозитория в git-сервере. */
+export type RevokeResult =
+  | { kind: 'removed'; config: McpServerConfig }
+  | { kind: 'absent' }
+  | { kind: 'unavailable'; reason: string };
+
+/** Окружение сервера без пустого `GIT_ALLOWED_REPOS` (удаляем ключ, а не оставляем пустую строку). */
+function envWithRepos(
+  config: StdioServerConfig,
+  repos: string[],
+): Record<string, string> | undefined {
+  const rest = { ...config.env };
+  delete rest[ALLOWED_REPOS_ENV];
+  if (repos.length === 0) {
+    return Object.keys(rest).length === 0 ? undefined : rest;
+  }
+  return { ...rest, [ALLOWED_REPOS_ENV]: repos.join(',') };
+}
+
+/**
+ * Снимает разрешение с репозитория — зеркало `allowRepositoryInGitServer`. Трогает ТОЛЬКО
+ * `env`-часть, которой владеет клиент: репозиторий, прописанный пользователем вручную (в аргументах)
+ * или являющийся рабочим каталогом, не в env — его мы не убираем (`absent`), это не наша запись.
+ * Список опустел → удаляем сам ключ окружения, чтобы конфиг не копил мусор.
+ */
+export function revokeRepositoryInGitServer(
+  store: McpStore,
+  serverName: string,
+  root: string,
+): RevokeResult {
+  const servers = store.load();
+  const config = servers.get(serverName);
+  if (config === undefined) {
+    return { kind: 'unavailable', reason: `сервер «${serverName}» не найден в конфигурации` };
+  }
+  if (config.transport !== 'stdio') {
+    return {
+      kind: 'unavailable',
+      reason: 'git-сервер подключён по HTTP — allow-list задаёт сервер',
+    };
+  }
+  const repos = allowedRepos(config);
+  if (!repos.includes(root)) {
+    return { kind: 'absent' };
+  }
+  const env = envWithRepos(
+    config,
+    repos.filter(repo => repo !== root),
+  );
+  const updated: McpServerConfig =
+    env === undefined
+      ? { transport: 'stdio', command: config.command, args: config.args }
+      : { ...config, env };
+  servers.set(serverName, updated);
+  store.save(servers);
+  return { kind: 'removed', config: updated };
+}

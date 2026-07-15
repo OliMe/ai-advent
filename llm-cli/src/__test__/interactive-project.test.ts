@@ -214,6 +214,115 @@ describe('/project', () => {
     assert.match(text(), /репозиторий разрешён, сервер переподключён/);
   });
 
+  it('/project remove снимает разрешение с git-сервера — зеркало привязки', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    const store = memoryStore(
+      new Map([
+        ['git', { transport: 'stdio', command: 'node', args: ['/cli.ts'] } as McpServerConfig],
+      ]),
+    );
+    const projectName = projectRoot.split('/').at(-1) as string;
+    const { finished, text } = driveInteractive(
+      client,
+      [`/project add ${projectRoot}`, `/project remove ${projectName}`, '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+      'window',
+      6,
+      undefined,
+      { toolSet: new McpToolSet(gitServer(() => 'Ветка: main')), store },
+    );
+    await finished;
+
+    // Разрешение снято: GIT_ALLOWED_REPOS убран, сервер переподключён.
+    const config = store.load().get('git');
+    assert.deepEqual(config, { transport: 'stdio', command: 'node', args: ['/cli.ts'] });
+    assert.match(text(), /разрешение снято, сервер переподключён/);
+  });
+
+  it('снятие репозитория, которого нет в нашей env-записи, сервер не трогает', async t => {
+    // Проект уже в сессии, но в allow-list git-сервера его нет (env пуст — привязка шла без git-
+    // сервера). /project remove видит «absent», сервер не переподключает.
+    const client = clientWithStream(t, () => 'X');
+    const session = makeSession();
+    session.projects = [projectRoot];
+    const store = memoryStore(
+      new Map([
+        ['git', { transport: 'stdio', command: 'node', args: ['/cli.ts'] } as McpServerConfig],
+      ]),
+    );
+    const projectName = projectRoot.split('/').at(-1) as string;
+    const { finished, text } = driveInteractive(
+      client,
+      [`/project remove ${projectName}`, '/exit'],
+      0.7,
+      makeConfig(),
+      true,
+      fakeStore(),
+      session,
+      'window',
+      6,
+      undefined,
+      { toolSet: new McpToolSet(gitServer(() => 'Ветка: main')), store },
+    );
+    await finished;
+
+    assert.match(text(), new RegExp(`Проект отвязан: ${projectName}`));
+    // env как был пуст, так и остался; переподключения не было.
+    assert.deepEqual(store.load().get('git'), {
+      transport: 'stdio',
+      command: 'node',
+      args: ['/cli.ts'],
+    });
+    assert.doesNotMatch(text(), /разрешение снято/);
+  });
+
+  it('/project off без привязанных проектов — просто сообщение, ничего снимать не нужно', async t => {
+    const client = clientWithStream(t, () => 'X');
+    const { finished, text } = driveInteractive(client, ['/project off', '/exit']);
+    await finished;
+
+    assert.match(text(), /Проекты отвязаны/);
+  });
+
+  it('/project off снимает разрешения со всех привязанных проектов', async t => {
+    const second = mkdtempSync(join(tmpdir(), 'llm-cli-off-'));
+    mkdirSync(join(second, '.git'));
+    try {
+      const client = clientWithStream(t, () => 'X');
+      const session = makeSession();
+      const store = memoryStore(
+        new Map([
+          ['git', { transport: 'stdio', command: 'node', args: ['/cli.ts'] } as McpServerConfig],
+        ]),
+      );
+      const { finished } = driveInteractive(
+        client,
+        [`/project add ${projectRoot}`, `/project add ${second}`, '/project off', '/exit'],
+        0.7,
+        makeConfig(),
+        true,
+        fakeStore(),
+        session,
+        'window',
+        6,
+        undefined,
+        { toolSet: new McpToolSet(gitServer(() => 'Ветка: main')), store },
+      );
+      await finished;
+
+      // Все разрешения сняты — GIT_ALLOWED_REPOS пуст (env убран целиком).
+      const config = store.load().get('git');
+      assert.deepEqual(config, { transport: 'stdio', command: 'node', args: ['/cli.ts'] });
+    } finally {
+      rmSync(second, { recursive: true, force: true });
+    }
+  });
+
   it('git-сервера нет (подключён только rag) — привязка молча работает без allow-list', async t => {
     const client = clientWithStream(t, () => 'X');
     const session = makeSession();
