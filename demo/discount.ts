@@ -15,3 +15,9 @@ export function firstPositive(values: number[]): number {
   }
   return undefined as unknown as number;
 }
+
+/** Делит сумму поровну между участниками. */
+export function splitEvenly(total: number, people: number): number {
+  // Нет проверки people === 0 → деление на ноль вернёт Infinity.
+  return total / people;
+}
