@@ -26,3 +26,8 @@ export function splitEvenly(total: number, people: number): number {
 export function roundKopecks(value: number): number {
   return Math.round(value * 100) / 100;
 }
+
+/** Возводит число в квадрат. */
+export function square(x: number): number {
+  return x * x;
+}
