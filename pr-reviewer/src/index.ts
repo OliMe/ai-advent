@@ -10,3 +10,16 @@ export { groundDocs, readChangedFiles } from './grounding.ts';
 export type { GroundingDeps } from './grounding.ts';
 export { loadReviewConfig, parsePlatform } from './config.ts';
 export type { Platform, ReviewConfig } from './config.ts';
+export { requestJson } from './platform.ts';
+export type {
+  FetchLike,
+  HttpResponse,
+  PullChanges,
+  InlineComment,
+  ReviewPublication,
+  ReviewPlatform,
+  RequestOptions,
+} from './platform.ts';
+export { createGithubPlatform } from './github.ts';
+export type { GithubDeps } from './github.ts';
+export { renderComment, buildPublication } from './render.ts';
