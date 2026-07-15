@@ -18,10 +18,10 @@ import { loadLocalDocuments, nodeLocalIo } from '../../rag/src/index.ts';
 import type { EmbedFn } from '../../rag/src/index.ts';
 import { loadReviewConfig } from './config.ts';
 import { parseUnifiedDiff } from './diff.ts';
-import type { DiffFile } from './diff.ts';
 import { groundDocs, readChangedFiles } from './grounding.ts';
 import { generateReview } from './review.ts';
 import { validateFindings } from './validate.ts';
+import { commentedLineKeys, filterAlreadyCommented } from './idempotency.ts';
 import { postprocessFindings } from './postprocess.ts';
 import { buildPublication } from './render.ts';
 import { createGithubPlatform } from './github.ts';
@@ -56,27 +56,35 @@ async function main(): Promise<void> {
     console.error('эмбеддинги не настроены → RAG по докам деградирует на сырые доки');
   }
 
-  // Источник изменений: локальный diff-файл (--diff) или API платформы.
+  // Платформа (один экземпляр на прогон): нужна для получения изменений, чтения уже оставленных
+  // комментариев (идемпотентность) и публикации. В режиме --diff (локальный файл) не создаётся.
   const diffPath = optionValue(argv, '--diff');
-  let changes: PullChanges;
-  if (diffPath !== undefined) {
-    const files: DiffFile[] = parseUnifiedDiff(readFileSync(diffPath, 'utf8'));
-    changes = { title: 'Локальный diff', description: '', files, truncated: false };
-  } else if (review.platform === 'github') {
-    changes = await createGithubPlatform({
-      fetchFn: globalThis.fetch as never,
-      apiBaseUrl: review.apiBaseUrl,
-      repo: review.repo,
-      prNumber: review.prNumber,
-      token: review.token,
-      timeoutMs: llm.requestTimeoutMs,
-      maxRetries: llm.maxRetries,
-      retryBaseMs: llm.retryBaseMs,
-      sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
-    }).fetchChanges();
-  } else {
-    throw new Error(`Платформа ${review.platform} пока не поддержана (реализован GitHub).`);
-  }
+  const platform =
+    diffPath !== undefined
+      ? null
+      : review.platform === 'github'
+        ? createGithubPlatform({
+            fetchFn: globalThis.fetch as never,
+            apiBaseUrl: review.apiBaseUrl,
+            repo: review.repo,
+            prNumber: review.prNumber,
+            token: review.token,
+            timeoutMs: llm.requestTimeoutMs,
+            maxRetries: llm.maxRetries,
+            retryBaseMs: llm.retryBaseMs,
+            sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+          })
+        : throwUnsupported(review.platform);
+
+  const changes: PullChanges =
+    platform === null
+      ? {
+          title: 'Локальный diff',
+          description: '',
+          files: parseUnifiedDiff(readFileSync(diffPath as string, 'utf8')),
+          truncated: false,
+        }
+      : await platform.fetchChanges();
 
   if (changes.truncated) {
     console.error('⚠ Список файлов PR усечён (очень большой PR) — часть файлов не проверена.');
@@ -128,9 +136,17 @@ async function main(): Promise<void> {
     minSeverity: review.minSeverity,
     maxInline: review.maxInline,
   });
-  const publication = buildPublication(result.summary, processed);
+  let publication = buildPublication(result.summary, processed);
 
-  if (dryRun || diffPath !== undefined) {
+  // Идемпотентность: не дублируем инлайн-комментарии, уже оставленные на тех же строках (повторный
+  // прогон по новым коммитам). Только для реального PR — в режиме --diff комментариев ещё нет.
+  if (platform !== null) {
+    const existing = await platform.fetchExistingComments();
+    const fresh = filterAlreadyCommented(publication.comments, commentedLineKeys(existing));
+    publication = { summary: publication.summary, comments: fresh };
+  }
+
+  if (dryRun || platform === null) {
     console.log('\n===== DRY-RUN: ревью не публикуется =====\n');
     console.log(publication.summary);
     console.log(`\nИнлайн-комментарии (${publication.comments.length}):`);
@@ -140,18 +156,19 @@ async function main(): Promise<void> {
     return;
   }
 
-  await createGithubPlatform({
-    fetchFn: globalThis.fetch as never,
-    apiBaseUrl: review.apiBaseUrl,
-    repo: review.repo,
-    prNumber: review.prNumber,
-    token: review.token,
-    timeoutMs: llm.requestTimeoutMs,
-    maxRetries: llm.maxRetries,
-    retryBaseMs: llm.retryBaseMs,
-    sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
-  }).publish(publication);
+  // Нет новых инлайн-комментариев (всё уже оставлено ранее) — не спамим повторной сводкой.
+  if (publication.comments.length === 0) {
+    console.error('новых замечаний нет — ревью не публикуется (идемпотентность)');
+    return;
+  }
+
+  await platform.publish(publication);
   console.error(`опубликовано ревью: ${publication.comments.length} инлайн-комментариев + сводка`);
+}
+
+/** Платформа не поддержана — понятная ошибка (GitLab-адаптер — следующим инкрементом). */
+function throwUnsupported(platform: string): never {
+  throw new Error(`Платформа ${platform} пока не поддержана (реализован GitHub).`);
 }
 
 main().catch((error: unknown) => {

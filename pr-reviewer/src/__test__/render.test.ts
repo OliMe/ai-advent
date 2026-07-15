@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderComment, buildPublication } from '../index.ts';
+import { renderComment, buildPublication, markComment, AI_REVIEW_MARKER } from '../index.ts';
 import type { Finding } from '../index.ts';
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
@@ -30,9 +30,15 @@ describe('buildPublication', () => {
       inline: [finding({ file: 'a.ts', line: 3 })],
       general: [finding({ file: 'b.ts', line: 9, severity: 'architecture', title: 'связность' })],
     });
+    // Тело комментария несёт маркер идемпотентности (чтобы узнать свой при повторном прогоне).
     assert.deepEqual(pub.comments, [
-      { file: 'a.ts', line: 3, body: renderComment(finding({ file: 'a.ts', line: 3 })) },
+      {
+        file: 'a.ts',
+        line: 3,
+        body: markComment(renderComment(finding({ file: 'a.ts', line: 3 }))),
+      },
     ]);
+    assert.ok(pub.comments[0].body.includes(AI_REVIEW_MARKER));
     assert.match(pub.summary, /## 🤖 AI-ревью/);
     assert.match(pub.summary, /Кратко: пара замечаний/);
     assert.match(pub.summary, /без точной привязки/);

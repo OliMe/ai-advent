@@ -1,4 +1,5 @@
 import type { DiffFile } from './diff.ts';
+import type { ExistingComment } from './idempotency.ts';
 
 /** Минимальный ответ HTTP (то, что нам нужно от fetch-Response). */
 export interface HttpResponse {
@@ -42,9 +43,11 @@ export interface ReviewPublication {
   comments: InlineComment[];
 }
 
-/** Платформа хостинга: получить изменения PR и опубликовать ревью. */
+/** Платформа хостинга: получить изменения PR, прочитать уже оставленные комментарии, опубликовать. */
 export interface ReviewPlatform {
   fetchChanges(): Promise<PullChanges>;
+  /** Уже существующие инлайн-комментарии ревью (для идемпотентности при повторных прогонах). */
+  fetchExistingComments(): Promise<ExistingComment[]>;
   publish(review: ReviewPublication): Promise<void>;
 }
 

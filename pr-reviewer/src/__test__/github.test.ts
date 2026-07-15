@@ -118,6 +118,43 @@ describe('createGithubPlatform.fetchChanges', () => {
   });
 });
 
+describe('createGithubPlatform.fetchExistingComments', () => {
+  it('возвращает путь/строку/тело; устаревший line → null', async () => {
+    const { fetchFn } = recordingFetch(() => [
+      { path: 'a.ts', line: 5, body: 'наше' },
+      { path: 'b.ts', line: null, body: 'устаревший' },
+      { line: 3, body: 'без пути' }, // нет path → отбрасывается
+    ]);
+    const comments = await createGithubPlatform(deps(fetchFn)).fetchExistingComments();
+    assert.deepEqual(comments, [
+      { path: 'a.ts', line: 5, body: 'наше' },
+      { path: 'b.ts', line: null, body: 'устаревший' },
+    ]);
+  });
+
+  it('нет полей body/line — подставляются пустое/null; пустой список', async () => {
+    const { fetchFn } = recordingFetch(url => (url.endsWith('&page=1') ? [{ path: 'x.ts' }] : []));
+    const comments = await createGithubPlatform(deps(fetchFn)).fetchExistingComments();
+    assert.deepEqual(comments, [{ path: 'x.ts', line: null, body: '' }]);
+  });
+
+  it('пагинация комментариев: полная страница → следующая, пустая → стоп', async () => {
+    const full = Array.from({ length: 100 }, (_v, i) => ({
+      path: `f${i}.ts`,
+      line: i + 1,
+      body: '',
+    }));
+    let pages = 0;
+    const fetchFn: FetchLike = async url => {
+      pages++;
+      return ok(url.endsWith('&page=1') ? full : []); // page 2 пустая
+    };
+    const comments = await createGithubPlatform(deps(fetchFn)).fetchExistingComments();
+    assert.equal(comments.length, 100);
+    assert.equal(pages, 2);
+  });
+});
+
 describe('createGithubPlatform.publish', () => {
   it('POST reviews c инлайн-комментариями (path/line/side) и сводкой', async () => {
     const { fetchFn, calls } = recordingFetch(() => ({}));

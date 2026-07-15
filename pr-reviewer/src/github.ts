@@ -2,6 +2,7 @@ import { fileFromPatch } from './diff.ts';
 import type { DiffFile, FileStatus } from './diff.ts';
 import { requestJson } from './platform.ts';
 import type { FetchLike, ReviewPlatform, PullChanges, ReviewPublication } from './platform.ts';
+import type { ExistingComment } from './idempotency.ts';
 
 /** Настройки GitHub-адаптера. */
 export interface GithubDeps {
@@ -114,6 +115,34 @@ export function createGithubPlatform(deps: GithubDeps): ReviewPlatform {
         files,
         truncated,
       };
+    },
+
+    async fetchExistingComments(): Promise<ExistingComment[]> {
+      const comments: ExistingComment[] = [];
+      let page = 1;
+      for (;;) {
+        const batch = (await request(
+          'GET',
+          `/pulls/${deps.prNumber}/comments?per_page=${PER_PAGE}&page=${page}`,
+        )) as { path?: unknown; line?: unknown; body?: unknown }[];
+        if (!Array.isArray(batch) || batch.length === 0) {
+          break;
+        }
+        for (const raw of batch) {
+          if (typeof raw.path === 'string') {
+            comments.push({
+              path: raw.path,
+              line: typeof raw.line === 'number' ? raw.line : null,
+              body: typeof raw.body === 'string' ? raw.body : '',
+            });
+          }
+        }
+        if (batch.length < PER_PAGE || page >= MAX_PAGES) {
+          break;
+        }
+        page++;
+      }
+      return comments;
     },
 
     async publish(review: ReviewPublication): Promise<void> {

@@ -1,6 +1,7 @@
 import type { Finding, FindingSeverity } from './schema.ts';
 import type { ValidatedFindings } from './validate.ts';
 import type { ReviewPublication, InlineComment } from './platform.ts';
+import { markComment } from './idempotency.ts';
 
 /** Человекочитаемая метка категории для тела комментария. */
 const SEVERITY_LABEL: Record<FindingSeverity, string> = {
@@ -30,7 +31,8 @@ export function buildPublication(summary: string, validated: ValidatedFindings):
   const comments: InlineComment[] = validated.inline.map(finding => ({
     file: finding.file,
     line: finding.line,
-    body: renderComment(finding),
+    // Маркер — чтобы при повторном прогоне узнать свой комментарий и не дублировать его.
+    body: markComment(renderComment(finding)),
   }));
 
   const parts: string[] = [];
