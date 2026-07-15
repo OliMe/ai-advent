@@ -118,91 +118,100 @@ describe('createGithubPlatform.fetchChanges', () => {
   });
 });
 
-describe('createGithubPlatform.fetchExistingComments', () => {
-  it('возвращает id/путь/строку/тело; устаревший line → null; без id/path отбрасывается', async () => {
-    const { fetchFn } = recordingFetch(() => [
-      { id: 11, path: 'a.ts', line: 5, body: 'наше' },
-      { id: 12, path: 'b.ts', line: null, body: 'устаревший' },
-      { id: 13, line: 3, body: 'без пути' }, // нет path → отбрасывается
-      { path: 'c.ts', line: 1, body: 'без id' }, // нет id → отбрасывается
-    ]);
-    const comments = await createGithubPlatform(deps(fetchFn)).fetchExistingComments();
-    assert.deepEqual(comments, [
-      { id: 11, path: 'a.ts', line: 5, body: 'наше' },
-      { id: 12, path: 'b.ts', line: null, body: 'устаревший' },
-    ]);
-  });
+const MARK = '<!-- ai-review -->';
 
-  it('нет полей body/line — подставляются пустое/null; пустой список', async () => {
-    const { fetchFn } = recordingFetch(url =>
-      url.endsWith('&page=1') ? [{ id: 7, path: 'x.ts' }] : [],
-    );
-    const comments = await createGithubPlatform(deps(fetchFn)).fetchExistingComments();
-    assert.deepEqual(comments, [{ id: 7, path: 'x.ts', line: null, body: '' }]);
-  });
-
-  it('пагинация комментариев: полная страница → следующая, пустая → стоп', async () => {
-    const full = Array.from({ length: 100 }, (_v, i) => ({
-      id: i + 1,
-      path: `f${i}.ts`,
-      line: i + 1,
-      body: '',
-    }));
-    let pages = 0;
-    const fetchFn: FetchLike = async url => {
-      pages++;
-      return ok(url.endsWith('&page=1') ? full : []); // page 2 пустая
-    };
-    const comments = await createGithubPlatform(deps(fetchFn)).fetchExistingComments();
-    assert.equal(comments.length, 100);
-    assert.equal(pages, 2);
-  });
-});
-
-describe('createGithubPlatform.deleteComments', () => {
-  it('DELETE по каждому id на /pulls/comments/{id}; пустой список — без запросов', async () => {
-    const { fetchFn, calls } = recordingFetch(() => ({}));
-    const platform = createGithubPlatform(deps(fetchFn));
-    await platform.deleteComments([11, 12]);
-    assert.deepEqual(
-      calls.map(c => `${c.method} ${c.url}`),
-      [
-        'DELETE https://api.github.com/repos/OliMe/ai-advent/pulls/comments/11',
-        'DELETE https://api.github.com/repos/OliMe/ai-advent/pulls/comments/12',
-      ],
-    );
-    calls.length = 0;
-    await platform.deleteComments([]);
-    assert.equal(calls.length, 0);
-  });
-});
-
-describe('createGithubPlatform.publish', () => {
-  it('POST reviews c инлайн-комментариями (path/line/side) и сводкой', async () => {
-    const { fetchFn, calls } = recordingFetch(() => ({}));
-    await createGithubPlatform(deps(fetchFn)).publish({
-      summary: 'Итог ревью',
-      comments: [{ file: 'src/a.ts', line: 2, body: 'проблема тут' }],
+describe('createGithubPlatform.publish (идемпотентно)', () => {
+  it('снимает свои прежние инлайн, обновляет сводку на месте, ставит свежие инлайн', async () => {
+    const { fetchFn, calls } = recordingFetch(url => {
+      if (url.endsWith('/pulls/7')) return { head: { sha: 'headsha' } };
+      if (url.includes('/pulls/7/comments')) {
+        // page 1: наш (маркер) + чужой; page 2 пустая
+        return url.endsWith('&page=1')
+          ? [
+              { id: 101, body: `старое замечание\n${MARK}` }, // наше → удалить
+              { id: 102, body: 'ответ человека' }, // чужое → не трогать
+            ]
+          : [];
+      }
+      if (url.includes('/issues/7/comments')) {
+        return url.endsWith('&page=1') ? [{ id: 201, body: `прежняя сводка\n${MARK}` }] : [];
+      }
+      return {};
     });
 
+    await createGithubPlatform(deps(fetchFn)).publish({
+      summary: `## AI-ревью\n\nитог\n${MARK}`,
+      comments: [{ file: 'src/a.ts', line: 2, body: `проблема\n${MARK}` }],
+    });
+
+    const seq = calls.map(
+      c => `${c.method} ${c.url.replace('https://api.github.com/repos/OliMe/ai-advent', '')}`,
+    );
+    // Удалён только НАШ инлайн (101), чужой (102) не тронут.
+    assert.ok(seq.includes('DELETE /pulls/comments/101'));
+    assert.ok(!seq.some(s => s.includes('/pulls/comments/102')));
+    // Сводка обновлена на месте (PATCH), не создана заново.
+    const patch = calls.find(c => c.method === 'PATCH');
+    assert.match(patch!.url, /\/issues\/comments\/201$/);
+    assert.match(JSON.parse(patch!.body as string).body, /итог/);
+    assert.ok(!seq.some(s => s.startsWith('POST /issues/')));
+    // Свежий инлайн поставлен отдельным комментарием с commit_id = head sha.
+    const post = calls.find(c => c.method === 'POST' && c.url.includes('/pulls/7/comments'));
+    const payload = JSON.parse(post!.body as string);
+    assert.deepEqual(payload, {
+      commit_id: 'headsha',
+      path: 'src/a.ts',
+      line: 2,
+      side: 'RIGHT',
+      body: `проблема\n${MARK}`,
+    });
+  });
+
+  it('прежней сводки нет — создаёт issue-комментарий; лишние свои сводки удаляет', async () => {
+    const { fetchFn, calls } = recordingFetch(url => {
+      if (url.endsWith('/pulls/7')) return { head: { sha: 's' } };
+      if (url.includes('/pulls/7/comments')) return [];
+      if (url.includes('/issues/7/comments')) {
+        // две наших сводки — первую обновить, вторую удалить
+        return url.endsWith('&page=1')
+          ? [
+              { id: 301, body: `сводка A\n${MARK}` },
+              { id: 302, body: `сводка B\n${MARK}` },
+            ]
+          : [];
+      }
+      return {};
+    });
+
+    await createGithubPlatform(deps(fetchFn)).publish({ summary: `итог\n${MARK}`, comments: [] });
+
+    const seq = calls.map(
+      c => `${c.method} ${c.url.replace('https://api.github.com/repos/OliMe/ai-advent', '')}`,
+    );
+    assert.ok(seq.includes('PATCH /issues/comments/301')); // первую обновили
+    assert.ok(seq.includes('DELETE /issues/comments/302')); // лишнюю удалили
+  });
+
+  it('своих сводок нет — POST нового issue-комментария', async () => {
+    const { fetchFn, calls } = recordingFetch(url => {
+      if (url.endsWith('/pulls/7')) return { head: { sha: 's' } };
+      return []; // ни инлайн, ни issue-комментариев
+    });
+    await createGithubPlatform(deps(fetchFn)).publish({ summary: `итог\n${MARK}`, comments: [] });
     const post = calls.find(c => c.method === 'POST');
-    assert.ok(post);
-    assert.match(post.url, /\/repos\/OliMe\/ai-advent\/pulls\/7\/reviews$/);
-    const payload = JSON.parse(post.body as string);
-    assert.equal(payload.event, 'COMMENT');
-    assert.equal(payload.body, 'Итог ревью');
-    assert.deepEqual(payload.comments, [
-      { path: 'src/a.ts', line: 2, side: 'RIGHT', body: 'проблема тут' },
-    ]);
+    assert.match(post!.url, /\/issues\/7\/comments$/);
   });
 
-  it('без инлайн-комментариев — ревью только со сводкой (пустой comments)', async () => {
-    const { fetchFn, calls } = recordingFetch(() => ({}));
-    await createGithubPlatform(deps(fetchFn)).publish({
-      summary: 'нечего комментировать',
-      comments: [],
+  it('head sha не получен — инлайн не постятся (привязать не к чему), сводка обновляется', async () => {
+    const { fetchFn, calls } = recordingFetch(url => {
+      if (url.endsWith('/pulls/7')) return {}; // нет head.sha
+      return [];
     });
-    const payload = JSON.parse(calls[0].body as string);
-    assert.deepEqual(payload.comments, []);
+    await createGithubPlatform(deps(fetchFn)).publish({
+      summary: `итог\n${MARK}`,
+      comments: [{ file: 'a.ts', line: 1, body: 'x' }],
+    });
+    assert.ok(!calls.some(c => c.url.includes('/pulls/7/comments') && c.method === 'POST'));
+    assert.ok(calls.some(c => c.method === 'POST' && c.url.includes('/issues/7/comments')));
   });
 });

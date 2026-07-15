@@ -2,7 +2,7 @@ import { fileFromPatch } from './diff.ts';
 import type { DiffFile, FileStatus } from './diff.ts';
 import { requestJson } from './platform.ts';
 import type { FetchLike, ReviewPlatform, PullChanges, ReviewPublication } from './platform.ts';
-import type { ExistingComment } from './idempotency.ts';
+import { hasAiMarker } from './idempotency.ts';
 
 /** Настройки GitHub-адаптера. */
 export interface GithubDeps {
@@ -19,7 +19,7 @@ export interface GithubDeps {
   sleep: (ms: number) => Promise<void>;
 }
 
-/** Файлов PR на страницу и потолок страниц (защита от гигантских PR; усечение помечается честно). */
+/** Записей на страницу и потолок страниц (защита от гигантских PR; усечение помечается честно). */
 const PER_PAGE = 100;
 const MAX_PAGES = 30;
 
@@ -62,6 +62,12 @@ function toDiffFile(raw: GithubFile): DiffFile | null {
   return fileFromPatch(raw.filename, patch, status, oldPath);
 }
 
+/** Комментарий с id и телом из API (инлайн или issue). */
+interface RawComment {
+  id?: unknown;
+  body?: unknown;
+}
+
 /** Создаёт GitHub-платформу. Один сервер API обслуживает и github.com, и Enterprise (base URL). */
 export function createGithubPlatform(deps: GithubDeps): ReviewPlatform {
   const request = (method: string, path: string, body?: unknown): Promise<unknown> =>
@@ -77,92 +83,97 @@ export function createGithubPlatform(deps: GithubDeps): ReviewPlatform {
       sleep: deps.sleep,
     });
 
+  /** Все записи постраничного GET (для файлов и комментариев). */
+  async function fetchAllPages(pathBase: string): Promise<unknown[]> {
+    const items: unknown[] = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const batch = await request('GET', `${pathBase}?per_page=${PER_PAGE}&page=${page}`);
+      if (!Array.isArray(batch) || batch.length === 0) {
+        break;
+      }
+      items.push(...batch);
+      if (batch.length < PER_PAGE) {
+        break;
+      }
+    }
+    return items;
+  }
+
+  /** id наших комментариев (по маркеру) в постраничной выборке. */
+  async function ownMarkedIds(pathBase: string): Promise<number[]> {
+    const raw = (await fetchAllPages(pathBase)) as RawComment[];
+    return raw
+      .filter(
+        item =>
+          typeof item.id === 'number' && typeof item.body === 'string' && hasAiMarker(item.body),
+      )
+      .map(item => item.id as number);
+  }
+
   return {
     async fetchChanges(): Promise<PullChanges> {
       const pull = (await request('GET', `/pulls/${deps.prNumber}`)) as {
         title?: unknown;
         body?: unknown;
       };
+      const raw = (await fetchAllPages(`/pulls/${deps.prNumber}/files`)) as GithubFile[];
       const files: DiffFile[] = [];
-      let page = 1;
-      let truncated = false;
-      for (;;) {
-        const batch = (await request(
-          'GET',
-          `/pulls/${deps.prNumber}/files?per_page=${PER_PAGE}&page=${page}`,
-        )) as GithubFile[];
-        if (!Array.isArray(batch) || batch.length === 0) {
-          break;
-        }
-        for (const raw of batch) {
-          const file = toDiffFile(raw);
-          if (file !== null) {
-            files.push(file);
-          }
-        }
-        if (batch.length < PER_PAGE) {
-          break;
-        }
-        page++;
-        if (page > MAX_PAGES) {
-          truncated = true;
-          break;
+      for (const item of raw) {
+        const file = toDiffFile(item);
+        if (file !== null) {
+          files.push(file);
         }
       }
       return {
         title: typeof pull.title === 'string' ? pull.title : '',
         description: typeof pull.body === 'string' ? pull.body : '',
         files,
-        truncated,
+        // Усечение: собрано ровно максимум записей (потолок страниц исчерпан).
+        truncated: raw.length >= PER_PAGE * MAX_PAGES,
       };
     },
 
-    async fetchExistingComments(): Promise<ExistingComment[]> {
-      const comments: ExistingComment[] = [];
-      let page = 1;
-      for (;;) {
-        const batch = (await request(
-          'GET',
-          `/pulls/${deps.prNumber}/comments?per_page=${PER_PAGE}&page=${page}`,
-        )) as { id?: unknown; path?: unknown; line?: unknown; body?: unknown }[];
-        if (!Array.isArray(batch) || batch.length === 0) {
-          break;
-        }
-        for (const raw of batch) {
-          if (typeof raw.id === 'number' && typeof raw.path === 'string') {
-            comments.push({
-              id: raw.id,
-              path: raw.path,
-              line: typeof raw.line === 'number' ? raw.line : null,
-              body: typeof raw.body === 'string' ? raw.body : '',
-            });
-          }
-        }
-        if (batch.length < PER_PAGE || page >= MAX_PAGES) {
-          break;
-        }
-        page++;
-      }
-      return comments;
-    },
+    /**
+     * Идемпотентная публикация. Инлайн-комментарии — отдельными (удаляемыми) комментариями: свои
+     * прежние снимаем, ставим актуальные. Сводка — ЕДИНСТВЕННЫЙ issue-комментарий: обновляем на месте
+     * (PATCH), лишние свои удаляем, нет — создаём. Так повторный прогон не плодит ни дублей у строк,
+     * ни стопки «reviewed»-сводок (submitted-ревью через API не удаляются — потому их не используем).
+     */
+    async publish(review: ReviewPublication): Promise<void> {
+      // Свежий head-SHA — привязка инлайн-комментариев к нужному коммиту.
+      const pull = (await request('GET', `/pulls/${deps.prNumber}`)) as {
+        head?: { sha?: unknown };
+      };
+      const headSha = typeof pull.head?.sha === 'string' ? pull.head.sha : undefined;
 
-    async deleteComments(ids: number[]): Promise<void> {
-      for (const id of ids) {
+      // Снять свои прежние инлайн-комментарии.
+      for (const id of await ownMarkedIds(`/pulls/${deps.prNumber}/comments`)) {
         await request('DELETE', `/pulls/comments/${id}`);
       }
-    },
 
-    async publish(review: ReviewPublication): Promise<void> {
-      await request('POST', `/pulls/${deps.prNumber}/reviews`, {
-        event: 'COMMENT',
-        body: review.summary,
-        comments: review.comments.map(comment => ({
-          path: comment.file,
-          line: comment.line,
-          side: 'RIGHT',
-          body: comment.body,
-        })),
-      });
+      // Сводка: обновить единственный свой issue-комментарий (лишние удалить), иначе создать.
+      const summaryIds = await ownMarkedIds(`/issues/${deps.prNumber}/comments`);
+      if (summaryIds.length === 0) {
+        await request('POST', `/issues/${deps.prNumber}/comments`, { body: review.summary });
+      } else {
+        await request('PATCH', `/issues/comments/${summaryIds[0]}`, { body: review.summary });
+        for (const extra of summaryIds.slice(1)) {
+          await request('DELETE', `/issues/comments/${extra}`);
+        }
+      }
+
+      // Поставить актуальные инлайн-комментарии (нужен head-SHA — иначе привязать не к чему).
+      if (headSha !== undefined) {
+        for (const comment of review.comments) {
+          await request('POST', `/pulls/${deps.prNumber}/comments`, {
+            commit_id: headSha,
+            path: comment.file,
+            line: comment.line,
+            side: 'RIGHT',
+            body: comment.body,
+          });
+        }
+      }
     },
   };
 }

@@ -50,5 +50,6 @@ export function buildPublication(summary: string, validated: ValidatedFindings):
   if (comments.length === 0 && validated.general.length === 0 && header === '') {
     parts.push('AI-ревью: замечаний не найдено. 👍');
   }
-  return { summary: `## 🤖 AI-ревью\n\n${parts.join('\n\n')}`, comments };
+  // Сводка тоже с маркером — чтобы обновлять единственный issue-комментарий, а не плодить новые.
+  return { summary: markComment(`## 🤖 AI-ревью\n\n${parts.join('\n\n')}`), comments };
 }

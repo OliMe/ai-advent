@@ -1,16 +1,14 @@
 /**
  * Скрытый маркер в теле комментария (HTML-комментарий не виден в отрендеренном markdown). По нему
- * ревьюер отличает СВОИ прежние комментарии от чужих и снимает их перед публикацией нового ревью,
- * чтобы повторный прогон (событие synchronize — новые коммиты в PR) не плодил дубли.
+ * ревьюер отличает СВОИ прежние комментарии от чужих: инлайн-комментарии снимает и ставит заново, а
+ * сводку (issue-комментарий) обновляет на месте — чтобы повторный прогон (событие synchronize) не
+ * плодил ни дублей у строк, ни стопки «reviewed»-сводок.
  */
 export const AI_REVIEW_MARKER = '<!-- ai-review -->';
 
-/** Уже существующий комментарий PR (из API): id, путь, строка новой версии, тело. */
-export interface ExistingComment {
+/** Комментарий PR из API: id и тело (для распознавания своих по маркеру и снятия/обновления). */
+export interface ApiComment {
   id: number;
-  path: string;
-  /** Строка новой версии; null — устаревший комментарий (код под ним изменился). */
-  line: number | null;
   body: string;
 }
 
@@ -19,14 +17,12 @@ export function markComment(body: string): string {
   return `${body}\n\n${AI_REVIEW_MARKER}`;
 }
 
-/**
- * id НАШИХ прежних комментариев (по маркеру) — их снимаем перед постингом свежего ревью. Так вместо
- * ХРУПКОГО сопоставления «та же строка» (модель приписывает тот же дефект к разной строке между
- * прогонами, а GitHub пересчитывает позиции при изменении ханка — из-за этого выходили дубли) бот
- * просто заменяет свой набор комментариев на актуальный. Чужие комментарии не трогаем.
- */
-export function ownCommentIds(comments: ExistingComment[]): number[] {
-  return comments
-    .filter(comment => comment.body.includes(AI_REVIEW_MARKER))
-    .map(comment => comment.id);
+/** Наш ли это комментарий (по маркеру). */
+export function hasAiMarker(body: string): boolean {
+  return body.includes(AI_REVIEW_MARKER);
+}
+
+/** id НАШИХ комментариев (по маркеру) среди списка — их снимаем/обновляем. Чужие не трогаем. */
+export function ownCommentIds(comments: ApiComment[]): number[] {
+  return comments.filter(comment => hasAiMarker(comment.body)).map(comment => comment.id);
 }

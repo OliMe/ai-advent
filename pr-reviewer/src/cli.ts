@@ -21,7 +21,6 @@ import { parseUnifiedDiff } from './diff.ts';
 import { groundDocs, readChangedFiles } from './grounding.ts';
 import { generateReview } from './review.ts';
 import { validateFindings } from './validate.ts';
-import { ownCommentIds } from './idempotency.ts';
 import { postprocessFindings } from './postprocess.ts';
 import { buildPublication } from './render.ts';
 import { createGithubPlatform } from './github.ts';
@@ -148,14 +147,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Идемпотентность: снимаем СВОИ прежние комментарии (по маркеру) и постим свежее ревью. Так
-  // повторный прогон по новым коммитам не плодит дубли — набор комментариев бота всегда актуален.
-  const removed = ownCommentIds(await platform.fetchExistingComments());
-  await platform.deleteComments(removed);
+  // Публикация идемпотентна внутри (снимает свои прежние инлайн-комментарии, обновляет сводку) —
+  // повторный прогон по новым коммитам не плодит ни дублей у строк, ни стопки сводок.
   await platform.publish(publication);
-  console.error(
-    `ревью опубликовано: ${publication.comments.length} инлайн + сводка (снято прежних: ${removed.length})`,
-  );
+  console.error(`ревью опубликовано: ${publication.comments.length} инлайн-комментариев + сводка`);
 }
 
 /** Платформа не поддержана — понятная ошибка (GitLab-адаптер — следующим инкрементом). */
