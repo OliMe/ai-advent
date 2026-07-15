@@ -1,0 +1,31 @@
+{
+  "name": "pr-reviewer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "description": "Автоматическое AI-ревью PR: получает diff, обосновывает ревью документацией (RAG) и кодом, оставляет инлайн-комментарии в GitHub/GitLab.",
+  "scripts": {
+    "start": "node src/cli.ts",
+    "typecheck": "tsc",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/cli.ts' --test-coverage-exclude='src/__test__/**' --test-coverage-exclude='../core/**' --test-coverage-exclude='../rag/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
+    "lint-prettier": "prettier \"src/**/*.ts\" --check",
+    "write-prettier": "prettier \"src/**/*.ts\" --write"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "printWidth": 100,
+    "arrowParens": "avoid",
+    "semi": true,
+    "trailingComma": "all",
+    "tabWidth": 2
+  }
+}

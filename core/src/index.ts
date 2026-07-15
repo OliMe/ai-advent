@@ -106,6 +106,8 @@ export {
   structuredLimits,
 } from './pipeline-schemas.ts';
 export { extractJsonObject, parseJsonObject } from './json.ts';
+export { schemaPromptEcho, completeStructured } from './structured-task.ts';
+export type { StructuredTaskOptions } from './structured-task.ts';
 export {
   ORCHESTRATOR_SYSTEM,
   parseTeamPlan,
