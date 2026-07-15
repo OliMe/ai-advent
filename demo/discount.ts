@@ -21,3 +21,8 @@ export function splitEvenly(total: number, people: number): number {
   // Нет проверки people === 0 → деление на ноль вернёт Infinity.
   return total / people;
 }
+
+/** Округляет цену до копеек. */
+export function roundKopecks(value: number): number {
+  return Math.round(value * 100) / 100;
+}
