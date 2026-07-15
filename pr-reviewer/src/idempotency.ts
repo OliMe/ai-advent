@@ -1,14 +1,13 @@
-import type { InlineComment } from './platform.ts';
-
 /**
  * Скрытый маркер в теле комментария (HTML-комментарий не виден в отрендеренном markdown). По нему
- * ревьюер отличает СВОИ прежние комментарии от чужих и не дублирует их при повторных прогонах
- * (событие synchronize — новые коммиты в PR).
+ * ревьюер отличает СВОИ прежние комментарии от чужих и снимает их перед публикацией нового ревью,
+ * чтобы повторный прогон (событие synchronize — новые коммиты в PR) не плодил дубли.
  */
 export const AI_REVIEW_MARKER = '<!-- ai-review -->';
 
-/** Уже существующий комментарий PR (из API): путь, строка новой версии, тело. */
+/** Уже существующий комментарий PR (из API): id, путь, строка новой версии, тело. */
 export interface ExistingComment {
+  id: number;
   path: string;
   /** Строка новой версии; null — устаревший комментарий (код под ним изменился). */
   line: number | null;
@@ -21,27 +20,13 @@ export function markComment(body: string): string {
 }
 
 /**
- * Ключи `путь:строка` строк, где УЖЕ есть НАШ комментарий (по маркеру). Чужие комментарии и
- * устаревшие (без актуальной строки) игнорируются — на них мы не опираемся.
+ * id НАШИХ прежних комментариев (по маркеру) — их снимаем перед постингом свежего ревью. Так вместо
+ * ХРУПКОГО сопоставления «та же строка» (модель приписывает тот же дефект к разной строке между
+ * прогонами, а GitHub пересчитывает позиции при изменении ханка — из-за этого выходили дубли) бот
+ * просто заменяет свой набор комментариев на актуальный. Чужие комментарии не трогаем.
  */
-export function commentedLineKeys(comments: ExistingComment[]): Set<string> {
-  const keys = new Set<string>();
-  for (const comment of comments) {
-    if (comment.line !== null && comment.body.includes(AI_REVIEW_MARKER)) {
-      keys.add(`${comment.path}:${comment.line}`);
-    }
-  }
-  return keys;
-}
-
-/**
- * Отсеивает инлайн-комментарии, которые мы уже оставляли на тех же строках (идемпотентность). Так
- * повторный прогон по новым коммитам не спамит одним и тем же замечанием. Изменилась строка — ключ
- * другой, замечание появится заново (это уместно: код под ним поменялся).
- */
-export function filterAlreadyCommented(
-  comments: InlineComment[],
-  existingKeys: Set<string>,
-): InlineComment[] {
-  return comments.filter(comment => !existingKeys.has(`${comment.file}:${comment.line}`));
+export function ownCommentIds(comments: ExistingComment[]): number[] {
+  return comments
+    .filter(comment => comment.body.includes(AI_REVIEW_MARKER))
+    .map(comment => comment.id);
 }

@@ -25,10 +25,5 @@ export type {
 export { createGithubPlatform } from './github.ts';
 export type { GithubDeps } from './github.ts';
 export { renderComment, buildPublication } from './render.ts';
-export {
-  AI_REVIEW_MARKER,
-  markComment,
-  commentedLineKeys,
-  filterAlreadyCommented,
-} from './idempotency.ts';
+export { AI_REVIEW_MARKER, markComment, ownCommentIds } from './idempotency.ts';
 export type { ExistingComment } from './idempotency.ts';

@@ -21,7 +21,7 @@ import { parseUnifiedDiff } from './diff.ts';
 import { groundDocs, readChangedFiles } from './grounding.ts';
 import { generateReview } from './review.ts';
 import { validateFindings } from './validate.ts';
-import { commentedLineKeys, filterAlreadyCommented } from './idempotency.ts';
+import { ownCommentIds } from './idempotency.ts';
 import { postprocessFindings } from './postprocess.ts';
 import { buildPublication } from './render.ts';
 import { createGithubPlatform } from './github.ts';
@@ -136,15 +136,7 @@ async function main(): Promise<void> {
     minSeverity: review.minSeverity,
     maxInline: review.maxInline,
   });
-  let publication = buildPublication(result.summary, processed);
-
-  // Идемпотентность: не дублируем инлайн-комментарии, уже оставленные на тех же строках (повторный
-  // прогон по новым коммитам). Только для реального PR — в режиме --diff комментариев ещё нет.
-  if (platform !== null) {
-    const existing = await platform.fetchExistingComments();
-    const fresh = filterAlreadyCommented(publication.comments, commentedLineKeys(existing));
-    publication = { summary: publication.summary, comments: fresh };
-  }
+  const publication = buildPublication(result.summary, processed);
 
   if (dryRun || platform === null) {
     console.log('\n===== DRY-RUN: ревью не публикуется =====\n');
@@ -156,14 +148,14 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Нет новых инлайн-комментариев (всё уже оставлено ранее) — не спамим повторной сводкой.
-  if (publication.comments.length === 0) {
-    console.error('новых замечаний нет — ревью не публикуется (идемпотентность)');
-    return;
-  }
-
+  // Идемпотентность: снимаем СВОИ прежние комментарии (по маркеру) и постим свежее ревью. Так
+  // повторный прогон по новым коммитам не плодит дубли — набор комментариев бота всегда актуален.
+  const removed = ownCommentIds(await platform.fetchExistingComments());
+  await platform.deleteComments(removed);
   await platform.publish(publication);
-  console.error(`опубликовано ревью: ${publication.comments.length} инлайн-комментариев + сводка`);
+  console.error(
+    `ревью опубликовано: ${publication.comments.length} инлайн + сводка (снято прежних: ${removed.length})`,
+  );
 }
 
 /** Платформа не поддержана — понятная ошибка (GitLab-адаптер — следующим инкрементом). */

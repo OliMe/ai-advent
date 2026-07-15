@@ -43,11 +43,13 @@ export interface ReviewPublication {
   comments: InlineComment[];
 }
 
-/** Платформа хостинга: получить изменения PR, прочитать уже оставленные комментарии, опубликовать. */
+/** Платформа хостинга: изменения PR, свои прежние комментарии, их снятие и публикация ревью. */
 export interface ReviewPlatform {
   fetchChanges(): Promise<PullChanges>;
   /** Уже существующие инлайн-комментарии ревью (для идемпотентности при повторных прогонах). */
   fetchExistingComments(): Promise<ExistingComment[]>;
+  /** Удаляет комментарии по id (свои прежние — снимаем перед публикацией свежего ревью). */
+  deleteComments(ids: number[]): Promise<void>;
   publish(review: ReviewPublication): Promise<void>;
 }
 

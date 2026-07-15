@@ -119,27 +119,31 @@ describe('createGithubPlatform.fetchChanges', () => {
 });
 
 describe('createGithubPlatform.fetchExistingComments', () => {
-  it('возвращает путь/строку/тело; устаревший line → null', async () => {
+  it('возвращает id/путь/строку/тело; устаревший line → null; без id/path отбрасывается', async () => {
     const { fetchFn } = recordingFetch(() => [
-      { path: 'a.ts', line: 5, body: 'наше' },
-      { path: 'b.ts', line: null, body: 'устаревший' },
-      { line: 3, body: 'без пути' }, // нет path → отбрасывается
+      { id: 11, path: 'a.ts', line: 5, body: 'наше' },
+      { id: 12, path: 'b.ts', line: null, body: 'устаревший' },
+      { id: 13, line: 3, body: 'без пути' }, // нет path → отбрасывается
+      { path: 'c.ts', line: 1, body: 'без id' }, // нет id → отбрасывается
     ]);
     const comments = await createGithubPlatform(deps(fetchFn)).fetchExistingComments();
     assert.deepEqual(comments, [
-      { path: 'a.ts', line: 5, body: 'наше' },
-      { path: 'b.ts', line: null, body: 'устаревший' },
+      { id: 11, path: 'a.ts', line: 5, body: 'наше' },
+      { id: 12, path: 'b.ts', line: null, body: 'устаревший' },
     ]);
   });
 
   it('нет полей body/line — подставляются пустое/null; пустой список', async () => {
-    const { fetchFn } = recordingFetch(url => (url.endsWith('&page=1') ? [{ path: 'x.ts' }] : []));
+    const { fetchFn } = recordingFetch(url =>
+      url.endsWith('&page=1') ? [{ id: 7, path: 'x.ts' }] : [],
+    );
     const comments = await createGithubPlatform(deps(fetchFn)).fetchExistingComments();
-    assert.deepEqual(comments, [{ path: 'x.ts', line: null, body: '' }]);
+    assert.deepEqual(comments, [{ id: 7, path: 'x.ts', line: null, body: '' }]);
   });
 
   it('пагинация комментариев: полная страница → следующая, пустая → стоп', async () => {
     const full = Array.from({ length: 100 }, (_v, i) => ({
+      id: i + 1,
       path: `f${i}.ts`,
       line: i + 1,
       body: '',
@@ -152,6 +156,24 @@ describe('createGithubPlatform.fetchExistingComments', () => {
     const comments = await createGithubPlatform(deps(fetchFn)).fetchExistingComments();
     assert.equal(comments.length, 100);
     assert.equal(pages, 2);
+  });
+});
+
+describe('createGithubPlatform.deleteComments', () => {
+  it('DELETE по каждому id на /pulls/comments/{id}; пустой список — без запросов', async () => {
+    const { fetchFn, calls } = recordingFetch(() => ({}));
+    const platform = createGithubPlatform(deps(fetchFn));
+    await platform.deleteComments([11, 12]);
+    assert.deepEqual(
+      calls.map(c => `${c.method} ${c.url}`),
+      [
+        'DELETE https://api.github.com/repos/OliMe/ai-advent/pulls/comments/11',
+        'DELETE https://api.github.com/repos/OliMe/ai-advent/pulls/comments/12',
+      ],
+    );
+    calls.length = 0;
+    await platform.deleteComments([]);
+    assert.equal(calls.length, 0);
   });
 });
 

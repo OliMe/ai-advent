@@ -124,13 +124,14 @@ export function createGithubPlatform(deps: GithubDeps): ReviewPlatform {
         const batch = (await request(
           'GET',
           `/pulls/${deps.prNumber}/comments?per_page=${PER_PAGE}&page=${page}`,
-        )) as { path?: unknown; line?: unknown; body?: unknown }[];
+        )) as { id?: unknown; path?: unknown; line?: unknown; body?: unknown }[];
         if (!Array.isArray(batch) || batch.length === 0) {
           break;
         }
         for (const raw of batch) {
-          if (typeof raw.path === 'string') {
+          if (typeof raw.id === 'number' && typeof raw.path === 'string') {
             comments.push({
+              id: raw.id,
               path: raw.path,
               line: typeof raw.line === 'number' ? raw.line : null,
               body: typeof raw.body === 'string' ? raw.body : '',
@@ -143,6 +144,12 @@ export function createGithubPlatform(deps: GithubDeps): ReviewPlatform {
         page++;
       }
       return comments;
+    },
+
+    async deleteComments(ids: number[]): Promise<void> {
+      for (const id of ids) {
+        await request('DELETE', `/pulls/comments/${id}`);
+      }
     },
 
     async publish(review: ReviewPublication): Promise<void> {
