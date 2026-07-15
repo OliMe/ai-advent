@@ -47,7 +47,9 @@ describe('generateReview', () => {
     // Промпт содержит роль, эхо схемы и секции ввода (diff, доки, содержимое файлов).
     const system = seen?.messages[0].content ?? '';
     const user = seen?.messages[1].content ?? '';
-    assert.match(system, /строгий ревьюер/);
+    assert.match(system, /ревьюер кода/);
+    assert.match(system, /ТОЛЬКО добавленные и изменённые строки/); // фокус на изменениях
+    assert.match(system, /Пример хорошей находки/); // few-shot
     assert.match(system, /"severity"/); // эхо схемы
     assert.match(user, /Изменения на ревью/);
     assert.match(user, /Документация проекта/);
