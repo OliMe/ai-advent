@@ -1,0 +1,90 @@
+# pr-reviewer
+
+Автоматическое **AI-ревью pull request** (День 32): по появлению нового PR получает diff, обосновывает
+ревью документацией проекта (RAG) и изменённым кодом и оставляет **инлайн-комментарии прямо у строк** —
+потенциальные баги, архитектурные проблемы и рекомендации. Подключается к **любому** репозиторию на
+GitHub (GitLab — задел на следующий инкремент).
+
+> Изолированный пакет. Импортирует ядро `core` (клиент LLM, конфиг, токены, схемы) и `rag`
+> (индексация документации), БЕЗ сторонних зависимостей в рантайме — поэтому в CI не нужен даже
+> `npm install`. Нативный TypeScript без сборки, 100% покрытие логики (тонкие `cli.ts`/адаптеры вне
+> покрытия).
+
+## Как работает ход ревью
+
+```
+PR opened → cli.ts
+  1. fetchChanges()      ← diff + изменённые файлы из API PR (точные позиции строк для комментариев)
+  2. groundDocs()        ← RAG по документации проекта (мягкая деградация, если нет эмбеддингов)
+  3. generateReview()    ← LLM → структурные находки {file, line, severity, title, body} + summary
+  4. validateFindings()  ← находка идёт инлайн, ТОЛЬКО если её (файл, строка) реально в diff
+  5. publish()           ← инлайн-комментарии у строк + сводный комментарий (одно ревью)
+```
+
+**Почему diff из API, а не `git diff`:** только API PR отдаёт точные позиции строк, которые платформа
+принимает для инлайн-комментариев.
+
+**Анти-галлюцинация:** `validateFindings` — детерминированный предохранитель: замечание не ставится у
+несуществующей/некомментируемой строки, а уходит в сводку. Координаты не выдумываются (тот же принцип,
+что у цитатного гейта Дня 24, но под формат находок).
+
+## Переменные окружения
+
+| Переменная | Назначение |
+| ---------- | ---------- |
+| `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | Доступ к модели (через `core.loadConfig`). В CI — облачная модель или VPS-шлюз, не `localhost` |
+| `LLM_EMBEDDINGS_URL`, `LLM_EMBEDDINGS_MODEL` | Эмбеддинги для RAG по докам; не заданы → мягкая деградация на сырые доки |
+| `GITHUB_TOKEN` | Токен доступа (в Actions выдаётся автоматически) |
+| `PR_REVIEW_REPO` | `owner/name` (в Actions — `${{ github.repository }}`) |
+| `PR_REVIEW_PR_NUMBER` | Номер PR (в Actions — `${{ github.event.pull_request.number }}`) |
+| `PR_REVIEW_WORKDIR` | Рабочее дерево репозитория (доки + содержимое файлов); дефолт — cwd |
+| `GITHUB_API_URL` | База API (для GitHub Enterprise); дефолт `https://api.github.com` |
+| `PR_REVIEW_MAX_TOKENS` / `PR_REVIEW_TEMPERATURE` / `PR_REVIEW_TOP_K_DOCS` | Параметры генерации (дефолты 2048 / 0.2 / 5) |
+| `PR_REVIEW_NO_THINKING=1` | Гасит рассуждения модели (нужно GLM) |
+
+## Запуск
+
+```bash
+# Локально на файле diff, без постинга — печатает раскладку ревью:
+git diff origin/main...HEAD > /tmp/pr.diff
+node pr-reviewer/src/cli.ts --diff /tmp/pr.diff --dry-run
+
+# Боевой прогон на реальном PR (постит инлайн-комментарии):
+GITHUB_TOKEN=… PR_REVIEW_REPO=owner/name PR_REVIEW_PR_NUMBER=7 node pr-reviewer/src/cli.ts
+```
+
+Флаг `--dry-run` (и режим `--diff`) печатает, что и куда легло бы, ничего не публикуя.
+
+## Подключение к репозиторию (GitHub Action)
+
+Ревью запускается **по появлению нового PR**. Для этого репозитория — `.github/workflows/ai-review.yml`.
+Для **любого другого** репозитория скопируйте шаблон `docs/ai-review-workflow.yml` (он чекаутит и ваш
+репозиторий, и ai-advent с ревьюером) и задайте в настройках репозитория:
+- **Secrets:** `LLM_API_KEY` (+ опц. `LLM_EMBEDDINGS_API_KEY`);
+- **Variables:** `LLM_BASE_URL`, `LLM_MODEL` (+ опц. `LLM_EMBEDDINGS_URL`, `LLM_EMBEDDINGS_MODEL`).
+
+**Ограничение:** для PR из форков `GITHUB_TOKEN` только на чтение и секреты недоступны — инлайн-постинг
+работает для PR из веток самого репозитория.
+
+## Команды
+
+```bash
+npm --prefix pr-reviewer run typecheck   # tsc --noEmit
+npm --prefix pr-reviewer test            # node:test + покрытие 100/100/100
+npm --prefix pr-reviewer run write-prettier
+```
+
+## Структура
+
+| Файл | Назначение |
+| ---- | ---------- |
+| `src/diff.ts` | Разбор unified diff → файлы/ханки + множество комментируемых строк |
+| `src/schema.ts` | Схема ревью (`REVIEW_SCHEMA`) + толерантный разбор находок |
+| `src/review.ts` | Сборка промпта (бюджет токенов) + `completeStructured` из ядра |
+| `src/grounding.ts` | RAG по докам (через `rag`) с мягкой деградацией + чтение изменённых файлов |
+| `src/validate.ts` | Анти-галлюцинация: находка ↔ реальная комментируемая строка |
+| `src/render.ts` | Форматирование комментариев и сводки |
+| `src/platform.ts` | Шов `ReviewPlatform` + HTTP с ретраями (fetch инжектируется) |
+| `src/github.ts` | Адаптер GitHub: получение файлов PR + постинг ревью |
+| `src/config.ts` | Загрузка конфигурации ревью из окружения |
+| `src/cli.ts` | Точка входа (проводка, вне покрытия) |

@@ -1,0 +1,46 @@
+# AI-ревью PR (День 32). Запускается по появлению нового pull request и оставляет
+# инлайн-комментарии у соответствующих строк. Всё берётся из настроек репозитория:
+#   Secrets:  LLM_API_KEY  (+ опц. LLM_EMBEDDINGS_API_KEY)
+#   Variables: LLM_BASE_URL, LLM_MODEL (+ опц. LLM_EMBEDDINGS_URL, LLM_EMBEDDINGS_MODEL)
+# GITHUB_TOKEN выдаётся Actions автоматически — руками указывать не нужно.
+#
+# LLM_BASE_URL должен быть ДОСТУПЕН с раннера: облачная модель (z.ai/GLM) или свой VPS-шлюз.
+# Локальный localhost:11434 (Ollama) с облачного раннера недоступен.
+name: AI-ревью PR
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24' # нативный запуск .ts без сборки (type-stripping)
+
+      # Рантайму ревьюера сторонние зависимости не нужны (core/rag/pr-reviewer — только
+      # встроенные модули Node + fetch), поэтому npm install не требуется.
+      - name: AI-ревью
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REVIEW_REPO: ${{ github.repository }}
+          PR_REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_EMBEDDINGS_URL: ${{ vars.LLM_EMBEDDINGS_URL }}
+          LLM_EMBEDDINGS_MODEL: ${{ vars.LLM_EMBEDDINGS_MODEL }}
+          LLM_EMBEDDINGS_API_KEY: ${{ secrets.LLM_EMBEDDINGS_API_KEY }}
+          # GLM тратит бюджет на рассуждения — гасим (для Ollama/локали можно убрать).
+          PR_REVIEW_NO_THINKING: '1'
+        run: node pr-reviewer/src/cli.ts

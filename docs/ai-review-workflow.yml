@@ -1,0 +1,56 @@
+# Копируемый шаблон AI-ревью PR для ЛЮБОГО GitHub-репозитория (День 32).
+# Положите этот файл в чужой репозиторий как `.github/workflows/ai-review.yml`.
+#
+# Настройки репозитория (Settings → Secrets and variables → Actions):
+#   Secrets:   LLM_API_KEY            (+ опц. LLM_EMBEDDINGS_API_KEY)
+#   Variables: LLM_BASE_URL, LLM_MODEL (+ опц. LLM_EMBEDDINGS_URL, LLM_EMBEDDINGS_MODEL)
+# GITHUB_TOKEN выдаётся автоматически. LLM_BASE_URL должен быть доступен с раннера
+# (облачная модель или свой VPS-шлюз), а не localhost.
+#
+# Ограничение: для PR из форков GITHUB_TOKEN только на чтение и секреты недоступны —
+# инлайн-комментарии работают для PR из веток самого репозитория.
+name: AI-ревью PR
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout своего репозитория
+        uses: actions/checkout@v4
+
+      # Инструментарий ревьюера — из ai-advent (в подкаталог, чтобы не смешивать с вашим кодом).
+      - name: Checkout ai-advent (ревьюер)
+        uses: actions/checkout@v4
+        with:
+          repository: OliMe/ai-advent
+          ref: main
+          path: .ai-advent
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: AI-ревью
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_REVIEW_REPO: ${{ github.repository }}
+          PR_REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Доки и содержимое файлов ревьюер читает из ВАШЕГО рабочего дерева.
+          PR_REVIEW_WORKDIR: ${{ github.workspace }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_EMBEDDINGS_URL: ${{ vars.LLM_EMBEDDINGS_URL }}
+          LLM_EMBEDDINGS_MODEL: ${{ vars.LLM_EMBEDDINGS_MODEL }}
+          LLM_EMBEDDINGS_API_KEY: ${{ secrets.LLM_EMBEDDINGS_API_KEY }}
+          PR_REVIEW_NO_THINKING: '1'
+        run: node .ai-advent/pr-reviewer/src/cli.ts
