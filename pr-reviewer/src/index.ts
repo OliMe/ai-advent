@@ -8,6 +8,8 @@ export { generateReview } from './review.ts';
 export type { ReviewInput, ReviewDeps } from './review.ts';
 export { groundDocs, readChangedFiles } from './grounding.ts';
 export type { GroundingDeps } from './grounding.ts';
+export { computeIndexCacheKey, FileIndexCache } from './index-cache.ts';
+export type { IndexCache, IndexCacheIo } from './index-cache.ts';
 export { loadReviewConfig, parsePlatform, parseMinSeverity } from './config.ts';
 export type { Platform, ReviewConfig } from './config.ts';
 export { severityRank, meetsSeverity, dedupeFindings, postprocessFindings } from './postprocess.ts';

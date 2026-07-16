@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { SEVERITY_ORDER } from './schema.ts';
 import type { FindingSeverity } from './schema.ts';
 
@@ -17,6 +18,12 @@ export interface ReviewConfig {
   prNumber: number;
   /** Путь к рабочему дереву репозитория (доки + содержимое файлов). */
   workingDir: string;
+  /**
+   * Каталог кэша индекса доков. По умолчанию — ВНУТРИ рабочего дерева: GitLab CI кэширует только пути
+   * внутри проекта (в отличие от `actions/cache`), поэтому дефолт workspace-relative работает на обеих
+   * платформах без правок.
+   */
+  cacheDir: string;
   /** Потолок токенов ответа модели. */
   maxTokens: number;
   /** Температура генерации ревью (низкая — ответ по фактам). */
@@ -75,13 +82,15 @@ export function loadReviewConfig(env: NodeJS.ProcessEnv, workingDirectory: strin
     env.CI_API_V4_URL?.trim() ||
     defaultApiBaseUrl(platform)
   ).replace(/\/+$/, '');
+  const workingDir = env.PR_REVIEW_WORKDIR?.trim() || workingDirectory;
   return {
     platform,
     apiBaseUrl,
     token: env.PR_REVIEW_TOKEN?.trim() || env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim() || '',
     repo: env.PR_REVIEW_REPO?.trim() || env.GITHUB_REPOSITORY?.trim() || '',
     prNumber: boundedInt(env.PR_REVIEW_PR_NUMBER, 0, 0, Number.MAX_SAFE_INTEGER),
-    workingDir: env.PR_REVIEW_WORKDIR?.trim() || workingDirectory,
+    workingDir,
+    cacheDir: env.PR_REVIEW_CACHE_DIR?.trim() || join(workingDir, '.pr-review-cache'),
     maxTokens: boundedInt(env.PR_REVIEW_MAX_TOKENS, 2048, 256, 32000),
     temperature: parseTemperature(env.PR_REVIEW_TEMPERATURE, 0.2),
     topKDocs: boundedInt(env.PR_REVIEW_TOP_K_DOCS, 5, 0, 50),

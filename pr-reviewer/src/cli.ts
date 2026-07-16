@@ -5,7 +5,8 @@
  *
  * Диагностика идёт в stderr; в stdout — итог ревью (удобно смотреть в логах Action).
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import {
   loadConfig,
   loadEmbeddingsConfig,
@@ -19,6 +20,8 @@ import type { EmbedFn } from '../../rag/src/index.ts';
 import { loadReviewConfig } from './config.ts';
 import { parseUnifiedDiff } from './diff.ts';
 import { groundDocs, readChangedFiles } from './grounding.ts';
+import { FileIndexCache } from './index-cache.ts';
+import type { IndexCacheIo } from './index-cache.ts';
 import { generateReview } from './review.ts';
 import { validateFindings } from './validate.ts';
 import { postprocessFindings } from './postprocess.ts';
@@ -48,12 +51,34 @@ async function main(): Promise<void> {
   let embed: EmbedFn = async () => {
     throw new Error('эмбеддинги не настроены');
   };
+  // Идентификатор схемы эмбеддинга (имя модели) — часть ключа кэша: смена модели инвалидирует индекс.
+  let embeddingId = '';
   try {
-    const embeddings = new EmbeddingsClient(loadEmbeddingsConfig(process.env));
+    const embeddingsConfig = loadEmbeddingsConfig(process.env);
+    const embeddings = new EmbeddingsClient(embeddingsConfig);
     embed = inputs => embeddings.embed(inputs);
+    embeddingId = embeddingsConfig.model;
   } catch {
     console.error('эмбеддинги не настроены → RAG по докам деградирует на сырые доки');
   }
+
+  // Файловый кэш индекса доков: собираем его ОДИН раз, дальше по неизменным докам берём готовый (на
+  // CPU-эмбеддере сборка корпуса — минуты). Ключ — по содержимому доков; каталог переживает прогоны
+  // CI через actions/cache (GitHub) / cache: (GitLab). Битый/отсутствующий файл → пересбор.
+  const cacheIo: IndexCacheIo = {
+    read(path) {
+      try {
+        return readFileSync(path, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+    write(path, content) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content);
+    },
+  };
+  const docsIndexCache = new FileIndexCache(review.cacheDir, cacheIo);
 
   // Платформа (один экземпляр на прогон): нужна для получения изменений, чтения уже оставленных
   // комментариев (идемпотентность) и публикации. В режиме --diff (локальный файл) не создаётся.
@@ -98,7 +123,14 @@ async function main(): Promise<void> {
     loadLocalDocuments(source, nodeLocalIo),
   );
   const docFragments = await groundDocs(
-    { embed, loadDocs: () => docs, now: new Date().toISOString(), topKCount: review.topKDocs },
+    {
+      embed,
+      loadDocs: () => docs,
+      now: new Date().toISOString(),
+      topKCount: review.topKDocs,
+      cache: docsIndexCache,
+      embeddingId,
+    },
     `${changes.title}\n${changes.files.map(file => file.path).join('\n')}`,
   );
   const fileContents = readChangedFiles(changes.files, path => {

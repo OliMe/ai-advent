@@ -1,6 +1,8 @@
 import { buildIndex, topK } from '../../rag/src/index.ts';
-import type { Document, EmbedFn } from '../../rag/src/index.ts';
+import type { Document, EmbedFn, Index } from '../../rag/src/index.ts';
 import type { DiffFile } from './diff.ts';
+import type { IndexCache } from './index-cache.ts';
+import { computeIndexCacheKey } from './index-cache.ts';
 
 /** Зависимости обоснования ревью (инъекция — для тестов без сети/ФС). */
 export interface GroundingDeps {
@@ -12,10 +14,23 @@ export interface GroundingDeps {
   now: string;
   /** Сколько фрагментов вернуть. */
   topKCount: number;
+  /**
+   * Кэш индекса доков (опц.). Есть → корпус эмбеддится ОДИН раз (по неизменным докам — из кэша), нет →
+   * индекс собирается на каждый прогон. Эмбеддинг запроса делается всегда (один вектор — дёшево).
+   */
+  cache?: IndexCache;
+  /**
+   * Идентификатор схемы эмбеддинга (обычно имя модели) — часть ключа кэша: смена модели даёт другие
+   * вектора, старый индекс несовместим и должен пересобраться.
+   */
+  embeddingId?: string;
 }
 
 /** Параметры чанкинга доков — structural (markdown по заголовкам). */
 const CHUNK_OPTIONS = { fixed: { size: 2000, overlap: 200 }, structuralMaxSize: 2000 };
+
+/** Стратегия чанкинга доков (часть ключа кэша). */
+const DOCS_STRATEGY = 'structural' as const;
 
 /** Рендер фрагмента документации: путь › раздел + тело. */
 function renderFragment(file: string, section: string, text: string): string {
@@ -23,9 +38,35 @@ function renderFragment(file: string, section: string, text: string): string {
 }
 
 /**
- * Фрагменты документации по запросу через RAG: индексирует доки, эмбеддит запрос, берёт top-k. Если
- * эмбеддинги недоступны (нет эндпоинта/сеть) — МЯГКАЯ ДЕГРАДАЦИЯ: возвращает сырые доки как есть
- * (обрезку по бюджету делает сборка промпта ревью). Нет доков → пустой список.
+ * Индекс доков: из кэша (если задан и есть валидный по ключу-содержимому) либо сборка «с нуля» с
+ * последующим сохранением в кэш. Без кэша — просто сборка (прежнее поведение).
+ */
+async function loadOrBuildIndex(deps: GroundingDeps, docs: Document[]): Promise<Index> {
+  const build = () =>
+    buildIndex(docs, {
+      strategy: DOCS_STRATEGY,
+      chunk: CHUNK_OPTIONS,
+      embed: deps.embed,
+      model: 'pr-reviewer-docs',
+      createdAt: deps.now,
+    });
+  if (deps.cache === undefined) {
+    return build();
+  }
+  const key = computeIndexCacheKey(docs, DOCS_STRATEGY, deps.embeddingId ?? '');
+  const cached = deps.cache.load(key);
+  if (cached !== null) {
+    return cached;
+  }
+  const built = await build();
+  deps.cache.save(key, built);
+  return built;
+}
+
+/**
+ * Фрагменты документации по запросу через RAG: берёт индекс (из кэша или сборкой), эмбеддит запрос,
+ * возвращает top-k. Если эмбеддинги недоступны (нет эндпоинта/сеть) — МЯГКАЯ ДЕГРАДАЦИЯ: возвращает
+ * сырые доки как есть (обрезку по бюджету делает сборка промпта ревью). Нет доков → пустой список.
  */
 export async function groundDocs(deps: GroundingDeps, query: string): Promise<string[]> {
   const docs = deps.loadDocs();
@@ -33,13 +74,7 @@ export async function groundDocs(deps: GroundingDeps, query: string): Promise<st
     return [];
   }
   try {
-    const index = await buildIndex(docs, {
-      strategy: 'structural',
-      chunk: CHUNK_OPTIONS,
-      embed: deps.embed,
-      model: 'pr-reviewer-docs',
-      createdAt: deps.now,
-    });
+    const index = await loadOrBuildIndex(deps, docs);
     const [queryVector] = await deps.embed([query]);
     if (queryVector === undefined) {
       throw new Error('пустой вектор запроса');

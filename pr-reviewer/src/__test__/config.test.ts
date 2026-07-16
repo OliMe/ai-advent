@@ -31,6 +31,7 @@ describe('loadReviewConfig', () => {
       repo: '',
       prNumber: 0,
       workingDir: '/work/repo',
+      cacheDir: '/work/repo/.pr-review-cache',
       maxTokens: 2048,
       temperature: 0.2,
       topKDocs: 5,
@@ -38,6 +39,17 @@ describe('loadReviewConfig', () => {
       minSeverity: 'nitpick',
       maxInline: 20,
     });
+  });
+
+  it('cacheDir: дефолт внутри рабочего дерева, PR_REVIEW_CACHE_DIR переопределяет', () => {
+    assert.equal(
+      loadReviewConfig({ PR_REVIEW_WORKDIR: '/checkout' }, '/cwd').cacheDir,
+      '/checkout/.pr-review-cache',
+    );
+    assert.equal(
+      loadReviewConfig({ PR_REVIEW_CACHE_DIR: '/var/cache/pr' }, '/cwd').cacheDir,
+      '/var/cache/pr',
+    );
   });
 
   it('PR_REVIEW_MIN_SEVERITY и PR_REVIEW_MAX_INLINE', () => {
