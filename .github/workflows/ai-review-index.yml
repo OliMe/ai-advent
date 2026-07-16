@@ -1,0 +1,47 @@
+# Фоновый прогрев индекса документации для AI-ревью PR (День 32, слой 3).
+# По изменению доков в main пересобирает индекс и кладёт в тот же кэш, что использует ревью. Тогда
+# даже ПЕРВЫЙ PR после правки доков попадает в тёплый кэш, а не платит минуты на пересборку корпуса.
+# Ключ кэша тот же (hashFiles по докам), path тот же (.pr-review-cache) — ревью просто восстановит.
+name: Прогрев индекса AI-ревью
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - '**/*.mdx'
+      - 'docs/**'
+      - 'openapi*'
+      - 'schema.*'
+      - '**/*.proto'
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Кэш индекса документации
+        uses: actions/cache@v4
+        with:
+          path: .pr-review-cache
+          key: pr-review-docs-index-${{ hashFiles('**/*.md', '**/*.mdx', 'docs/**', 'openapi*', 'schema.*', '**/*.proto') }}
+          restore-keys: |
+            pr-review-docs-index-
+
+      # --warm-cache: собрать индекс доков и выйти. Нужен только эмбеддер — модель/токен PR не требуются.
+      - name: Прогреть индекс
+        env:
+          LLM_EMBEDDINGS_URL: ${{ vars.LLM_EMBEDDINGS_URL }}
+          LLM_EMBEDDINGS_MODEL: ${{ vars.LLM_EMBEDDINGS_MODEL }}
+          LLM_EMBEDDINGS_API_KEY: ${{ secrets.LLM_EMBEDDINGS_API_KEY }}
+        run: node pr-reviewer/src/cli.ts --warm-cache

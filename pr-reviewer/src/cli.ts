@@ -43,9 +43,7 @@ function optionValue(argv: string[], name: string): string | undefined {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const dryRun = hasFlag(argv, '--dry-run');
-  const llm = loadConfig();
   const review = loadReviewConfig(process.env, process.cwd());
-  const client = new ChatCompletionClient(llm);
 
   // Эмбеддинги: нет конфига → embed бросает, groundDocs мягко деградирует на сырые доки.
   let embed: EmbedFn = async () => {
@@ -79,6 +77,31 @@ async function main(): Promise<void> {
     },
   };
   const docsIndexCache = new FileIndexCache(review.cacheDir, cacheIo);
+
+  // Прогрев кэша (фоновый пре-варм в CI по push в доки): собрать индекс доков и выйти — без обращения
+  // к модели и API PR. Нужен только эмбеддер; LLM-конфиг (loadConfig ниже) здесь НЕ требуется. Так
+  // даже первый PR после правки доков попадает в тёплый кэш.
+  if (hasFlag(argv, '--warm-cache')) {
+    const warmDocs = discoverDocSources(review.workingDir, nodeProjectIo).flatMap(source =>
+      loadLocalDocuments(source, nodeLocalIo),
+    );
+    await groundDocs(
+      {
+        embed,
+        loadDocs: () => warmDocs,
+        now: new Date().toISOString(),
+        topKCount: 1,
+        cache: docsIndexCache,
+        embeddingId,
+      },
+      'warm cache',
+    );
+    console.error(`индекс доков прогрет: ${warmDocs.length} документов → ${review.cacheDir}`);
+    return;
+  }
+
+  const llm = loadConfig();
+  const client = new ChatCompletionClient(llm);
 
   // Платформа (один экземпляр на прогон): нужна для получения изменений, чтения уже оставленных
   // комментариев (идемпотентность) и публикации. В режиме --diff (локальный файл) не создаётся.
