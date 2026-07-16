@@ -52,6 +52,9 @@ jobs:
           LLM_EMBEDDINGS_URL: ${{ vars.LLM_EMBEDDINGS_URL }}
           LLM_EMBEDDINGS_MODEL: ${{ vars.LLM_EMBEDDINGS_MODEL }}
           LLM_EMBEDDINGS_API_KEY: ${{ secrets.LLM_EMBEDDINGS_API_KEY }}
+          # Эмбеддинги корпуса доков на CPU-эмбеддере — минуты на запрос; дефолт 60с их обрывает
+          # (индекс не собирается, кэш пуст). Даём щедрый потолок на запрос.
+          LLM_REQUEST_TIMEOUT_MS: '300000'
           # GLM тратит бюджет на рассуждения — гасим (для Ollama/локали можно убрать).
           PR_REVIEW_NO_THINKING: '1'
         run: node pr-reviewer/src/cli.ts

@@ -63,6 +63,7 @@ GitLab CI кэширует только пути внутри проекта, в
 | `PR_REVIEW_PR_NUMBER` | Номер PR (в Actions — `${{ github.event.pull_request.number }}`) |
 | `PR_REVIEW_WORKDIR` | Рабочее дерево репозитория (доки + содержимое файлов); дефолт — cwd |
 | `PR_REVIEW_CACHE_DIR` | Каталог кэша индекса доков; дефолт `.pr-review-cache` внутри рабочего дерева (совместимо с GitLab CI) |
+| `LLM_REQUEST_TIMEOUT_MS` | Потолок на запрос (мс). Для эмбеддинга корпуса доков на CPU-эмбеддере дефолт 60000 МАЛ (обрывает сборку → пустой кэш); в CI ставим `300000` |
 | `GITHUB_API_URL` | База API (для GitHub Enterprise); дефолт `https://api.github.com` |
 | `PR_REVIEW_MAX_TOKENS` / `PR_REVIEW_TEMPERATURE` / `PR_REVIEW_TOP_K_DOCS` | Параметры генерации (дефолты 2048 / 0.2 / 5) |
 | `PR_REVIEW_MIN_SEVERITY` | Минимальная категория для ИНЛАЙНА (`bug`/`architecture`/`recommendation`/`nitpick`); менее серьёзные — в сводку. Дефолт `nitpick` (не режет) |

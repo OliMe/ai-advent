@@ -19,7 +19,7 @@ import { loadLocalDocuments, nodeLocalIo } from '../../rag/src/index.ts';
 import type { EmbedFn } from '../../rag/src/index.ts';
 import { loadReviewConfig } from './config.ts';
 import { parseUnifiedDiff } from './diff.ts';
-import { groundDocs, readChangedFiles } from './grounding.ts';
+import { groundDocs, warmDocsIndex, readChangedFiles } from './grounding.ts';
 import { FileIndexCache } from './index-cache.ts';
 import type { IndexCacheIo } from './index-cache.ts';
 import { generateReview } from './review.ts';
@@ -85,18 +85,19 @@ async function main(): Promise<void> {
     const warmDocs = discoverDocSources(review.workingDir, nodeProjectIo).flatMap(source =>
       loadLocalDocuments(source, nodeLocalIo),
     );
-    await groundDocs(
-      {
-        embed,
-        loadDocs: () => warmDocs,
-        now: new Date().toISOString(),
-        topKCount: 1,
-        cache: docsIndexCache,
-        embeddingId,
-      },
-      'warm cache',
+    // Строгая сборка: ошибка/таймаут эмбеддера ПРОБРАСЫВАЕТСЯ (main().catch → exit 1 → job красный),
+    // а не молча деградирует в пустой кэш.
+    const chunkCount = await warmDocsIndex({
+      embed,
+      loadDocs: () => warmDocs,
+      now: new Date().toISOString(),
+      topKCount: 1,
+      cache: docsIndexCache,
+      embeddingId,
+    });
+    console.error(
+      `индекс доков прогрет: ${warmDocs.length} документов, ${chunkCount} чанков → ${review.cacheDir}`,
     );
-    console.error(`индекс доков прогрет: ${warmDocs.length} документов → ${review.cacheDir}`);
     return;
   }
 

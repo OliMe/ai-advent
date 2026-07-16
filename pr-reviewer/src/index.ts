@@ -6,7 +6,7 @@ export { validateFindings } from './validate.ts';
 export type { ValidatedFindings } from './validate.ts';
 export { generateReview } from './review.ts';
 export type { ReviewInput, ReviewDeps } from './review.ts';
-export { groundDocs, readChangedFiles } from './grounding.ts';
+export { groundDocs, warmDocsIndex, readChangedFiles } from './grounding.ts';
 export type { GroundingDeps } from './grounding.ts';
 export { computeIndexCacheKey, FileIndexCache } from './index-cache.ts';
 export type { IndexCache, IndexCacheIo } from './index-cache.ts';

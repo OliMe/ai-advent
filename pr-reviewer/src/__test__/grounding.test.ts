@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { groundDocs, readChangedFiles, fileFromPatch } from '../index.ts';
+import { groundDocs, warmDocsIndex, readChangedFiles, fileFromPatch } from '../index.ts';
 import type { GroundingDeps, IndexCache } from '../index.ts';
 import type { Document, Index } from '../../../rag/src/index.ts';
 
@@ -125,6 +125,46 @@ describe('groundDocs с кэшем индекса', () => {
     const fragments = await groundDocs(deps, 'как считается доставка');
     assert.equal(fragments.length, 1);
     assert.equal(cache.store.size, 1);
+  });
+});
+
+describe('warmDocsIndex (строгий прогрев)', () => {
+  it('собирает индекс, сохраняет в кэш, возвращает число чанков', async () => {
+    const cache = memCache();
+    const chunkCount = await warmDocsIndex({
+      embed: keywordEmbed('доставк'),
+      loadDocs: () => DOCS,
+      now: 't',
+      topKCount: 1,
+      cache,
+      embeddingId: 'nomic',
+    });
+    assert.ok(chunkCount >= 1);
+    assert.equal(cache.store.size, 1);
+  });
+
+  it('нет доков → 0 (кэшировать нечего)', async () => {
+    const chunkCount = await warmDocsIndex({
+      embed: keywordEmbed('x'),
+      loadDocs: () => [],
+      now: 't',
+      topKCount: 1,
+    });
+    assert.equal(chunkCount, 0);
+  });
+
+  it('ошибка эмбеддера ПРОБРАСЫВАЕТСЯ (видимое падение, не мягкая деградация)', async () => {
+    await assert.rejects(
+      warmDocsIndex({
+        embed: async () => {
+          throw new Error('эндпоинт недоступен');
+        },
+        loadDocs: () => DOCS,
+        now: 't',
+        topKCount: 1,
+      }),
+      /эндпоинт недоступен/,
+    );
   });
 });
 

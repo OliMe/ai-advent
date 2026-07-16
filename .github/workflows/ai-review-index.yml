@@ -44,4 +44,6 @@ jobs:
           LLM_EMBEDDINGS_URL: ${{ vars.LLM_EMBEDDINGS_URL }}
           LLM_EMBEDDINGS_MODEL: ${{ vars.LLM_EMBEDDINGS_MODEL }}
           LLM_EMBEDDINGS_API_KEY: ${{ secrets.LLM_EMBEDDINGS_API_KEY }}
+          # Сборка индекса на CPU-эмбеддере — минуты; дефолт 60с обрывает запрос → пустой кэш.
+          LLM_REQUEST_TIMEOUT_MS: '300000'
         run: node pr-reviewer/src/cli.ts --warm-cache
