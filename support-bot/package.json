@@ -1,0 +1,34 @@
+{
+  "name": "support-bot",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "description": "Автономный ассистент поддержки: по событию в тикете читает тред через support-mcp (CRM), отвечает по FAQ (RAG + цитатный гейт) с учётом контекста и постит ответ обратно. Детерминированный поток, защита от петли.",
+  "scripts": {
+    "start": "node src/cli.ts",
+    "typecheck": "tsc",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/cli.ts' --test-coverage-exclude='src/__test__/**' --test-coverage-exclude='../core/**' --test-coverage-exclude='../rag/**' --test-coverage-exclude='../grounding/**' --test-coverage-exclude='../mcp-client/**' --test-coverage-exclude='../support-mcp/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
+    "lint-prettier": "prettier \"src/**/*.ts\" --check",
+    "write-prettier": "prettier \"src/**/*.ts\" --write"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "printWidth": 100,
+    "arrowParens": "avoid",
+    "semi": true,
+    "trailingComma": "all",
+    "tabWidth": 2
+  }
+}
