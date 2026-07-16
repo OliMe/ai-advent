@@ -77,6 +77,7 @@ async function main(): Promise<void> {
     },
   };
   const docsIndexCache = new FileIndexCache(review.cacheDir, cacheIo);
+  console.error(`кэш индекса доков: ${review.cacheDir}`);
 
   // Прогрев кэша (фоновый пре-варм в CI по push в доки): собрать индекс доков и выйти — без обращения
   // к модели и API PR. Нужен только эмбеддер; LLM-конфиг (loadConfig ниже) здесь НЕ требуется. Так
