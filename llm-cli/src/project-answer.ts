@@ -9,9 +9,8 @@ import type {
 } from '../../core/src/index.ts';
 import { askModel } from './chat.ts';
 import { forcedRagSearch } from './grounded.ts';
-import { resolveRagAnswer } from './citation-guard.ts';
-import { toEvidenceChunks } from './evidence.ts';
-import type { ToolEvidence } from './evidence.ts';
+import { resolveRagAnswer, toEvidenceChunks } from '../../grounding/src/index.ts';
+import type { ToolEvidence } from '../../grounding/src/index.ts';
 import { isGitBranchTool, isGitStatusTool, workspaceDocSources } from './project.ts';
 import {
   CODE_SEARCH_SYSTEM,

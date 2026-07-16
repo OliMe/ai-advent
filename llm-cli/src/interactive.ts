@@ -82,8 +82,7 @@ import {
   formatRagResultForDisplay,
   queryMentionsSource,
 } from './rag-directive.ts';
-import { resolveRagAnswer } from './citation-guard.ts';
-import { FAITHFULNESS_CHECKER_SYSTEM } from './faithfulness.ts';
+import { resolveRagAnswer, FAITHFULNESS_CHECKER_SYSTEM } from '../../grounding/src/index.ts';
 import {
   isConversationalReply,
   isRecallTurn,

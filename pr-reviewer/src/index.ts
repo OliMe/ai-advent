@@ -6,10 +6,14 @@ export { validateFindings } from './validate.ts';
 export type { ValidatedFindings } from './validate.ts';
 export { generateReview } from './review.ts';
 export type { ReviewInput, ReviewDeps } from './review.ts';
-export { groundDocs, warmDocsIndex, readChangedFiles } from './grounding.ts';
-export type { GroundingDeps } from './grounding.ts';
-export { computeIndexCacheKey, FileIndexCache } from './index-cache.ts';
-export type { IndexCache, IndexCacheIo } from './index-cache.ts';
+export {
+  groundDocs,
+  warmDocsIndex,
+  computeIndexCacheKey,
+  FileIndexCache,
+} from '../../grounding/src/index.ts';
+export type { GroundingDeps, IndexCache, IndexCacheIo } from '../../grounding/src/index.ts';
+export { readChangedFiles } from './changed-files.ts';
 export { loadReviewConfig, parsePlatform, parseMinSeverity } from './config.ts';
 export type { Platform, ReviewConfig } from './config.ts';
 export { severityRank, meetsSeverity, dedupeFindings, postprocessFindings } from './postprocess.ts';

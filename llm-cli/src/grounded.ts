@@ -1,6 +1,6 @@
 import type { ChatMessage, Task, ToolSet } from '../../core/src/index.ts';
 import { isSearchDocsTool } from './rag-directive.ts';
-import { normalizeForMatch } from './citation-guard.ts';
+import { normalizeForMatch } from '../../grounding/src/index.ts';
 
 /** Явно разговорные реплики (не вопросы к документам) — на них grounded-поиск не запускается. */
 const FILLERS = new Set([

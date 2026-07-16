@@ -1,0 +1,30 @@
+{
+  "name": "grounding",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "description": "Общий пакет обоснованного ответа: кэш RAG-индекса доков (сборка один раз, попадание вместо пересбора) + анти-галлюцинационный цитатный гейт (источники ⊂ найденного + дословная цитата-якорь, «не знаю» при слабом контексте). Переиспользуется pr-reviewer, llm-cli и support-bot.",
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "node --test --experimental-test-coverage --test-coverage-exclude='src/__test__/**' --test-coverage-exclude='../core/**' --test-coverage-exclude='../rag/**' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 'src/__test__/**/*.test.ts'",
+    "lint-prettier": "prettier \"src/**/*.ts\" --check",
+    "write-prettier": "prettier \"src/**/*.ts\" --write"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "printWidth": 100,
+    "arrowParens": "avoid",
+    "semi": true,
+    "trailingComma": "all",
+    "tabWidth": 2
+  }
+}

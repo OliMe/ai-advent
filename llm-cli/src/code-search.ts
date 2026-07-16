@@ -1,5 +1,5 @@
 import type { ProjectContext, ToolSet } from '../../core/src/index.ts';
-import type { ToolEvidence } from './evidence.ts';
+import type { ToolEvidence } from '../../grounding/src/index.ts';
 
 /**
  * Промпт выбора шаблонов поиска по коду. Отдельная узкая подзадача (как rewrite в RAG): слабая

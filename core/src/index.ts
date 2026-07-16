@@ -125,6 +125,8 @@ export {
   INVARIANT_CHECKER_SYSTEM,
 } from './invariant-guard.ts';
 export type { EnforceInvariantsOptions } from './invariant-guard.ts';
+export { requestJson } from './http-request.ts';
+export type { HttpResponse, FetchLike, RequestOptions } from './http-request.ts';
 export type {
   Role,
   ChatMessage,

@@ -1,14 +1,13 @@
 import { buildIndex, topK } from '../../rag/src/index.ts';
 import type { Document, EmbedFn, Index } from '../../rag/src/index.ts';
-import type { DiffFile } from './diff.ts';
 import type { IndexCache } from './index-cache.ts';
 import { computeIndexCacheKey } from './index-cache.ts';
 
-/** Зависимости обоснования ревью (инъекция — для тестов без сети/ФС). */
+/** Зависимости обоснования по докам через RAG (инъекция — для тестов без сети/ФС). */
 export interface GroundingDeps {
   /** Эмбеддинги (обычно `EmbeddingsClient.embed`). */
   embed: EmbedFn;
-  /** Документы проекта (обычно `loadLocalDocuments` по `docSources`). */
+  /** Документы (обычно `loadLocalDocuments` по источникам). */
   loadDocs: () => Document[];
   /** Момент сборки индекса (ISO) — время инжектируется, в логике его нет. */
   now: string;
@@ -32,6 +31,9 @@ const CHUNK_OPTIONS = { fixed: { size: 2000, overlap: 200 }, structuralMaxSize: 
 /** Стратегия чанкинга доков (часть ключа кэша). */
 const DOCS_STRATEGY = 'structural' as const;
 
+/** Имя модели в метаданных индекса (косметика; на ключ кэша не влияет — там своя схема эмбеддинга). */
+const DOCS_INDEX_MODEL = 'grounding-docs';
+
 /** Рендер фрагмента документации: путь › раздел + тело. */
 function renderFragment(file: string, section: string, text: string): string {
   return `${file}${section ? ` › ${section}` : ''}\n${text}`;
@@ -47,7 +49,7 @@ async function loadOrBuildIndex(deps: GroundingDeps, docs: Document[]): Promise<
       strategy: DOCS_STRATEGY,
       chunk: CHUNK_OPTIONS,
       embed: deps.embed,
-      model: 'pr-reviewer-docs',
+      model: DOCS_INDEX_MODEL,
       createdAt: deps.now,
     });
   if (deps.cache === undefined) {
@@ -82,7 +84,7 @@ export async function warmDocsIndex(deps: GroundingDeps): Promise<number> {
 /**
  * Фрагменты документации по запросу через RAG: берёт индекс (из кэша или сборкой), эмбеддит запрос,
  * возвращает top-k. Если эмбеддинги недоступны (нет эндпоинта/сеть) — МЯГКАЯ ДЕГРАДАЦИЯ: возвращает
- * сырые доки как есть (обрезку по бюджету делает сборка промпта ревью). Нет доков → пустой список.
+ * сырые доки как есть (обрезку по бюджету делает вызывающий). Нет доков → пустой список.
  */
 export async function groundDocs(deps: GroundingDeps, query: string): Promise<string[]> {
   const docs = deps.loadDocs();
@@ -99,28 +101,7 @@ export async function groundDocs(deps: GroundingDeps, query: string): Promise<st
       renderFragment(scored.chunk.file, scored.chunk.section, scored.chunk.text),
     );
   } catch {
-    // эмбеддинги недоступны — отдаём доки напрямую (бюджет режет сборка промпта)
+    // эмбеддинги недоступны — отдаём доки напрямую (бюджет режет вызывающий)
     return docs.map(doc => renderFragment(doc.file, '', doc.text));
   }
-}
-
-/**
- * Читает полное содержимое изменённых файлов (для понимания кода вокруг ханков). Удалённые и
- * бинарные файлы пропускает (читать нечего); нечитаемый файл — тоже (`readFile` вернул null).
- */
-export function readChangedFiles(
-  files: DiffFile[],
-  readFile: (path: string) => string | null,
-): { path: string; content: string }[] {
-  const contents: { path: string; content: string }[] = [];
-  for (const file of files) {
-    if (file.status === 'removed' || file.status === 'binary') {
-      continue;
-    }
-    const content = readFile(file.path);
-    if (content !== null) {
-      contents.push({ path: file.path, content });
-    }
-  }
-  return contents;
 }
