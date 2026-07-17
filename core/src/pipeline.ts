@@ -5,6 +5,7 @@ import type { CompletionArtifact, RunStatus, Stage, StageArtifacts, TaskRun } fr
 import { applyTransition, repairStage } from './task-run.ts';
 import type { TeamPlan } from './stage-team.ts';
 import type { ToolSet } from './tool-set.ts';
+import type { CommandCheck, FileWorkspace } from './run-workspace.ts';
 import {
   runCompletion,
   runExecution,
@@ -99,6 +100,16 @@ export interface PipelineDeps {
    * дефолтную модель, как остальные роли.
    */
   executorModel?: string;
+  /**
+   * Файловое пространство выполнения (День 34): execution правит реальные файлы проекта в
+   * изолированной копии. Не задан — execution генерирует текст, как прежде.
+   */
+  fileWorkspace?: FileWorkspace;
+  /**
+   * Запуск обнаруженных команд проекта (День 34): verification прогоняет test/build/lint на
+   * изменениях. Не задан — проверка судит LLM-ом по тексту, как прежде.
+   */
+  commandCheck?: CommandCheck;
 }
 
 /**
@@ -150,6 +161,8 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
     executorModel: deps.executorModel,
     projectContext: deps.projectContext,
     retrieveProjectDocs: deps.retrieveProjectDocs,
+    fileWorkspace: deps.fileWorkspace,
+    commandCheck: deps.commandCheck,
     // Защищённая генерация решающих этапов: контролёр сверяет результат с инвариантами.
     enforce: produce =>
       enforceInvariants({

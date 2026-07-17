@@ -17,6 +17,8 @@ import {
 import { orchestrateTeam, runRoleExperts } from './stage-team.ts';
 import type { AgentRole, TeamPlan } from './stage-team.ts';
 import type { ToolSet } from './tool-set.ts';
+import type { CommandCheck, FileWorkspace } from './run-workspace.ts';
+import type { CommandResult } from './command-runner.ts';
 
 /** Контекст этапа: всё, что нужно раннеру для одного прогона этапа. */
 export interface StageContext {
@@ -75,6 +77,18 @@ export interface StageContext {
    * ничего не решает. Не задан — этапы работают как прежде.
    */
   retrieveProjectDocs?: (query: string) => Promise<string[]>;
+  /**
+   * Файловое пространство выполнения (День 34): инструменты работы с файлами проекта для агента-
+   * исполнителя + снимок изменений (diff). Задан — execution РЕАЛЬНО правит файлы (в изолированной
+   * копии), артефакт несёт diff. Не задан — execution генерирует текст, как прежде.
+   */
+  fileWorkspace?: FileWorkspace;
+  /**
+   * Запуск обнаруженных команд проекта (День 34) для этапа проверки: verification прогоняет
+   * test/build/lint на изменениях. Задан — проверка опирается на реальный код выхода. Не задан —
+   * проверка судит LLM-ом по тексту, как прежде.
+   */
+  commandCheck?: CommandCheck;
 }
 
 /** Генерация с контролем инвариантов, если он задан; иначе — обычная. */
@@ -276,6 +290,20 @@ const EXECUTOR_SYSTEM =
   'возвращай ПОЛНЫЙ самостоятельный результат целиком — НЕ отвечай дельтой, списком правок или ' +
   '«отчётом об устранении замечаний». НЕ оборачивай ответ в JSON и НЕ используй ' +
   'markdown-ограждения (```).';
+
+/**
+ * Персона исполнителя, работающего с ФАЙЛАМИ проекта (День 34). В отличие от текстового исполнителя,
+ * он не возвращает результат текстом, а ВНОСИТ реальные правки инструментами (создание/изменение
+ * файлов). Сам решает, что прочитать/найти и что изменить — цель задана на уровне плана.
+ */
+const EXECUTOR_FILE_SYSTEM =
+  'Ты — исполнитель, работающий с ФАЙЛАМИ проекта. У тебя есть инструменты: прочитать файл, найти ' +
+  'по коду, посмотреть содержимое каталога, а также СОЗДАТЬ и ИЗМЕНИТЬ файл. Выполни задачу по ' +
+  'плану и критериям, ВНОСЯ РЕАЛЬНЫЕ правки инструментами: сам реши, какие файлы прочитать и что ' +
+  'изменить, и примени изменения (например, вызвав write_file), а НЕ описывай их словами и не ' +
+  'возвращай код в ответе. Пути указывай ОТНОСИТЕЛЬНО корня проекта. Сначала при необходимости ' +
+  'изучи нужные файлы, затем внеси правки. Когда всё сделано — верни КРАТКОЕ резюме: какие файлы ' +
+  'создал/изменил и что именно. Резюме — обычным текстом, без JSON и без markdown-ограждений.';
 
 const VERIFIER_SYSTEM =
   'Ты — проверяющий. Пройдись по КАЖДОМУ критерию приёмки отдельно и реши, выполнен ли он ' +
@@ -511,9 +539,27 @@ export async function runPlanning(ctx: StageContext): Promise<PlanningArtifact> 
   return team.roles.length <= 1 ? planSolo(ctx, docs) : planWithTeam(ctx, team, docs);
 }
 
-/** Выполнение: план (+проблемы проверки/правка) → результат; крупный текст в файл. */
-export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact> {
+/** План этапа выполнения телом (шаги, иначе проза из text) + критерии приёмки строкой. */
+function executionPlanBody(ctx: StageContext): { planBody: string; criteria: string } {
   const plan = ctx.run.artifacts.planning;
+  // Шаги, а если их нет — план прозой (модель иногда кладёт план в text).
+  const planBody = plan?.steps.length ? plan.steps.join('\n') : (plan?.text ?? '');
+  return { planBody, criteria: (plan?.criteria ?? []).join('\n') };
+}
+
+/**
+ * Выполнение: план (+проблемы проверки/правка) → результат. С файловым пространством (`fileWorkspace`)
+ * агент РЕАЛЬНО правит файлы проекта в изолированной копии, а артефакт несёт diff; иначе — как прежде,
+ * результат генерируется текстом и сохраняется файлом-артефактом прогона.
+ */
+export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact> {
+  return ctx.fileWorkspace === undefined
+    ? runTextExecution(ctx)
+    : runFileExecution(ctx, ctx.fileWorkspace);
+}
+
+/** Текстовое выполнение: результат — плоский текст, сохраняется файлом-артефактом прогона. */
+async function runTextExecution(ctx: StageContext): Promise<ExecutionArtifact> {
   const issues = ctx.run.artifacts.verification?.issues ?? [];
   // Предыдущий результат — чтобы доработать его целиком, а не пересоздавать с нуля.
   const previous = ctx.run.artifacts.execution?.text ?? '';
@@ -524,8 +570,7 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
     ctx.tools,
     ctx.executorModel,
   );
-  // Шаги, а если их нет — план прозой (модель иногда кладёт план в text).
-  const planBody = plan?.steps.length ? plan.steps.join('\n') : (plan?.text ?? '');
+  const { planBody, criteria } = executionPlanBody(ctx);
   // Доработка (после провала проверки или отказа): требуем ПОЛНЫЙ результат, а не дельту,
   // иначе исполнитель отдаёт «отчёт об устранении замечаний» вместо целого результата.
   const revision =
@@ -539,7 +584,7 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
       : '';
   const prompt =
     `${projectPrefix(ctx)}${memoryPrefix(ctx)}Задача: ${ctx.run.title}${requirementsBlock(ctx)}` +
-    `\n\nПлан:\n${planBody}\n\nКритерии приёмки:\n${(plan?.criteria ?? []).join('\n')}${revision}`;
+    `\n\nПлан:\n${planBody}\n\nКритерии приёмки:\n${criteria}${revision}`;
   const text = await guarded(ctx, feedback =>
     conversation.ask(feedback ?? prompt).then(result => result.content),
   );
@@ -547,6 +592,85 @@ export async function runExecution(ctx: StageContext): Promise<ExecutionArtifact
   // Полный результат сохраняем файлом-артефактом (если хранилище доступно).
   const path = ctx.writeArtifact(`execution-${ctx.run.retries + 1}.md`, parsed.text);
   return { ...parsed, files: path === null ? [] : [path] };
+}
+
+/**
+ * Файловое выполнение: агент правит файлы проекта инструментами `fileWorkspace.tools` (function-
+ * calling), а результат снимается как diff. `files` — реально изменённые файлы проекта (create/
+ * modify/delete), `text` — резюме агента + фактический diff (его видят проверка и пользователь).
+ */
+async function runFileExecution(
+  ctx: StageContext,
+  workspace: FileWorkspace,
+): Promise<ExecutionArtifact> {
+  const issues = ctx.run.artifacts.verification?.issues ?? [];
+  const conversation = ctx.makeConversation(
+    EXECUTOR_FILE_SYSTEM,
+    undefined,
+    EXECUTOR_TEMPERATURE,
+    workspace.tools,
+    ctx.executorModel,
+  );
+  const { planBody, criteria } = executionPlanBody(ctx);
+  // Доработка: файлы уже содержат прошлые правки агента (одна и та же копия), поэтому просим не
+  // переделывать с нуля, а устранить замечания правкой файлов.
+  const revision =
+    issues.length > 0 || ctx.run.correction
+      ? '\n\nЭто ДОРАБОТКА: файлы уже содержат твой прошлый результат — устрани замечания, правя ' +
+        'файлы инструментами (не переделывай с нуля).' +
+        (issues.length > 0 ? `\n\nЗамечания проверки (устрани все):\n${issues.join('\n')}` : '') +
+        (ctx.run.correction ? `\n\nПравка пользователя: ${ctx.run.correction}` : '')
+      : '';
+  const prompt =
+    `${projectPrefix(ctx)}${memoryPrefix(ctx)}Задача: ${ctx.run.title}${requirementsBlock(ctx)}` +
+    `\n\nПлан:\n${planBody}\n\nКритерии приёмки:\n${criteria}${revision}`;
+  const summaryText = await guarded(ctx, feedback =>
+    conversation.ask(feedback ?? prompt).then(result => result.content),
+  );
+  const { diff, files } = await workspace.changeSummary();
+  const cleaned = stripCodeFence(summaryText).trim();
+  const text =
+    diff.trim() === ''
+      ? `${cleaned}\n\nИзменений в файлах нет.`
+      : `${cleaned}\n\nИзменения в файлах:\n${diff}`;
+  // Резюме — по фактически изменённым файлам (что и волнует пользователя); нет правок — первая
+  // содержательная строка ответа агента.
+  const summary =
+    files.length > 0
+      ? `Изменено файлов: ${files.length} (${files.join(', ')})`
+      : (cleaned.split('\n').find(line => line.trim().length > 0) ?? '').trim().slice(0, 200);
+  return { summary, files, log: [], text };
+}
+
+/** Команды проекта, прогоняемые на проверке (start исключён — он не завершается). */
+const VERIFIED_COMMAND_KINDS = ['test', 'build', 'lint'] as const;
+
+/** Максимум символов вывода команды в замечании (хвост важнее — там ошибка). */
+const COMMAND_OUTPUT_TAIL_LIMIT = 1500;
+
+/** Хвост вывода команды для замечаний (последние символы stdout+stderr). */
+function commandOutputTail(result: CommandResult): string {
+  const combined = `${result.stdout}\n${result.stderr}`.trim();
+  return combined.length > COMMAND_OUTPUT_TAIL_LIMIT
+    ? `…${combined.slice(-COMMAND_OUTPUT_TAIL_LIMIT)}`
+    : combined;
+}
+
+/**
+ * Прогон обнаруженных команд проекта (test/build/lint) на изменениях. Возвращает результаты и
+ * подмножество провалившихся (ненулевой код или таймаут). Команда не обнаружена — пропускается.
+ */
+async function runProjectCommands(
+  check: CommandCheck,
+): Promise<{ results: CommandResult[]; failed: CommandResult[] }> {
+  const results: CommandResult[] = [];
+  for (const kind of VERIFIED_COMMAND_KINDS) {
+    const command = check.commands[kind];
+    if (command !== undefined) {
+      results.push(await check.run(command));
+    }
+  }
+  return { results, failed: results.filter(result => result.timedOut || result.code !== 0) };
 }
 
 /** Проверка: результат против критериев → вердикт + замечания. */
@@ -573,6 +697,28 @@ export async function runVerification(ctx: StageContext): Promise<VerificationAr
       text: 'Проверка невозможна: пустой план.',
     };
   }
+  // Реальная проверка ЗАПУСКОМ (День 34): прогоняем обнаруженные команды проекта на изменениях.
+  // Любой ненулевой код — объективный провал: возвращаемся в execution (агент правит), модель не
+  // зовём. Все пройдены — их результаты идут в контекст судьи (тесты зелёные — весомый довод).
+  let commandBlock = '';
+  if (ctx.commandCheck !== undefined) {
+    const { results, failed } = await runProjectCommands(ctx.commandCheck);
+    if (failed.length > 0) {
+      return {
+        passed: false,
+        issues: failed.map(
+          result =>
+            `Команда \`${result.command}\` ${result.timedOut ? 'прервана по таймауту' : `завершилась с кодом ${result.code}`}:\n${commandOutputTail(result)}`,
+        ),
+        text: `Проверка запуском не пройдена (${failed.length} из ${results.length} команд).`,
+      };
+    }
+    if (results.length > 0) {
+      commandBlock =
+        '\n\nРезультаты команд проекта (все пройдены, код 0):\n' +
+        results.map(result => `- \`${result.command}\` → код ${result.code}`).join('\n');
+    }
+  }
   const conversation = ctx.makeConversation(
     VERIFIER_SYSTEM,
     structuredLimits(ctx.structuredOutputs, VERIFICATION_SCHEMA),
@@ -582,7 +728,7 @@ export async function runVerification(ctx: StageContext): Promise<VerificationAr
   // а не только с критериями плана.
   const docs = await projectDocs(ctx, ctx.run.title);
   const result = await conversation.ask(
-    `${projectPrefix(ctx)}${memoryPrefix(ctx)}Задача: ${ctx.run.title}${docs}\n\n${basis}\n\n` +
+    `${projectPrefix(ctx)}${memoryPrefix(ctx)}Задача: ${ctx.run.title}${docs}\n\n${basis}${commandBlock}\n\n` +
       // Берём полный результат; если его нет — краткое резюме (хрупкость поля).
       `Результат на проверку:\n${execution?.text || execution?.summary || ''}`,
   );

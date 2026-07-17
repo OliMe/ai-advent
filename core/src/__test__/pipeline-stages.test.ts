@@ -16,7 +16,17 @@ import {
   structuredLimits,
   PLANNING_SCHEMA,
 } from '../index.ts';
-import type { GenerationLimits, StageContext, TaskRun, TeamPlan, ToolSet } from '../index.ts';
+import type {
+  GenerationLimits,
+  StageContext,
+  TaskRun,
+  TeamPlan,
+  ToolSet,
+  FileWorkspace,
+  CommandCheck,
+  CommandResult,
+  ProjectCommands,
+} from '../index.ts';
 import { clientWith } from './helpers.ts';
 
 /** Фабрика диалога с подменённым клиентом: всегда отдаёт `content`; ловит промпт. */
@@ -983,5 +993,226 @@ describe('контекст проекта в этапах (День 31)', () => 
     for (const prompt of prompts) {
       assert.doesNotMatch(prompt, /Документация проекта/);
     }
+  });
+});
+
+describe('работа с файлами и командами (День 34)', () => {
+  /** Фейковое файловое пространство: инструменты (для сигнала «переданы») + канный diff/файлы. */
+  function fakeWorkspace(diff: string, files: string[], calls?: string[]): FileWorkspace {
+    return {
+      tools: {
+        specs: () => [{ name: 'write_file', description: 'создать/изменить файл', parameters: {} }],
+        call: async name => {
+          calls?.push(name);
+          return 'ok';
+        },
+      },
+      changeSummary: async () => ({ diff, files }),
+    };
+  }
+
+  /** Фейковый запуск команд: результат берётся по строке команды (недостающие поля — по нулям). */
+  function checkWith(
+    commands: ProjectCommands,
+    byCommand: Record<string, Partial<CommandResult>> = {},
+    ran?: string[],
+  ): CommandCheck {
+    return {
+      commands,
+      run: async command => {
+        ran?.push(command);
+        const canned = byCommand[command] ?? {};
+        return {
+          command,
+          code: canned.code ?? 0,
+          stdout: canned.stdout ?? '',
+          stderr: canned.stderr ?? '',
+          timedOut: canned.timedOut ?? false,
+        };
+      },
+    };
+  }
+
+  /** Готовый план для этапа выполнения/проверки. */
+  function planned(run: TaskRun): TaskRun {
+    run.artifacts.planning = { steps: ['изменить файл'], criteria: ['файл обновлён'], text: '' };
+    return run;
+  }
+
+  it('runExecution с fileWorkspace: исполнитель правит файлы, артефакт несёт diff и файлы', async t => {
+    const run = planned(createRun('Обнови README', { idSuffix: 'fx1' }));
+    let systemSeen = '';
+    let toolsPassed = false;
+    const make: StageContext['makeConversation'] = (systemPrompt, limits, temperature, toolset) => {
+      systemSeen = systemPrompt;
+      toolsPassed = toolset !== undefined && toolset.specs().length > 0;
+      const client = clientWith(t, async () => ({ content: 'Изменил README.md', usage: undefined }));
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: temperature ?? 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+      });
+    };
+    const artifact = await runExecution({
+      run,
+      makeConversation: make,
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      fileWorkspace: fakeWorkspace('--- a/README.md\n+++ b/README.md\n+новое', ['README.md']),
+    });
+
+    assert.ok(toolsPassed); // исполнителю переданы инструменты файлового пространства
+    assert.match(systemSeen, /работающий с ФАЙЛАМИ/); // персона файлового исполнителя
+    assert.deepEqual(artifact.files, ['README.md']);
+    assert.match(artifact.text, /Изменил README\.md/);
+    assert.match(artifact.text, /Изменения в файлах:/);
+    assert.match(artifact.text, /\+новое/);
+    assert.match(artifact.summary, /Изменено файлов: 1 \(README\.md\)/);
+  });
+
+  it('runExecution с fileWorkspace без правок: помечает отсутствие изменений, резюме из ответа', async t => {
+    const run = planned(createRun('Проверь', { idSuffix: 'fx0' }));
+    const artifact = await runExecution({
+      run,
+      makeConversation: makeConv(t, 'Ничего менять не потребовалось'),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      fileWorkspace: fakeWorkspace('   ', []), // diff из пробелов → «изменений нет»
+    });
+
+    assert.deepEqual(artifact.files, []);
+    assert.match(artifact.text, /Изменений в файлах нет/);
+    assert.match(artifact.summary, /Ничего менять не потребовалось/);
+  });
+
+  it('runExecution с fileWorkspace: пустой ответ и нет правок → пустое резюме', async t => {
+    const run = planned(createRun('Пусто', { idSuffix: 'fxe' }));
+    const artifact = await runExecution({
+      run,
+      makeConversation: makeConv(t, '   '), // ответ из пробелов, содержательной строки нет
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      fileWorkspace: fakeWorkspace('', []),
+    });
+
+    assert.equal(artifact.summary, ''); // нет ни файлов, ни содержательного ответа
+    assert.match(artifact.text, /Изменений в файлах нет/);
+  });
+
+  it('runExecution с fileWorkspace: доработка по замечаниям правит файлы (не переделывает)', async t => {
+    const run = planned(createRun('Исправь', { idSuffix: 'fxr' }));
+    run.artifacts.verification = { passed: false, issues: ['нет раздела X'], text: '' };
+    run.artifacts.execution = { summary: 'прошлый', files: ['a.md'], log: [], text: 'старый diff' };
+    let prompt = '';
+    await runExecution({
+      run,
+      makeConversation: makeConv(t, 'Добавил раздел X', p => (prompt = p)),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      fileWorkspace: fakeWorkspace('--- a\n+++ b\n+X', ['a.md']),
+    });
+
+    assert.match(prompt, /Это ДОРАБОТКА/);
+    assert.match(prompt, /правя\s+файлы/);
+    assert.match(prompt, /нет раздела X/);
+    assert.doesNotMatch(prompt, /Правка пользователя/); // correction нет
+  });
+
+  it('runExecution с fileWorkspace: правка пользователя без замечаний тоже включает доработку', async t => {
+    const run = planned(createRun('Доработай', { idSuffix: 'fxc' }));
+    run.correction = 'учти тёмную тему';
+    let prompt = '';
+    await runExecution({
+      run,
+      makeConversation: makeConv(t, 'Учёл', p => (prompt = p)),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      fileWorkspace: fakeWorkspace('--- a\n+++ b\n+dark', ['theme.css']),
+    });
+
+    assert.match(prompt, /Это ДОРАБОТКА/);
+    assert.match(prompt, /Правка пользователя: учти тёмную тему/);
+    assert.doesNotMatch(prompt, /Замечания проверки/); // issues нет
+  });
+
+  it('runVerification с commandCheck: все команды пройдены → их результат в контексте судьи', async t => {
+    const run = planned(createRun('Задача', { idSuffix: 'v1' }));
+    run.artifacts.execution = { summary: 'r', files: ['a'], log: [], text: 'код' };
+    const ran: string[] = [];
+    let prompt = '';
+    const verification = await runVerification({
+      run,
+      makeConversation: makeConv(t, '{"passed":true,"issues":[],"text":"ок"}', p => (prompt = p)),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      commandCheck: checkWith({ test: 'npm test', build: 'npm run build', start: 'npm start' }, {}, ran),
+    });
+
+    // Прогнаны обнаруженные test/build (start исключён — он не завершается), в порядке kinds.
+    assert.deepEqual(ran, ['npm test', 'npm run build']);
+    assert.ok(verification.passed);
+    assert.match(prompt, /Результаты команд проекта \(все пройдены/);
+    assert.match(prompt, /npm test` → код 0/);
+  });
+
+  it('runVerification с commandCheck: провал команды → passed=false, модель не вызывается', async t => {
+    const run = planned(createRun('Задача', { idSuffix: 'v2' }));
+    run.artifacts.execution = { summary: 'r', files: [], log: [], text: 'код' };
+    let modelCalled = false;
+    const verification = await runVerification({
+      run,
+      makeConversation: () => {
+        modelCalled = true;
+        throw new Error('модель не должна вызываться при провале команды');
+      },
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      commandCheck: checkWith({ test: 'npm test' }, { 'npm test': { code: 1, stderr: 'FAIL здесь' } }),
+    });
+
+    assert.equal(modelCalled, false);
+    assert.equal(verification.passed, false);
+    assert.match(verification.issues[0], /npm test` завершилась с кодом 1/);
+    assert.match(verification.issues[0], /FAIL здесь/);
+  });
+
+  it('runVerification с commandCheck: таймаут команды → провал с пометкой и усечением вывода', async t => {
+    const run = planned(createRun('Задача', { idSuffix: 'v3' }));
+    run.artifacts.execution = { summary: 'r', files: [], log: [], text: 'код' };
+    const verification = await runVerification({
+      run,
+      makeConversation: () => {
+        throw new Error('не вызывается');
+      },
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      commandCheck: checkWith(
+        { lint: 'npm run lint' },
+        { 'npm run lint': { code: 0, timedOut: true, stderr: 'ш'.repeat(2000) } },
+      ),
+    });
+
+    assert.equal(verification.passed, false);
+    assert.match(verification.issues[0], /прервана по таймауту/);
+    assert.match(verification.issues[0], /^Команда `npm run lint`/);
+    assert.ok(verification.issues[0].includes('…')); // длинный вывод усечён
+  });
+
+  it('runVerification с commandCheck без обнаруженных команд: обычная проверка моделью', async t => {
+    const run = planned(createRun('Задача', { idSuffix: 'v4' }));
+    run.artifacts.execution = { summary: 'r', files: [], log: [], text: 'код' };
+    let prompt = '';
+    const verification = await runVerification({
+      run,
+      makeConversation: makeConv(t, '{"passed":true,"issues":[],"text":"ок"}', p => (prompt = p)),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      commandCheck: checkWith({}), // команд не обнаружено — запускать нечего
+    });
+
+    assert.ok(verification.passed);
+    assert.doesNotMatch(prompt, /Результаты команд проекта/);
   });
 });

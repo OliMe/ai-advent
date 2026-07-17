@@ -128,6 +128,16 @@ export type { EnforceInvariantsOptions } from './invariant-guard.ts';
 export { requestJson } from './http-request.ts';
 export type { HttpResponse, FetchLike, RequestOptions } from './http-request.ts';
 export type {
+  CommandResult,
+  CommandRunOptions,
+  ProjectCommandRunner,
+} from './command-runner.ts';
+export type {
+  WorkspaceChangeSummary,
+  FileWorkspace,
+  CommandCheck,
+} from './run-workspace.ts';
+export type {
   Role,
   ChatMessage,
   ToolCall,
