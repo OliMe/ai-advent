@@ -1,20 +1,32 @@
 /**
- * Точка входа ассистента поддержки (тонкая проводка, вне покрытия). Пока — ветка `--warm-cache`:
- * собрать индекс FAQ в кэш и выйти (нужен только эмбеддер). Полный поток ответа — инкремент 4.
+ * Точка входа ассистента поддержки (тонкая проводка, вне покрытия). Ветка `--warm-cache` — прогрев
+ * индекса FAQ (нужен только эмбеддер). Иначе — полный поток: подключить CRM через MCP (support-mcp по
+ * stdio), собрать FAQ по вопросу тикета, синтезировать ответ с цитатным гейтом и запостить обратно.
  * Диагностика идёт в stderr.
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { loadEmbeddingsConfig, EmbeddingsClient } from '../../core/src/index.ts';
+import {
+  loadConfig,
+  loadEmbeddingsConfig,
+  ChatCompletionClient,
+  EmbeddingsClient,
+} from '../../core/src/index.ts';
+import type { ChatMessage } from '../../core/src/index.ts';
 import { loadLocalDocuments, nodeLocalIo } from '../../rag/src/index.ts';
-import { warmDocsIndex, FileIndexCache } from '../../grounding/src/index.ts';
+import { retrieveDocChunks, warmDocsIndex, FileIndexCache } from '../../grounding/src/index.ts';
 import type { IndexCacheIo } from '../../grounding/src/index.ts';
+import { McpToolSet, connectionFactory } from '../../mcp-client/src/index.ts';
 import { loadSupportBotConfig } from './config.ts';
+import { runSupportFlow } from './flow.ts';
 
 /** Флаг присутствует в argv. */
 function hasFlag(argv: string[], name: string): boolean {
   return argv.includes(name);
 }
+
+/** Температура синтеза — низкая: ответ собирается по фактам FAQ, творчество тут вредит. */
+const RESPONSE_TEMPERATURE = 0.2;
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -23,7 +35,6 @@ async function main(): Promise<void> {
 
   const embeddingsConfig = loadEmbeddingsConfig(process.env);
   const embeddings = new EmbeddingsClient(embeddingsConfig);
-
   const cacheIo: IndexCacheIo = {
     read(path) {
       try {
@@ -41,7 +52,6 @@ async function main(): Promise<void> {
   const docs = loadLocalDocuments(config.faqDir, nodeLocalIo);
 
   if (hasFlag(argv, '--warm-cache')) {
-    // Строгий прогрев: ошибка/таймаут эмбеддера пробрасывается (job в CI покраснеет).
     const chunkCount = await warmDocsIndex({
       embed: inputs => embeddings.embed(inputs),
       loadDocs: () => docs,
@@ -56,7 +66,69 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.error('support-bot: укажите --warm-cache (полный поток ответа — инкремент 4).');
+  if (config.repo === '' || config.issueNumber === 0) {
+    throw new Error('Нужны SUPPORT_REPO (owner/name) и SUPPORT_ISSUE_NUMBER (номер тикета).');
+  }
+
+  // CRM через MCP: спавним support-mcp по stdio. Child наследует env (PATH и SUPPORT_*), т.к.
+  // StdioClientTransport заменяет окружение переданным.
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      childEnv[key] = value;
+    }
+  }
+  childEnv.SUPPORT_REPO = config.repo;
+  childEnv.SUPPORT_TOKEN = config.token;
+  childEnv.SUPPORT_API_URL = config.apiBaseUrl;
+
+  const supportMcpCli = join(packageDir, '..', 'support-mcp', 'src', 'cli.ts');
+  const toolSet = new McpToolSet(connectionFactory());
+  await toolSet.addServer('support', {
+    transport: 'stdio',
+    command: process.execPath,
+    args: [supportMcpCli],
+    env: childEnv,
+  });
+
+  const client = new ChatCompletionClient(loadConfig());
+  const complete = async (messages: ChatMessage[]): Promise<string> => {
+    const result = await client.completeWithUsage(messages, {
+      signal: AbortSignal.timeout(loadConfig().requestTimeoutMs),
+      disableThinking: config.disableThinking,
+      temperature: RESPONSE_TEMPERATURE,
+    });
+    return result.content;
+  };
+
+  try {
+    const outcome = await runSupportFlow({
+      toolSet,
+      issueId: config.issueNumber,
+      retrieveFaq: query =>
+        retrieveDocChunks(
+          {
+            embed: inputs => embeddings.embed(inputs),
+            loadDocs: () => docs,
+            now: new Date().toISOString(),
+            topKCount: config.topKFaq,
+            cache,
+            embeddingId: embeddingsConfig.model,
+          },
+          query,
+        ),
+      complete,
+      onCitationFailure: (reason, attempt) =>
+        console.error(`цитатный гейт (попытка ${attempt}): ${reason}`),
+    });
+    if (outcome.posted) {
+      console.error(`ответ опубликован в тикет #${config.issueNumber}`);
+    } else {
+      console.error(`пропущено: ${outcome.reason}`);
+    }
+  } finally {
+    await toolSet.close();
+  }
 }
 
 main().catch((error: unknown) => {

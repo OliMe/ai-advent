@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { groundDocs, warmDocsIndex } from '../index.ts';
+import { groundDocs, warmDocsIndex, retrieveDocChunks } from '../index.ts';
 import type { GroundingDeps, IndexCache } from '../index.ts';
 import type { Document, Index } from '../../../rag/src/index.ts';
 
@@ -125,6 +125,59 @@ describe('groundDocs с кэшем индекса', () => {
     const fragments = await groundDocs(deps, 'как считается доставка');
     assert.equal(fragments.length, 1);
     assert.equal(cache.store.size, 1);
+  });
+});
+
+describe('retrieveDocChunks (структурные чанки для гейта)', () => {
+  it('возвращает top-k структурных чанков с полями', async () => {
+    const chunks = await retrieveDocChunks(
+      { embed: keywordEmbed('доставк'), loadDocs: () => DOCS, now: 't', topKCount: 1 },
+      'как считается доставка',
+    );
+    assert.equal(chunks.length, 1);
+    assert.equal(chunks[0].file, 'README.md');
+    assert.match(chunks[0].text, /доставку заказов/);
+    assert.equal(typeof chunks[0].chunk_id, 'string');
+  });
+
+  it('нет доков → пустой список', async () => {
+    const chunks = await retrieveDocChunks(
+      { embed: keywordEmbed('x'), loadDocs: () => [], now: 't', topKCount: 3 },
+      'вопрос',
+    );
+    assert.deepEqual(chunks, []);
+  });
+
+  it('эмбеддинги упали → деградация: весь документ одним чанком', async () => {
+    const chunks = await retrieveDocChunks(
+      {
+        embed: async () => {
+          throw new Error('нет эндпоинта');
+        },
+        loadDocs: () => DOCS,
+        now: 't',
+        topKCount: 3,
+      },
+      'вопрос',
+    );
+    assert.equal(chunks.length, 2);
+    assert.equal(chunks[0].file, 'README.md');
+    assert.equal(chunks[0].section, '');
+    assert.match(chunks[0].text, /доставку заказов/);
+  });
+
+  it('пустой вектор запроса → тоже деградация', async () => {
+    const chunks = await retrieveDocChunks(
+      {
+        embed: async (inputs: string[]) =>
+          inputs.length === 1 && inputs[0] === 'вопрос' ? [] : inputs.map(text => [1, text.length]),
+        loadDocs: () => DOCS,
+        now: 't',
+        topKCount: 3,
+      },
+      'вопрос',
+    );
+    assert.equal(chunks.length, 2);
   });
 });
 

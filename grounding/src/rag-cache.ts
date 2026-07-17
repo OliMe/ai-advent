@@ -2,6 +2,7 @@ import { buildIndex, topK } from '../../rag/src/index.ts';
 import type { Document, EmbedFn, Index } from '../../rag/src/index.ts';
 import type { IndexCache } from './index-cache.ts';
 import { computeIndexCacheKey } from './index-cache.ts';
+import type { SearchChunk } from './rag-answer.ts';
 
 /** Зависимости обоснования по докам через RAG (инъекция — для тестов без сети/ФС). */
 export interface GroundingDeps {
@@ -79,6 +80,47 @@ export async function warmDocsIndex(deps: GroundingDeps): Promise<number> {
   }
   const index = await loadOrBuildIndex(deps, docs);
   return index.chunks.length;
+}
+
+/**
+ * Фрагменты документации по запросу как СТРУКТУРНЫЕ чанки (для цитатного гейта: источник — по
+ * file/source/chunk_id, дословная цитата — подстрока text). В отличие от `groundDocs` (строки для
+ * промпта), возвращает `SearchChunk[]`. Эмбеддинги недоступны — деградация: весь документ одним чанком.
+ * Нет доков → пустой список (тогда гейт отвечает «не знаю»).
+ */
+export async function retrieveDocChunks(
+  deps: GroundingDeps,
+  query: string,
+): Promise<SearchChunk[]> {
+  const docs = deps.loadDocs();
+  if (docs.length === 0) {
+    return [];
+  }
+  try {
+    const index = await loadOrBuildIndex(deps, docs);
+    const [queryVector] = await deps.embed([query]);
+    if (queryVector === undefined) {
+      throw new Error('пустой вектор запроса');
+    }
+    return topK(queryVector, index.chunks, deps.topKCount).map(scored => ({
+      chunk_id: scored.chunk.chunk_id,
+      source: scored.chunk.source,
+      file: scored.chunk.file,
+      section: scored.chunk.section,
+      score: scored.score,
+      text: scored.chunk.text,
+    }));
+  } catch {
+    // эмбеддинги недоступны — весь документ одним чанком (гейт всё равно сможет сослаться на файл)
+    return docs.map(doc => ({
+      chunk_id: doc.file,
+      source: doc.source,
+      file: doc.file,
+      section: '',
+      score: 0,
+      text: doc.text,
+    }));
+  }
 }
 
 /**
