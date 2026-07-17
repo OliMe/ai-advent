@@ -41,11 +41,13 @@ jobs:
           restore-keys: |
             support-faq-index-
 
-      # Боту нужен MCP-SDK в рантайме (клиент к support-mcp + сам сервер support-mcp).
+      # Боту нужен MCP-SDK в рантайме (клиент к support-mcp + сами серверы support-mcp/git-mcp).
+      # git-mcp — для режима поиска по коду (SUPPORT_CODE_SEARCH).
       - name: Установка MCP-зависимостей
         run: |
           npm --prefix mcp-client install --no-audit --no-fund
           npm --prefix support-mcp install --no-audit --no-fund
+          npm --prefix git-mcp install --no-audit --no-fund
 
       - name: Ответ поддержки
         env:
@@ -64,4 +66,7 @@ jobs:
           LLM_REQUEST_TIMEOUT_MS: '300000'
           # GLM тратит бюджет на рассуждения — гасим (для Ollama можно убрать).
           SUPPORT_NO_THINKING: '1'
+          # Поиск по КОДУ репозитория (ai-advent — dev-репо, issues технические). Нужна сильная
+          # модель (DeepSeek/облако) — на слабой деградирует к ответу по FAQ.
+          SUPPORT_CODE_SEARCH: '1'
         run: node support-bot/src/cli.ts
