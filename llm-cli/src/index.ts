@@ -65,6 +65,8 @@ export * from './project.ts';
 export * from './project-source.ts';
 export * from './git-allowlist.ts';
 export * from './project-answer.ts';
+export * from './run-workspace.ts';
+export * from './run-workspace-io.ts';
 export * from './code-search.ts';
 export * from '../../grounding/src/evidence.ts';
 export * from './yandex-speech.ts';
