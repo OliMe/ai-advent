@@ -13,7 +13,8 @@ issue/comment → cli.ts
   3. pickQuestion()       ← последняя реплика пользователя (или описание тикета)
   4. retrieveDocChunks()  ← FAQ по вопросу (кэш индекса, grounding)
   5. answerSupportQuestion() ← tool-free синтез → цитатный гейт (источники ⊂ FAQ + дословная цитата)
-  6. postReply()          ← ответ в тред через support-mcp (add_ticket_comment, помечается маркером)
+  6. постобработка        ← «Источники» → ссылки на файл+раздел; снять ярлык «Ответ:»; цитата вопроса
+  7. postReply()          ← ответ в тред через support-mcp (add_ticket_comment, помечается маркером)
 ```
 
 **CRM только через MCP-контракт** — единица замены трекера/CRM. **Анти-галлюцинация:** ответ по FAQ,

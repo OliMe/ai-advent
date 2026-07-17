@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatTicketContext, pickQuestion } from '../index.ts';
+import {
+  formatTicketContext,
+  pickQuestion,
+  pickQuestionAuthor,
+  formatQuestionQuote,
+} from '../index.ts';
 import type { Ticket, TicketComment } from '../../../support-mcp/src/index.ts';
 
 const TICKET: Ticket = {
@@ -54,6 +59,30 @@ describe('pickQuestion', () => {
     assert.equal(
       pickQuestion(TICKET, [comment('бот', true, 'bot')]),
       'После обновления не пускает',
+    );
+  });
+});
+
+describe('pickQuestionAuthor', () => {
+  it('автор последней реплики пользователя', () => {
+    const author = pickQuestionAuthor(TICKET, [
+      comment('вопрос', false, 'petrov'),
+      comment('ответ', true, 'bot'),
+      comment('уточнение', false, 'ivanov'),
+    ]);
+    assert.equal(author, 'ivanov');
+  });
+
+  it('нет реплик пользователя → автор тикета', () => {
+    assert.equal(pickQuestionAuthor(TICKET, [comment('бот', true, 'bot')]), 'user1');
+  });
+});
+
+describe('formatQuestionQuote', () => {
+  it('блочная цитата с @автором, каждая строка вопроса с >', () => {
+    assert.equal(
+      formatQuestionQuote('petrov', 'Почему 401?\nТокен верный.'),
+      '> **@petrov:**\n> Почему 401?\n> Токен верный.',
     );
   });
 });

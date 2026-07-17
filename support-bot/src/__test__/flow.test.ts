@@ -78,11 +78,13 @@ describe('runSupportFlow', () => {
     assert.equal(result.posted, true);
     assert.equal(result.question, 'После обновления не пускает');
     assert.equal(askedQuery, 'После обновления не пускает');
-    // Ярлык «Ответ:» снят перед постингом.
     const body = posted[0].body as string;
     assert.equal(posted.length, 1);
-    assert.doesNotMatch(body, /^Ответ:/);
-    assert.match(body, /^Проверьте заголовок\./);
+    // В начале — цитата вопроса с @автором (тикет открыт → автор тикета user1, вопрос = описание).
+    assert.match(body, /^> \*\*@user1:\*\*\n> После обновления не пускает\n\n/);
+    // Ярлык «Ответ:» снят из тела ответа.
+    assert.doesNotMatch(body, /Ответ:/);
+    assert.match(body, /Проверьте заголовок\./);
     assert.match(body, /Источники:/);
   });
 

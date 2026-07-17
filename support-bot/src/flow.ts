@@ -1,7 +1,12 @@
 import type { ChatMessage, ToolSet } from '../../core/src/index.ts';
 import type { SearchChunk } from '../../grounding/src/index.ts';
 import { readTicketThread, postReply } from './ticket-client.ts';
-import { formatTicketContext, pickQuestion } from './ticket-context.ts';
+import {
+  formatTicketContext,
+  pickQuestion,
+  pickQuestionAuthor,
+  formatQuestionQuote,
+} from './ticket-context.ts';
 import { answerSupportQuestion, stripAnswerLabel } from './answer.ts';
 import { buildSourceLinkContext, linkifySources } from './source-links.ts';
 
@@ -65,7 +70,10 @@ export async function runSupportFlow(deps: SupportFlowDeps): Promise<SupportFlow
       ? buildSourceLinkContext(ticket.url, deps.linkRef, deps.repoRoot)
       : null;
   // Ярлык «Ответ:» в опубликованном комментарии избыточен — снимаем перед постингом.
-  const body = stripAnswerLabel(linkifySources(answer, faqChunks, linkContext));
+  const answerBody = stripAnswerLabel(linkifySources(answer, faqChunks, linkContext));
+  // В начало — цитата вопроса с автором: в многолюдном обсуждении видно, на что и кому отвечает бот.
+  const quote = formatQuestionQuote(pickQuestionAuthor(ticket, comments), question);
+  const body = `${quote}\n\n${answerBody}`;
 
   await postReply(deps.toolSet, deps.issueId, body);
   return { posted: true, question, answer: body };
