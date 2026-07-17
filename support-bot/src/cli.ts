@@ -18,6 +18,7 @@ import { retrieveDocChunks, warmDocsIndex, FileIndexCache } from '../../groundin
 import type { IndexCacheIo } from '../../grounding/src/index.ts';
 import { loadSupportBotConfig } from './config.ts';
 import { runSupportFlow } from './flow.ts';
+import { gatherCodeEvidence } from './code-evidence.ts';
 
 /** Флаг присутствует в argv. */
 function hasFlag(argv: string[], name: string): boolean {
@@ -93,6 +94,22 @@ async function main(): Promise<void> {
     env: childEnv,
   });
 
+  // Поиск по коду (тумблер): подключаем git-mcp к тому же ToolSet (инструменты `git__*`), разрешая
+  // репозиторий-корень. Нужен известный repoRoot — иначе искать негде.
+  const codeSearchEnabled = config.codeSearch && config.repoRoot !== '';
+  if (codeSearchEnabled) {
+    const gitMcpCli = join(packageDir, '..', 'git-mcp', 'src', 'cli.ts');
+    await toolSet.addServer('git', {
+      transport: 'stdio',
+      command: process.execPath,
+      args: [gitMcpCli],
+      env: { ...childEnv, GIT_ALLOWED_REPOS: config.repoRoot },
+    });
+    console.error(`поиск по коду включён: репозиторий ${config.repoRoot}`);
+  } else if (config.codeSearch) {
+    console.error('поиск по коду запрошен, но не задан корень репозитория (repoRoot) — пропущен');
+  }
+
   const client = new ChatCompletionClient(loadConfig());
   const complete = async (messages: ChatMessage[]): Promise<string> => {
     const result = await client.completeWithUsage(messages, {
@@ -122,6 +139,24 @@ async function main(): Promise<void> {
       complete,
       linkRef: config.ref,
       repoRoot: config.repoRoot,
+      ...(codeSearchEnabled
+        ? {
+            gatherCode: (question: string) =>
+              gatherCodeEvidence(
+                {
+                  toolSet,
+                  repoRoot: config.repoRoot,
+                  complete,
+                  onToolCall: (name, args) => console.error(`🔧 ${name} ${JSON.stringify(args)}`),
+                },
+                question,
+              ),
+            onCodeSearchError: error =>
+              console.error(
+                `поиск по коду не удался (отвечаю по FAQ): ${error instanceof Error ? error.message : error}`,
+              ),
+          }
+        : {}),
       onCitationFailure: (reason, attempt) =>
         console.error(`цитатный гейт (попытка ${attempt}): ${reason}`),
     });

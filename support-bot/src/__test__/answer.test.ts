@@ -48,6 +48,37 @@ describe('answerSupportQuestion', () => {
     assert.equal(result, GOOD_ANSWER);
   });
 
+  it('код как доказательство: ответ с источником-файлом кода проходит гейт', async () => {
+    const codeChunks = [
+      {
+        chunk_id: 'проект › core/src/auth.ts',
+        source: '/repo',
+        file: 'core/src/auth.ts',
+        section: 'read_file',
+        score: 1,
+        text: 'export function authorize(token) { return check(token); }',
+      },
+    ];
+    const codeAnswer = [
+      'Ответ: Авторизация проверяется функцией authorize.',
+      'Источники:',
+      '- core/src/auth.ts',
+      'Цитаты:',
+      '- «export function authorize(token) { return check(token); }»',
+    ].join('\n');
+    const result = await answerSupportQuestion(
+      {
+        complete: async () => codeAnswer,
+        faqChunks: [],
+        ticketContext: 'ctx',
+        codeChunks,
+        codeCandidates: ['export function authorize(token) { return check(token); }'],
+      },
+      'где авторизация?',
+    );
+    assert.equal(result, codeAnswer);
+  });
+
   it('нет фрагментов FAQ → честное «не знаю»', async () => {
     const result = await answerSupportQuestion(
       { complete: async () => GOOD_ANSWER, faqChunks: [], ticketContext: 'ctx' },

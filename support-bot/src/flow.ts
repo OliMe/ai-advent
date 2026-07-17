@@ -9,6 +9,7 @@ import {
 } from './ticket-context.ts';
 import { answerSupportQuestion, stripAnswerLabel } from './answer.ts';
 import { buildSourceLinkContext, linkifySources } from './source-links.ts';
+import type { CodeEvidence } from './code-evidence.ts';
 
 /** Зависимости потока ответа (инъекция — CRM через MCP, FAQ и модель подставляются). */
 export interface SupportFlowDeps {
@@ -24,6 +25,10 @@ export interface SupportFlowDeps {
   linkRef?: string;
   /** Корень репозитория для относительного пути файла в ссылке; пусто → без ссылок. */
   repoRoot?: string;
+  /** Опц. добыча доказательств из кода (тумблер `SUPPORT_CODE_SEARCH`); нет → ответ только по FAQ. */
+  gatherCode?: (question: string) => Promise<CodeEvidence>;
+  /** Колбэк на сбой код-поиска (мягкая деградация: отвечаем по FAQ, не роняем ответ). */
+  onCodeSearchError?: (error: unknown) => void;
   onCitationFailure?: (reason: string, attempt: number) => void;
 }
 
@@ -51,12 +56,25 @@ export async function runSupportFlow(deps: SupportFlowDeps): Promise<SupportFlow
 
   const question = pickQuestion(ticket, comments);
   const faqChunks = await deps.retrieveFaq(question);
+  // Код — только при включённом тумблере (иначе пусто): поддержка отвечает по FAQ, код для тех.issue.
+  // Мягкая деградация: сбой код-поиска (напр. слабая модель не осилила выбор шаблонов) НЕ роняет
+  // ответ — просто отвечаем по FAQ.
+  let code: CodeEvidence = { chunks: [], candidates: [] };
+  if (deps.gatherCode) {
+    try {
+      code = await deps.gatherCode(question);
+    } catch (error) {
+      deps.onCodeSearchError?.(error);
+    }
+  }
   const ticketContext = formatTicketContext(ticket, comments);
   const answer = await answerSupportQuestion(
     {
       complete: deps.complete,
       faqChunks,
       ticketContext,
+      codeChunks: code.chunks,
+      codeCandidates: code.candidates,
       ...(deps.onCitationFailure === undefined
         ? {}
         : { onCitationFailure: deps.onCitationFailure }),
@@ -64,13 +82,15 @@ export async function runSupportFlow(deps: SupportFlowDeps): Promise<SupportFlow
     question,
   );
 
-  // «Источники» → кликабельные ссылки на файл+раздел FAQ в репозитории (если известны ref и корень).
+  // «Источники» → кликабельные ссылки на файл+раздел в репозитории (FAQ и код, если известны ref/корень).
   const linkContext =
     deps.linkRef && deps.repoRoot
       ? buildSourceLinkContext(ticket.url, deps.linkRef, deps.repoRoot)
       : null;
   // Ярлык «Ответ:» в опубликованном комментарии избыточен — снимаем перед постингом.
-  const answerBody = stripAnswerLabel(linkifySources(answer, faqChunks, linkContext));
+  const answerBody = stripAnswerLabel(
+    linkifySources(answer, [...faqChunks, ...code.chunks], linkContext),
+  );
   // В начало — цитата вопроса с автором: в многолюдном обсуждении видно, на что и кому отвечает бот.
   const quote = formatQuestionQuote(pickQuestionAuthor(ticket, comments), question);
   const body = `${quote}\n\n${answerBody}`;

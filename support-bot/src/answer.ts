@@ -8,13 +8,14 @@ import { resolveRagAnswer } from '../../grounding/src/index.ts';
  */
 export const SUPPORT_DIRECTIVE =
   'Ты — ассистент поддержки пользователей. Ответь на вопрос ТОЛЬКО по приведённым ниже фрагментам ' +
-  'FAQ, учитывая контекст тикета. Не выдумывай: чего нет во фрагментах — того не утверждай. Если FAQ ' +
-  'не покрывает вопрос — честно скажи, что нужно уточнение или помощь оператора.\n' +
+  'FAQ и найденным местам в КОДЕ (если они есть), учитывая контекст тикета. Не выдумывай: чего нет в ' +
+  'приведённых материалах — того не утверждай. Если материалы не покрывают вопрос — честно скажи, что ' +
+  'нужно уточнение или помощь оператора.\n' +
   'Формат ответа — РОВНО три секции:\n' +
   'Ответ: <по существу, дружелюбно>\n' +
-  'Источники:\n- <файл FAQ, откуда взято>\n' +
-  'Цитаты:\n- «<ДОСЛОВНАЯ выдержка из фрагмента FAQ выше>»\n' +
-  'Цитата обязана быть дословной подстрокой приведённого фрагмента (скопируй символ в символ).';
+  'Источники:\n- <файл FAQ или файл кода, откуда взято>\n' +
+  'Цитаты:\n- «<ДОСЛОВНАЯ выдержка из фрагмента FAQ или кода выше>»\n' +
+  'Цитата обязана быть дословной подстрокой приведённого материала (скопируй символ в символ).';
 
 /**
  * Снимает ведущий ярлык «Ответ:» из финального текста. Секция «Ответ» нужна модели и цитатному гейту
@@ -34,12 +35,16 @@ export interface SupportAnswerDeps {
   faqChunks: SearchChunk[];
   /** Контекст тикета (system-блок для подстройки; не цитируется). */
   ticketContext: string;
+  /** Фрагменты КОДА (опц., тумблер `SUPPORT_CODE_SEARCH`) — такие же цитируемые доказательства. */
+  codeChunks?: SearchChunk[];
+  /** Готовые дословные строки-кандидаты из кода для секции «Цитаты» (опц.). */
+  codeCandidates?: string[];
   /** Колбэк на провал цитатной проверки (для наблюдаемости). */
   onCitationFailure?: (reason: string, attempt: number) => void;
 }
 
-/** Рендер фрагментов FAQ в текст для промпта. */
-function renderFaq(chunks: SearchChunk[]): string {
+/** Рендер фрагментов документации/кода в текст для промпта. */
+function renderChunks(chunks: SearchChunk[]): string {
   return chunks
     .map(chunk => `${chunk.file}${chunk.section ? ` › ${chunk.section}` : ''}\n${chunk.text}`)
     .join('\n\n');
@@ -68,6 +73,7 @@ export async function answerSupportQuestion(
   deps: SupportAnswerDeps,
   question: string,
 ): Promise<string> {
+  const codeChunks = deps.codeChunks ?? [];
   const leading: ChatMessage[] = [
     { role: 'system', content: SUPPORT_DIRECTIVE },
     { role: 'system', content: deps.ticketContext },
@@ -75,17 +81,25 @@ export async function answerSupportQuestion(
   if (deps.faqChunks.length > 0) {
     leading.push({
       role: 'system',
-      content: `Фрагменты FAQ (отвечай строго по ним):\n${renderFaq(deps.faqChunks)}`,
+      content: `Фрагменты FAQ (отвечай строго по ним):\n${renderChunks(deps.faqChunks)}`,
     });
-    const candidates = citationCandidates(deps.faqChunks);
-    if (candidates.length > 0) {
-      leading.push({
-        role: 'system',
-        content:
-          'Готовые ДОСЛОВНЫЕ строки для секции «Цитаты» — скопируй в ответ хотя бы ОДНУ символ в ' +
-          `символ:\n${candidates.map(candidate => `- «${candidate}»`).join('\n')}`,
-      });
-    }
+  }
+  if (codeChunks.length > 0) {
+    leading.push({
+      role: 'system',
+      content: `Найденные места в КОДЕ (файл › инструмент):\n${renderChunks(codeChunks)}`,
+    });
+  }
+  // Готовые дословные строки для «Цитат»: из FAQ + из кода — слабая модель пересказывает вместо
+  // цитирования и валит гейт; «скопируй одну строку» ей посильно.
+  const candidates = [...citationCandidates(deps.faqChunks), ...(deps.codeCandidates ?? [])];
+  if (candidates.length > 0) {
+    leading.push({
+      role: 'system',
+      content:
+        'Готовые ДОСЛОВНЫЕ строки для секции «Цитаты» — скопируй в ответ хотя бы ОДНУ символ в ' +
+        `символ:\n${candidates.map(candidate => `- «${candidate}»`).join('\n')}`,
+    });
   }
 
   const outgoing: ChatMessage[] = [...leading, { role: 'user', content: question }];
@@ -93,7 +107,7 @@ export async function answerSupportQuestion(
 
   return resolveRagAnswer({
     ragResults: [],
-    extraChunks: deps.faqChunks,
+    extraChunks: [...deps.faqChunks, ...codeChunks],
     initial,
     regenerate: async feedback =>
       deps.complete([

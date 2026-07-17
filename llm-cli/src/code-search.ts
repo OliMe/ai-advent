@@ -1,4 +1,4 @@
-import type { ProjectContext, ToolSet } from '../../core/src/index.ts';
+import type { ToolSet } from '../../core/src/index.ts';
 import type { ToolEvidence } from '../../grounding/src/index.ts';
 
 /**
@@ -12,20 +12,24 @@ export const CODE_SEARCH_SYSTEM =
   'русские слова. Только шаблоны, каждый с новой строки, без пояснений, без markdown. Вопрос не о ' +
   'коде — ответь пустой строкой.';
 
-/** Файлы проекта — контекст выбора шаблонов: имена берутся из реальных, а не выдумываются. */
+/**
+ * Файлы репозиториев — контекст выбора шаблонов: имена берутся из реальных, а не выдумываются.
+ * Принимает корни репозиториев (строки), а не `ProjectContext` — чтобы функцией пользовался и
+ * ассистент разработчика (`/ask`), и ассистент поддержки (по коду), не завися от модели проекта.
+ */
 export async function projectFileListings(
   toolSet: ToolSet,
-  projects: ProjectContext[],
+  repoRoots: string[],
 ): Promise<Map<string, string[]>> {
   const name = toolSet.specs().find(spec => spec.name.endsWith('git_list_files'))?.name;
   const listings = new Map<string, string[]>();
   if (name === undefined) {
     return listings;
   }
-  for (const project of projects) {
-    const result = await toolSet.call(name, { repo: project.root });
+  for (const root of repoRoots) {
+    const result = await toolSet.call(name, { repo: root });
     listings.set(
-      project.root,
+      root,
       result
         .split('\n')
         .map(line => line.trim())
@@ -89,7 +93,7 @@ export function parseCodePatterns(text: string): string[] {
  */
 export async function forcedCodeSearch(
   toolSet: ToolSet,
-  projects: ProjectContext[],
+  repoRoots: string[],
   patterns: string[],
   onSearch: (name: string, args: Record<string, unknown>, result: string) => void,
 ): Promise<ToolEvidence[]> {
@@ -98,9 +102,9 @@ export async function forcedCodeSearch(
     return [];
   }
   const found: ToolEvidence[] = [];
-  for (const project of projects) {
+  for (const root of repoRoots) {
     for (const pattern of patterns) {
-      const args = { repo: project.root, pattern };
+      const args = { repo: root, pattern };
       const result = await toolSet.call(name, args);
       onSearch(name, args, result);
       found.push({ name, args, result });

@@ -11,6 +11,8 @@ export { SUPPORT_DIRECTIVE, answerSupportQuestion, stripAnswerLabel } from './an
 export type { SupportAnswerDeps } from './answer.ts';
 export { runSupportFlow } from './flow.ts';
 export type { SupportFlowDeps, SupportFlowResult } from './flow.ts';
+export { gatherCodeEvidence } from './code-evidence.ts';
+export type { CodeEvidenceDeps, CodeEvidence } from './code-evidence.ts';
 export {
   repoWebBaseFromTicketUrl,
   buildSourceLinkContext,

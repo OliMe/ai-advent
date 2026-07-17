@@ -15,6 +15,7 @@ describe('loadSupportBotConfig', () => {
       cacheDir: '/pkg/.support-bot-cache',
       topKFaq: 5,
       disableThinking: false,
+      codeSearch: false,
       ref: 'main',
       repoRoot: '',
     });
@@ -62,9 +63,16 @@ describe('loadSupportBotConfig', () => {
       cacheDir: '/cache',
       topKFaq: 8,
       disableThinking: true,
+      codeSearch: false,
       ref: 'main',
       repoRoot: '',
     });
+  });
+
+  it('SUPPORT_CODE_SEARCH=1 включает поиск по коду', () => {
+    assert.equal(loadSupportBotConfig({ SUPPORT_CODE_SEARCH: '1' }, '/pkg').codeSearch, true);
+    assert.equal(loadSupportBotConfig({ SUPPORT_CODE_SEARCH: '0' }, '/pkg').codeSearch, false);
+    assert.equal(loadSupportBotConfig({}, '/pkg').codeSearch, false);
   });
 
   it('GITHUB_* как запасные; невалидный номер → 0; topK зажат сверху', () => {

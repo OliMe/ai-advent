@@ -171,7 +171,10 @@ export async function answerProjectQuestion(deps: ProjectAnswerDeps): Promise<Pr
   // Код — тоже принудительно: модель называет ЧТО искать (узкая подзадача, посильная и слабой
   // модели), а git_grep вызываем сами. Без этого слабая модель в код не идёт вовсе и отвечает по
   // документации мимо вопроса (воспроизводилось на qwen2.5:7b).
-  const listings = await projectFileListings(deps.tools, deps.projects);
+  const listings = await projectFileListings(
+    deps.tools,
+    deps.projects.map(project => project.root),
+  );
   const listingText = [...listings.entries()]
     .map(([root, paths]) => `${root}:\n${paths.join('\n')}`)
     .join('\n\n');
@@ -190,7 +193,8 @@ export async function answerProjectQuestion(deps: ProjectAnswerDeps): Promise<Pr
     0,
   );
   const patterns = parseCodePatterns(plan.content);
-  const hits = await forcedCodeSearch(deps.tools, deps.projects, patterns, (name, args, result) => {
+  const projectRoots = deps.projects.map(project => project.root);
+  const hits = await forcedCodeSearch(deps.tools, projectRoots, patterns, (name, args, result) => {
     calledTools.push(name);
     deps.onToolCall(name, args);
     deps.onToolResult(name, result);

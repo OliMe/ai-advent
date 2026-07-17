@@ -139,6 +139,56 @@ describe('runSupportFlow', () => {
     );
   });
 
+  it('с gatherCode: код добавляется в доказательства (передаётся вопрос)', async () => {
+    const { toolSet, posted } = fakeToolSet([]);
+    let codeQuery = '';
+    const result = await runSupportFlow({
+      toolSet,
+      issueId: 42,
+      retrieveFaq: async () => FAQ,
+      gatherCode: async query => {
+        codeQuery = query;
+        return {
+          chunks: [
+            {
+              chunk_id: 'проект › src/a.ts',
+              source: '/repo',
+              file: 'src/a.ts',
+              section: 'read_file',
+              score: 1,
+              text: 'code body',
+            },
+          ],
+          candidates: ['code body'],
+        };
+      },
+      complete,
+    });
+    assert.equal(result.posted, true);
+    assert.equal(codeQuery, 'После обновления не пускает');
+    assert.equal(posted.length, 1);
+  });
+
+  it('сбой gatherCode → мягкая деградация: ответ по FAQ, колбэк ошибки вызван', async () => {
+    const { toolSet, posted } = fakeToolSet([]);
+    let caught: unknown = null;
+    const result = await runSupportFlow({
+      toolSet,
+      issueId: 42,
+      retrieveFaq: async () => FAQ,
+      gatherCode: async () => {
+        throw new Error('модель не осилила выбор шаблонов');
+      },
+      onCodeSearchError: error => {
+        caught = error;
+      },
+      complete,
+    });
+    assert.equal(result.posted, true); // не упали
+    assert.equal(posted.length, 1);
+    assert.match((caught as Error).message, /не осилила/);
+  });
+
   it('защита петли: последний комментарий бота → не отвечаем', async () => {
     const { toolSet, posted } = fakeToolSet([
       { id: 1, author: { login: 'u' }, body: 'вопрос', createdAt: 't', isBot: false },

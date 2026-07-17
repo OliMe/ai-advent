@@ -22,6 +22,12 @@ export interface SupportBotConfig {
   topKFaq: number;
   /** Гасить рассуждения модели (нужно GLM). */
   disableThinking: boolean;
+  /**
+   * Поиск по КОДУ репозитория (тумблер `SUPPORT_CODE_SEARCH=1`). Выкл по умолчанию: поддержка
+   * пользователей отвечает по FAQ, а код нужен лишь для технических issues от разработчиков. Вкл →
+   * бот подключает git-mcp и добавляет фрагменты кода в доказательства (тот же цитатный гейт).
+   */
+  codeSearch: boolean;
   /** Git-ref для ссылок на файлы FAQ (SHA-перманентная ссылка или ветка). */
   ref: string;
   /** Корень репозитория — путь файла FAQ в ссылке считается относительно него; пусто → без ссылок. */
@@ -58,6 +64,7 @@ export function loadSupportBotConfig(env: NodeJS.ProcessEnv, packageDir: string)
     cacheDir: env.SUPPORT_CACHE_DIR?.trim() || join(packageDir, '.support-bot-cache'),
     topKFaq: boundedInt(env.SUPPORT_TOP_K_FAQ, 5, 0, 50),
     disableThinking: env.SUPPORT_NO_THINKING === '1',
+    codeSearch: env.SUPPORT_CODE_SEARCH === '1',
     // GITHUB_SHA/GITHUB_WORKSPACE — штатные переменные Actions (перманентная ссылка + корень репо).
     ref: env.SUPPORT_REF?.trim() || env.GITHUB_SHA?.trim() || 'main',
     repoRoot: env.SUPPORT_REPO_ROOT?.trim() || env.GITHUB_WORKSPACE?.trim() || '',
