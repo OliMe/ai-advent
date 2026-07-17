@@ -280,6 +280,14 @@ describe('RunWorkspace', () => {
     assert.ok(calls.some(entry => entry.command.includes('worktree remove --force')));
     assert.deepEqual(io.removedDirs, ['/w']);
   });
+
+  it('dispose: сбой очистки временного каталога не бросает', async () => {
+    const io = new FakeIo();
+    io.removeDir = () => {
+      throw new Error('busy');
+    };
+    await workspaceWith(io, fakeRunner([]), 1000).dispose(); // не должно бросить
+  });
 });
 
 describe('createRunWorkspace', () => {

@@ -365,7 +365,7 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
     return changes.map(change => change.path);
   }
 
-  /** Удаляет копию (worktree + временный каталог). Best-effort: ошибка git не мешает очистке. */
+  /** Удаляет копию (worktree + временный каталог). Best-effort: не бросает — сбой очистки не важен. */
   async dispose(): Promise<void> {
     await gitRun(
       this.runner,
@@ -373,7 +373,11 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
       ['-C', this.project.root, 'worktree', 'remove', '--force', this.worktree],
       this.timeoutMs,
     );
-    this.io.removeDir(this.base);
+    try {
+      this.io.removeDir(this.base);
+    } catch {
+      // очистка временного каталога не критична — оставляем как есть
+    }
   }
 }
 

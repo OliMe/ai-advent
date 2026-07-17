@@ -59,6 +59,7 @@ import {
 import { askModel, streamAnswer, completeWithTools } from './chat.ts';
 import { newSession, branchNameTaken, resolveBranch } from './session-flow.ts';
 import { makeConversationFactory, RunController } from './run-flow.ts';
+import { nodeWorkspaceIo, nodeCommandRunner } from './run-workspace-io.ts';
 import { MemoryRunBridge } from './run-task-bridge.ts';
 import { parseServerSpec } from './mcp-store.ts';
 import type { McpStore } from './mcp-store.ts';
@@ -353,6 +354,12 @@ export async function runInteractive(
     structuredOutputs: config.structuredOutputs,
     // Модель роли выполнения (LLM_EXECUTOR_MODEL); не задана — общая модель.
     executorModel: config.executorModel,
+    // День 34: рабочая копия (git worktree) для файловых изменений на этапе выполнения и запуска
+    // команд на проверке. Целью берётся ПЕРВЫЙ привязанный проект. Нет проекта — файлы не трогаются
+    // (пайплайн работает как прежде). node-биндинги файлового IO и запуска команд.
+    projects: () => workspace(),
+    commandRunner: nodeCommandRunner,
+    workspaceIo: nodeWorkspaceIo,
     // Проекты (День 31): карточки — контекст ВСЕХ агентов этапов (план и результат должны быть про
     // конкретный репозиторий); документация — адресно, только на планировании и проверке (там она
     // меняет результат). Провайдеры ленивые: привязка проекта могла измениться между прогонами.

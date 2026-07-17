@@ -4,12 +4,16 @@ import type {
   AppConfig,
   ChatCompletionClient,
   GenerationLimits,
+  ProjectContext,
+  ProjectCommandRunner,
   RunStore,
   Task,
   TaskRun,
   ToolSet,
   Usage,
 } from '../../core/src/index.ts';
+import { createRunWorkspace } from './run-workspace.ts';
+import type { RunWorkspace, WorkspaceIo } from './run-workspace.ts';
 import {
   formatStageResult,
   formatRunList,
@@ -171,6 +175,17 @@ export interface RunControllerDeps {
   retrieveProjectDocs?: (query: string) => Promise<string[]>;
   /** Пишет результат этапа в транскрипт основной сессии (если задан). */
   recordToSession?: (role: 'user' | 'assistant', content: string) => void;
+  /**
+   * Привязанные проекты (День 34): целью рабочей копии берётся ПЕРВЫЙ. Не задан/пусто — файловое
+   * пространство не создаётся, пайплайн работает как прежде (текстовый результат).
+   */
+  projects?: () => ProjectContext[];
+  /** Запуск команд проекта в рабочей копии (для проверки). Не задан — команды не гоняются. */
+  commandRunner?: ProjectCommandRunner;
+  /** Файловый IO рабочей копии (worktree). Не задан — файловое пространство не создаётся. */
+  workspaceIo?: WorkspaceIo;
+  /** Потолок времени команды проекта в мс (git/тесты). Не задан — дефолт node-биндинга. */
+  commandTimeoutMs?: number;
 }
 
 /**
@@ -184,6 +199,10 @@ export class RunController {
   private active: TaskRun | null = null;
   /** Сигнал паузы текущего прогона; не null — пока пайплайн в работе. */
   private pause: AbortController | null = null;
+  /** Рабочая копия текущего прогона (worktree); переживает паузу/продолжение в сессии. */
+  private workspace: RunWorkspace | null = null;
+  /** id прогона, которому принадлежит рабочая копия (чтобы не спутать с новым прогоном). */
+  private workspaceRunId: string | null = null;
 
   constructor(deps: RunControllerDeps) {
     this.deps = deps;
@@ -403,8 +422,56 @@ export class RunController {
       at: this.active.updatedAt,
     });
     this.deps.store?.save(this.active);
+    // Отмена — правки рабочей копии не нужны: удаляем её (best-effort, не ждём).
+    void this.disposeWorkspace();
     this.write(`Задача «${this.active.title}» завершена досрочно.`);
     this.active = null;
+  }
+
+  /**
+   * Готовит рабочую копию (worktree) для прогона: первый привязанный проект + запуск команд + IO.
+   * Одна копия на прогон — переживает паузу/продолжение в сессии (сверяем по id). Нет проекта/швов —
+   * null (пайплайн без файловых изменений). Сбой создания — предупреждение и null (не валим прогон).
+   */
+  private async ensureWorkspace(run: TaskRun): Promise<RunWorkspace | null> {
+    const project = this.deps.projects?.()[0];
+    if (
+      project === undefined ||
+      this.deps.commandRunner === undefined ||
+      this.deps.workspaceIo === undefined
+    ) {
+      return null;
+    }
+    if (this.workspace !== null && this.workspaceRunId === run.id) {
+      return this.workspace; // та же копия для паузы/продолжения
+    }
+    await this.disposeWorkspace(); // копия прежнего прогона больше не нужна
+    try {
+      this.workspace = await createRunWorkspace(
+        project,
+        this.deps.workspaceIo,
+        this.deps.commandRunner,
+        { timeoutMs: this.deps.commandTimeoutMs },
+      );
+      this.workspaceRunId = run.id;
+      this.write(
+        `📂 Рабочая копия проекта «${project.name}» создана — правки идут в неё и применятся ПОСЛЕ подтверждения.`,
+      );
+      return this.workspace;
+    } catch (error) {
+      this.write(`[рабочая копия не создана — файлы проекта не трогаю] ${describeError(error)}`);
+      return null;
+    }
+  }
+
+  /** Удаляет рабочую копию текущего прогона (best-effort, не бросает). */
+  private async disposeWorkspace(): Promise<void> {
+    const workspace = this.workspace;
+    this.workspace = null;
+    this.workspaceRunId = null;
+    if (workspace !== null) {
+      await workspace.dispose();
+    }
   }
 
   /**
@@ -414,11 +481,14 @@ export class RunController {
   private async drive(run: TaskRun): Promise<void> {
     this.pause = new AbortController();
     const signal = this.pause.signal;
+    const workspace = await this.ensureWorkspace(run);
     try {
       const result = await runPipeline(run, {
         store: this.deps.store,
         makeConversation: this.deps.makeConversation,
         signal,
+        fileWorkspace: workspace ?? undefined,
+        commandCheck: workspace ?? undefined,
         // Провайдер: инварианты + свежие требования (дописанные на этапе requirements) —
         // видны планированию/выполнению, чтобы агенты не нарушали ограничения изначально.
         memoryContext: () => this.invariantsBlock() + this.deps.taskBridge.memoryContext(),
@@ -483,6 +553,16 @@ export class RunController {
         },
       });
       if (result.status === 'completed') {
+        // Завершение подтверждено пользователем → переносим правки рабочей копии в реальный проект.
+        if (workspace !== null) {
+          const applied = await workspace.apply();
+          this.write(
+            applied.length > 0
+              ? `📝 Изменения применены к проекту: ${applied.join(', ')}`
+              : '📝 Файловых изменений не было.',
+          );
+          await this.disposeWorkspace();
+        }
         // Итог прогона возвращаем в память задачи; задача помечается выполненной.
         // На статусе completed артефакт завершения гарантированно есть (его ставит оркестратор).
         const recorded = this.deps.taskBridge.complete(result.artifacts.completion!.summary);
@@ -491,7 +571,7 @@ export class RunController {
             (recorded ? ' Итог записан в память задачи, задача помечена выполненной.' : ''),
         );
       } else {
-        this.reportPaused(result);
+        this.reportPaused(result); // на паузе рабочую копию сохраняем — для /run continue
       }
     } catch (error) {
       this.write(`[ошибка] ${describeError(error)}`);

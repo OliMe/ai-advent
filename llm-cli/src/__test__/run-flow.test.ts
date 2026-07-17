@@ -2,7 +2,15 @@ import { describe, it } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { Conversation, createRun, createTask } from '../../../core/src/index.ts';
-import type { RunStore, RunSummary, Stage, Task, TaskRun } from '../../../core/src/index.ts';
+import type {
+  ProjectContext,
+  ProjectCommandRunner,
+  RunStore,
+  RunSummary,
+  Stage,
+  Task,
+  TaskRun,
+} from '../../../core/src/index.ts';
 import {
   RunController,
   makeConversationFactory,
@@ -10,6 +18,7 @@ import {
   type ConversationFactory,
   type RunTaskBridge,
 } from '../run-flow.ts';
+import type { WorkspaceIo } from '../run-workspace.ts';
 import { clientWith, makeCollector } from './helpers.ts';
 import { makeConfig } from '../../../core/src/__test__/helpers.ts';
 
@@ -980,5 +989,169 @@ describe('RunController', () => {
     assert.match(text, /Нет активного прогона/);
     assert.match(text, /завершена досрочно/);
     assert.ok(store.list().some(summary => summary.status === 'cancelled'));
+  });
+});
+
+describe('RunController: рабочая копия проекта (День 34)', () => {
+  const FILE_PROJECT: ProjectContext = {
+    root: '/proj',
+    name: 'proj',
+    docSources: [],
+    commands: { test: 'npm test' },
+  };
+
+  /** Мини-IO копии: makeTempDir → /tmp/run; ops для create/changeSummary/apply/dispose. */
+  class MemIo implements WorkspaceIo {
+    files = new Map<string, string>();
+    symlinks: [string, string][] = [];
+    removed: string[] = [];
+    readFile = (path: string): string => this.files.get(path) ?? '';
+    writeFile = (path: string, content: string): void => void this.files.set(path, content);
+    exists = (path: string): boolean =>
+      this.files.has(path) || [...this.files.keys()].some(key => key.startsWith(`${path}/`));
+    isDirectory = (path: string): boolean =>
+      !this.files.has(path) && [...this.files.keys()].some(key => key.startsWith(`${path}/`));
+    listDir = (): string[] => [];
+    deleteFile = (path: string): void => void this.files.delete(path);
+    copyFile = (source: string, destination: string): void =>
+      void this.files.set(destination, this.files.get(source) ?? '');
+    symlink = (target: string, linkPath: string): void => void this.symlinks.push([target, linkPath]);
+    makeTempDir = (): string => '/tmp/run';
+    removeDir = (path: string): void => void this.removed.push(path);
+  }
+
+  /** Фейковый запуск команд копии: git-подкоманды и команды проекта; фиксирует вызовы. */
+  function wsRunner(
+    nameStatus: string,
+    calls: string[] = [],
+    failAdd = false,
+  ): ProjectCommandRunner {
+    return {
+      run: async command => {
+        calls.push(command);
+        const failed = failAdd && command.includes('worktree add');
+        let stdout = '';
+        if (command.includes('--name-status')) {
+          stdout = nameStatus;
+        } else if (command.includes('diff --cached')) {
+          stdout = 'DIFF-ТЕКСТ';
+        }
+        return { command, code: failed ? 1 : 0, stdout, stderr: failed ? 'boom' : '', timedOut: false };
+      },
+    };
+  }
+
+  it('прогон с проектом: правки копии применяются к проекту после подтверждения', async t => {
+    const out = makeCollector();
+    const io = new MemIo();
+    io.files.set('/tmp/run/worktree/README.md', 'новое содержимое'); // «правка» агента в копии
+    const calls: string[] = [];
+    const { bridge, completed } = fakeBridge();
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content()),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: bridge,
+      projects: () => [FILE_PROJECT],
+      commandRunner: wsRunner('M\tREADME.md\n', calls),
+      workspaceIo: io,
+    });
+    await controller.start('Обнови доки');
+
+    const text = out.text();
+    assert.match(text, /Рабочая копия проекта «proj» создана/);
+    assert.match(text, /Изменения применены к проекту: README\.md/);
+    assert.equal(io.files.get('/proj/README.md'), 'новое содержимое'); // применено копированием
+    assert.ok(calls.some(command => command.includes('npm test'))); // команда проекта прогнана
+    assert.ok(calls.some(command => command.includes('worktree remove'))); // копия удалена
+    assert.deepEqual(completed, ['итог']);
+
+    controller.abort(); // после завершения копии нет — ветка «нечего удалять» + строка abort
+    assert.match(out.text(), /завершена досрочно/);
+  });
+
+  it('прогон с проектом без правок: сообщает об отсутствии изменений', async t => {
+    const out = makeCollector();
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content()),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+      projects: () => [FILE_PROJECT],
+      commandRunner: wsRunner('', []), // name-status пуст → изменений нет
+      workspaceIo: new MemIo(),
+    });
+    await controller.start('Ничего не менять');
+    assert.match(out.text(), /Файловых изменений не было/);
+  });
+
+  it('сбой создания рабочей копии → предупреждение, прогон идёт без файлов', async t => {
+    const out = makeCollector();
+    const { completed } = fakeBridge();
+    const bridge = fakeBridge();
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content()),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: bridge.bridge,
+      projects: () => [FILE_PROJECT],
+      commandRunner: wsRunner('', [], true), // worktree add падает
+      workspaceIo: new MemIo(),
+    });
+    await controller.start('Задача');
+    assert.match(out.text(), /рабочая копия не создана/);
+    assert.deepEqual(bridge.completed, ['итог']); // прогон всё равно завершился (текстовый)
+    void completed;
+  });
+
+  it('нет запуска команд или IO — рабочая копия не создаётся', async t => {
+    const noRunner = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content()),
+      output: makeCollector().stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+      projects: () => [FILE_PROJECT], // проект есть, но нет commandRunner
+      workspaceIo: new MemIo(),
+    });
+    const outNoIo = makeCollector();
+    const noIo = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content()),
+      output: outNoIo.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+      projects: () => [FILE_PROJECT],
+      commandRunner: wsRunner('', []), // есть runner, но нет workspaceIo
+    });
+    await noRunner.start('Задача');
+    await noIo.start('Задача');
+    assert.doesNotMatch(outNoIo.text(), /Рабочая копия/); // ни там, ни там копия не создаётся
+  });
+
+  it('пауза и продолжение переиспользуют одну рабочую копию', async t => {
+    const out = makeCollector();
+    const store = fakeStore();
+    const calls: string[] = [];
+    const run = createRun('Правки', { maxRetries: 0, idSuffix: 'ws-reuse' });
+    store.save(run);
+    const controller = new RunController({
+      store,
+      makeConversation: factory(t, content()),
+      output: out.stream,
+      ask: answers(['нет', 'да']), // 1-й проход: отказ → пауза; 2-й: подтверждение
+      taskBridge: fakeBridge().bridge,
+      projects: () => [FILE_PROJECT],
+      commandRunner: wsRunner('', calls),
+      workspaceIo: new MemIo(),
+    });
+    await controller.continue(run.id); // создаёт копию, пауза на отказе
+    await controller.continue(run.id); // переиспользует ту же копию, завершает
+    // Считаем именно команду создания (add --detach): «add -A» в git add попадает под наивный фильтр.
+    const adds = calls.filter(command => command.includes('worktree add --detach')).length;
+    assert.equal(adds, 1); // копия создана единожды — переиспользована, не пересоздана
   });
 });
