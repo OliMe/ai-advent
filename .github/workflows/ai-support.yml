@@ -1,0 +1,67 @@
+# AI-ассистент поддержки в issues (День 33). По открытию issue или новому комментарию читает тред
+# через support-mcp (CRM), отвечает по FAQ (RAG + цитатный гейт) с учётом контекста и постит ответ
+# комментарием. Всё берётся из настроек репозитория:
+#   Secrets:   LLM_API_KEY (+ опц. LLM_EMBEDDINGS_API_KEY)
+#   Variables: LLM_BASE_URL (полный URL /chat/completions), LLM_MODEL
+#              (+ опц. LLM_EMBEDDINGS_URL, LLM_EMBEDDINGS_MODEL)
+# GITHUB_TOKEN выдаётся автоматически; ему нужны права issues: write (заданы ниже).
+name: AI-поддержка в issues
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  answer:
+    # Защита от петли (оборона в глубину): не отвечаем на события от ботов (в т.ч. свой ответ через
+    # GITHUB_TOKEN) и на комментарии к PR (issue_comment летит и на PR). Плюс код-гейт по маркеру.
+    if: ${{ github.event.sender.type != 'Bot' && !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Индекс FAQ собирается эмбеддером ОДИН раз и переживает прогоны (ключ — по содержимому FAQ).
+      - name: Кэш индекса FAQ
+        uses: actions/cache@v4
+        with:
+          path: support-bot/.support-bot-cache
+          key: support-faq-index-${{ hashFiles('support-bot/faq/**') }}
+          restore-keys: |
+            support-faq-index-
+
+      # Боту нужен MCP-SDK в рантайме (клиент к support-mcp + сам сервер support-mcp).
+      - name: Установка MCP-зависимостей
+        run: |
+          npm --prefix mcp-client install --no-audit --no-fund
+          npm --prefix support-mcp install --no-audit --no-fund
+
+      - name: Ответ поддержки
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SUPPORT_REPO: ${{ github.repository }}
+          SUPPORT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SUPPORT_EVENT: ${{ github.event_name }}
+          SUPPORT_ACTOR: ${{ github.event.sender.login }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_EMBEDDINGS_URL: ${{ vars.LLM_EMBEDDINGS_URL }}
+          LLM_EMBEDDINGS_MODEL: ${{ vars.LLM_EMBEDDINGS_MODEL }}
+          LLM_EMBEDDINGS_API_KEY: ${{ secrets.LLM_EMBEDDINGS_API_KEY }}
+          # Эмбеддинг корпуса FAQ на CPU-эмбеддере — минуты; дефолт 60с обрывает сборку.
+          LLM_REQUEST_TIMEOUT_MS: '300000'
+          # GLM тратит бюджет на рассуждения — гасим (для Ollama можно убрать).
+          SUPPORT_NO_THINKING: '1'
+        run: node support-bot/src/cli.ts

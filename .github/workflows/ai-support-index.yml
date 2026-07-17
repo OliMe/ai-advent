@@ -1,0 +1,41 @@
+# Фоновый прогрев индекса FAQ для AI-поддержки (День 33). По изменению FAQ в main пересобирает индекс
+# и кладёт в тот же кэш, что использует ответчик, — тогда даже первый вопрос после правки FAQ попадает
+# в тёплый кэш, а не платит минуты на пересборку корпуса. Нужен только эмбеддер (без MCP и chat).
+name: Прогрев индекса поддержки
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'support-bot/faq/**'
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Кэш индекса FAQ
+        uses: actions/cache@v4
+        with:
+          path: support-bot/.support-bot-cache
+          key: support-faq-index-${{ hashFiles('support-bot/faq/**') }}
+          restore-keys: |
+            support-faq-index-
+
+      - name: Прогреть индекс FAQ
+        env:
+          LLM_EMBEDDINGS_URL: ${{ vars.LLM_EMBEDDINGS_URL }}
+          LLM_EMBEDDINGS_MODEL: ${{ vars.LLM_EMBEDDINGS_MODEL }}
+          LLM_EMBEDDINGS_API_KEY: ${{ secrets.LLM_EMBEDDINGS_API_KEY }}
+          LLM_REQUEST_TIMEOUT_MS: '300000'
+        run: node support-bot/src/cli.ts --warm-cache

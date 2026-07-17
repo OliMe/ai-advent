@@ -1,0 +1,74 @@
+# Копируемый шаблон AI-поддержки в issues для ЛЮБОГО GitHub-репозитория (День 33).
+# Положите этот файл в свой репозиторий как `.github/workflows/ai-support.yml`, а FAQ по своему
+# продукту — в каталог `faq/*.md` (один вопрос на ##-заголовок).
+#
+# Настройки репозитория (Settings → Secrets and variables → Actions):
+#   Secrets:   LLM_API_KEY (+ опц. LLM_EMBEDDINGS_API_KEY)
+#   Variables: LLM_BASE_URL (полный URL /chat/completions), LLM_MODEL
+#              (+ опц. LLM_EMBEDDINGS_URL, LLM_EMBEDDINGS_MODEL)
+# LLM_BASE_URL должен быть доступен с раннера (облачная модель или свой VPS-шлюз), а не localhost.
+name: AI-поддержка в issues
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  answer:
+    if: ${{ github.event.sender.type != 'Bot' && !github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout своего репозитория
+        uses: actions/checkout@v4
+
+      # Инструментарий бота — из ai-advent (в подкаталог, чтобы не смешивать с вашим кодом).
+      - name: Checkout ai-advent (бот)
+        uses: actions/checkout@v4
+        with:
+          repository: OliMe/ai-advent
+          ref: main
+          path: .ai-advent
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Кэш индекса FAQ
+        uses: actions/cache@v4
+        with:
+          path: .support-bot-cache
+          key: support-faq-index-${{ hashFiles('faq/**') }}
+          restore-keys: |
+            support-faq-index-
+
+      - name: Установка MCP-зависимостей
+        run: |
+          npm --prefix .ai-advent/mcp-client install --no-audit --no-fund
+          npm --prefix .ai-advent/support-mcp install --no-audit --no-fund
+
+      - name: Ответ поддержки
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SUPPORT_REPO: ${{ github.repository }}
+          SUPPORT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SUPPORT_EVENT: ${{ github.event_name }}
+          SUPPORT_ACTOR: ${{ github.event.sender.login }}
+          # FAQ и кэш — в ВАШЕМ рабочем дереве (каталог faq/ в вашем репозитории).
+          SUPPORT_FAQ_DIR: ${{ github.workspace }}/faq
+          SUPPORT_CACHE_DIR: ${{ github.workspace }}/.support-bot-cache
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_EMBEDDINGS_URL: ${{ vars.LLM_EMBEDDINGS_URL }}
+          LLM_EMBEDDINGS_MODEL: ${{ vars.LLM_EMBEDDINGS_MODEL }}
+          LLM_EMBEDDINGS_API_KEY: ${{ secrets.LLM_EMBEDDINGS_API_KEY }}
+          LLM_REQUEST_TIMEOUT_MS: '300000'
+          SUPPORT_NO_THINKING: '1'
+        run: node .ai-advent/support-bot/src/cli.ts
