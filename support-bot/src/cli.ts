@@ -103,7 +103,9 @@ async function main(): Promise<void> {
       transport: 'stdio',
       command: process.execPath,
       args: [gitMcpCli],
-      env: { ...childEnv, GIT_ALLOWED_REPOS: config.repoRoot },
+      // Больший потолок вывода: дефолт 8000 обрезает список файлов (сотни файлов) — модель не видит
+      // целевые пакеты и гадает несуществующие идентификаторы; заодно читаем файлы кода целиком.
+      env: { ...childEnv, GIT_ALLOWED_REPOS: config.repoRoot, GIT_MAX_OUTPUT_CHARS: '60000' },
     });
     console.error(`поиск по коду включён: репозиторий ${config.repoRoot}`);
   } else if (config.codeSearch) {

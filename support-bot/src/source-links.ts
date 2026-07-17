@@ -51,6 +51,18 @@ export function githubHeadingAnchor(heading: string): string {
     .replace(/\s+/g, '-');
 }
 
+/**
+ * Секции код-доказательств — это ИМЕНА инструментов git-mcp (не markdown-заголовки), у файлов кода
+ * нет заголовочных якорей. Такой источник линкуем на файл БЕЗ якоря и без хвоста «› инструмент».
+ */
+const CODE_TOOL_SECTIONS = new Set([
+  'read_file',
+  'git_grep',
+  'git_list_files',
+  'git_diff',
+  'git_log',
+]);
+
 /** Путь файла чанка относительно корня репозитория, POSIX-разделители (для URL). */
 function repoRelativePath(chunk: SearchChunk, repoRoot: string): string {
   return relative(repoRoot, join(chunk.source, chunk.file))
@@ -92,8 +104,10 @@ function renderSourceLink(
 ): string {
   const fileUrl = chunkLink(match.chunk, context, false);
   const split = splitSourceLabel(label);
-  if (split === null) {
-    return `${prefix}[${label}](${chunkLink(match.chunk, context, match.useAnchor)})`;
+  // Код-источник (раздел = имя инструмента) или нет разделителя → одна ссылка на файл (без якоря).
+  if (split === null || CODE_TOOL_SECTIONS.has(match.chunk.section)) {
+    const text = split === null ? label : split.filePart;
+    return `${prefix}[${text}](${fileUrl})`;
   }
   const sectionRendered = match.useAnchor
     ? `[${split.sectionPart}](${chunkLink(match.chunk, context, true)})`

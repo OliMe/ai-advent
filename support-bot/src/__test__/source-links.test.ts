@@ -154,6 +154,31 @@ describe('linkifySources', () => {
     assert.match(out, /- \[› authorization\.md подробнее\]\(.*authorization\.md\)$/);
   });
 
+  it('код-источник (раздел = инструмент git-mcp) → ссылка на файл без битого якоря', () => {
+    const codeChunks: SearchChunk[] = [
+      {
+        chunk_id: 'проект › support-mcp/src/loop-guard.ts',
+        source: '/repo',
+        file: 'support-mcp/src/loop-guard.ts',
+        section: 'read_file',
+        score: 1,
+        text: 'export function hasSupportMarker() {}',
+      },
+    ];
+    const out = linkifySources(
+      'Источники:\n- support-mcp/src/loop-guard.ts › read_file',
+      codeChunks,
+      context,
+    );
+    // Одна ссылка на файл, без «› read_file» и без якоря #read_file.
+    assert.match(
+      out,
+      /- \[support-mcp\/src\/loop-guard\.ts\]\(.*\/support-mcp\/src\/loop-guard\.ts\)$/,
+    );
+    assert.doesNotMatch(out, /#read_file/);
+    assert.doesNotMatch(out, /› \[read_file\]/);
+  });
+
   it('источник не сопоставлен с чанком → строка как есть', () => {
     const out = linkifySources('Источники:\n- unknown.md › раздел', CHUNKS, context);
     assert.match(out, /- unknown\.md › раздел$/);
