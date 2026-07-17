@@ -3,6 +3,7 @@ import type { SearchChunk } from '../../grounding/src/index.ts';
 import { readTicketThread, postReply } from './ticket-client.ts';
 import { formatTicketContext, pickQuestion } from './ticket-context.ts';
 import { answerSupportQuestion } from './answer.ts';
+import { buildSourceLinkContext, linkifySources } from './source-links.ts';
 
 /** Зависимости потока ответа (инъекция — CRM через MCP, FAQ и модель подставляются). */
 export interface SupportFlowDeps {
@@ -14,6 +15,10 @@ export interface SupportFlowDeps {
   retrieveFaq: (query: string) => Promise<SearchChunk[]>;
   /** Tool-free генерация синтеза. */
   complete: (messages: ChatMessage[]) => Promise<string>;
+  /** Git-ref для ссылок на файлы FAQ (SHA/ветка); пусто → «Источники» без ссылок. */
+  linkRef?: string;
+  /** Корень репозитория для относительного пути файла в ссылке; пусто → без ссылок. */
+  repoRoot?: string;
   onCitationFailure?: (reason: string, attempt: number) => void;
 }
 
@@ -54,6 +59,13 @@ export async function runSupportFlow(deps: SupportFlowDeps): Promise<SupportFlow
     question,
   );
 
-  await postReply(deps.toolSet, deps.issueId, answer);
-  return { posted: true, question, answer };
+  // «Источники» → кликабельные ссылки на файл+раздел FAQ в репозитории (если известны ref и корень).
+  const linkContext =
+    deps.linkRef && deps.repoRoot
+      ? buildSourceLinkContext(ticket.url, deps.linkRef, deps.repoRoot)
+      : null;
+  const linked = linkifySources(answer, faqChunks, linkContext);
+
+  await postReply(deps.toolSet, deps.issueId, linked);
+  return { posted: true, question, answer: linked };
 }

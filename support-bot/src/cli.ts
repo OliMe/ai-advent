@@ -120,6 +120,8 @@ async function main(): Promise<void> {
           query,
         ),
       complete,
+      linkRef: config.ref,
+      repoRoot: config.repoRoot,
       onCitationFailure: (reason, attempt) =>
         console.error(`цитатный гейт (попытка ${attempt}): ${reason}`),
     });

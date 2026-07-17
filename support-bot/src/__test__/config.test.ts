@@ -15,7 +15,24 @@ describe('loadSupportBotConfig', () => {
       cacheDir: '/pkg/.support-bot-cache',
       topKFaq: 5,
       disableThinking: false,
+      ref: 'main',
+      repoRoot: '',
     });
+  });
+
+  it('ref/repoRoot: GITHUB_SHA/GITHUB_WORKSPACE, оверрайд SUPPORT_REF/SUPPORT_REPO_ROOT', () => {
+    const fromActions = loadSupportBotConfig(
+      { GITHUB_SHA: 'abc123', GITHUB_WORKSPACE: '/runner/repo' },
+      '/pkg',
+    );
+    assert.equal(fromActions.ref, 'abc123');
+    assert.equal(fromActions.repoRoot, '/runner/repo');
+    const overridden = loadSupportBotConfig(
+      { GITHUB_SHA: 'abc123', SUPPORT_REF: 'v1', SUPPORT_REPO_ROOT: '/custom' },
+      '/pkg',
+    );
+    assert.equal(overridden.ref, 'v1');
+    assert.equal(overridden.repoRoot, '/custom');
   });
 
   it('SUPPORT_* переопределяют, хвостовой слэш базы срезается', () => {
@@ -45,6 +62,8 @@ describe('loadSupportBotConfig', () => {
       cacheDir: '/cache',
       topKFaq: 8,
       disableThinking: true,
+      ref: 'main',
+      repoRoot: '',
     });
   });
 

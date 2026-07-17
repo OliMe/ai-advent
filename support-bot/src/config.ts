@@ -22,6 +22,10 @@ export interface SupportBotConfig {
   topKFaq: number;
   /** Гасить рассуждения модели (нужно GLM). */
   disableThinking: boolean;
+  /** Git-ref для ссылок на файлы FAQ (SHA-перманентная ссылка или ветка). */
+  ref: string;
+  /** Корень репозитория — путь файла FAQ в ссылке считается относительно него; пусто → без ссылок. */
+  repoRoot: string;
 }
 
 /** Положительное целое из строки в границах или значение по умолчанию. */
@@ -54,5 +58,8 @@ export function loadSupportBotConfig(env: NodeJS.ProcessEnv, packageDir: string)
     cacheDir: env.SUPPORT_CACHE_DIR?.trim() || join(packageDir, '.support-bot-cache'),
     topKFaq: boundedInt(env.SUPPORT_TOP_K_FAQ, 5, 0, 50),
     disableThinking: env.SUPPORT_NO_THINKING === '1',
+    // GITHUB_SHA/GITHUB_WORKSPACE — штатные переменные Actions (перманентная ссылка + корень репо).
+    ref: env.SUPPORT_REF?.trim() || env.GITHUB_SHA?.trim() || 'main',
+    repoRoot: env.SUPPORT_REPO_ROOT?.trim() || env.GITHUB_WORKSPACE?.trim() || '',
   };
 }

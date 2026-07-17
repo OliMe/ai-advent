@@ -39,7 +39,7 @@ function fakeToolSet(comments: TicketComment[]): {
         author: { login: 'user1' },
         labels: ['auth'],
         state: 'open',
-        url: 'x',
+        url: 'https://example/o/r/issues/42',
       }),
     support__get_ticket_comments: () => JSON.stringify(comments),
     support__add_ticket_comment: args => {
@@ -96,6 +96,40 @@ describe('runSupportFlow', () => {
     });
     assert.equal(result.question, 'уточняющий вопрос');
     assert.equal(result.posted, true);
+  });
+
+  it('с linkRef+repoRoot: «Источники» постятся кликабельной ссылкой на файл+раздел', async () => {
+    const { toolSet, posted } = fakeToolSet([]);
+    const result = await runSupportFlow({
+      toolSet,
+      issueId: 42,
+      retrieveFaq: async () => [
+        {
+          chunk_id: 'authorization.md#0',
+          source: '/repo/support-bot/faq',
+          file: 'authorization.md',
+          section: 'Авторизация',
+          score: 0.9,
+          text: 'Проверьте заголовок Authorization: Bearer <ТОКЕН>.',
+        },
+      ],
+      complete: async () =>
+        [
+          'Ответ: Проверьте заголовок.',
+          'Источники:',
+          '- authorization.md › Авторизация',
+          'Цитаты:',
+          '- «Проверьте заголовок Authorization: Bearer <ТОКЕН>.»',
+        ].join('\n'),
+      linkRef: 'SHA1',
+      repoRoot: '/repo',
+    });
+    assert.equal(result.posted, true);
+    const body = posted[0].body as string;
+    assert.match(
+      body,
+      /- \[authorization\.md › Авторизация\]\(https:\/\/example\/o\/r\/blob\/SHA1\/support-bot\/faq\/authorization\.md#авторизация\)/,
+    );
   });
 
   it('защита петли: последний комментарий бота → не отвечаем', async () => {
