@@ -66,6 +66,41 @@ function chunkLink(chunk: SearchChunk, context: SourceLinkContext, useAnchor: bo
   return `${context.blobBaseUrl}/${path}${anchor === '' ? '' : `#${anchor}`}`;
 }
 
+/** Разбивает метку «файл › раздел [· chunk_id]» на часть-файл и часть-раздел; null — нет разделителя. */
+function splitSourceLabel(label: string): { filePart: string; sectionPart: string } | null {
+  const index = label.indexOf('›');
+  if (index === -1) {
+    return null;
+  }
+  const filePart = label.slice(0, index).trim();
+  const rest = label.slice(index + 1).trim();
+  const chunkIdMark = rest.indexOf('·');
+  const sectionPart = (chunkIdMark === -1 ? rest : rest.slice(0, chunkIdMark)).trim();
+  return filePart === '' || sectionPart === '' ? null : { filePart, sectionPart };
+}
+
+/**
+ * Строка-пункт «Источников» → ссылки: часть-ФАЙЛ ведёт на файл (без якоря), часть-РАЗДЕЛ — на
+ * конкретную секцию (якорь). Нет надёжного якоря → раздел остаётся текстом. Нет разделителя `›` в
+ * метке → вся метка одной ссылкой (на секцию, если якорь надёжен, иначе на файл).
+ */
+function renderSourceLink(
+  prefix: string,
+  label: string,
+  match: { chunk: SearchChunk; useAnchor: boolean },
+  context: SourceLinkContext,
+): string {
+  const fileUrl = chunkLink(match.chunk, context, false);
+  const split = splitSourceLabel(label);
+  if (split === null) {
+    return `${prefix}[${label}](${chunkLink(match.chunk, context, match.useAnchor)})`;
+  }
+  const sectionRendered = match.useAnchor
+    ? `[${split.sectionPart}](${chunkLink(match.chunk, context, true)})`
+    : split.sectionPart;
+  return `${prefix}[${split.filePart}](${fileUrl}) › ${sectionRendered}`;
+}
+
 /**
  * Подбирает чанк под строку «Источника»: сначала совпадение по ФАЙЛУ и РАЗДЕЛУ (тогда якорь надёжен),
  * иначе только по файлу (ссылка на файл без якоря — лучше, чем неверный якорь). Нет файла — null.
@@ -139,7 +174,7 @@ export function linkifySources(
     if (match === null) {
       return line;
     }
-    return `${bullet[1]}[${label}](${chunkLink(match.chunk, context, match.useAnchor)})`;
+    return renderSourceLink(bullet[1], label, match, context);
   });
   return lines.join('\n');
 }

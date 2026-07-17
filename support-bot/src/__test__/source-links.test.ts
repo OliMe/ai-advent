@@ -84,13 +84,20 @@ describe('linkifySources', () => {
     '- «authorization.md › не ссылка»',
   ].join('\n');
 
-  it('пункты «Источников» становятся ссылками на файл+раздел, «Цитаты» не трогаются', () => {
+  it('пункты «Источников»: файл → ссылка на файл, раздел → ссылка на секцию; «Цитаты» не трогаются', () => {
     const out = linkifySources(answer, CHUNKS, context);
+    const base = 'https://github.com/o/r/blob/SHA/support-bot/faq/authorization.md';
+    // Часть-файл — ссылка на файл БЕЗ якоря; часть-раздел — отдельная ссылка с якорем секции.
     assert.match(
       out,
-      /- \[authorization\.md › Почему.*\]\(https:\/\/github\.com\/o\/r\/blob\/SHA\/support-bot\/faq\/authorization\.md#почему-не-работает-авторизация-к-llm-эндпоинту\)/,
+      new RegExp(
+        `- \\[authorization\\.md\\]\\(${base.replace(/[.]/g, '\\.')}\\) › \\[Почему.*\\]\\(${base.replace(/[.]/g, '\\.')}#почему-не-работает-авторизация-к-llm-эндпоинту\\)`,
+      ),
     );
-    assert.match(out, /authorization\.md#что-означает-ответ-401-а-что-403\)/);
+    assert.match(
+      out,
+      /\[Что означает ответ 401, а что 403\?\]\(.*authorization\.md#что-означает-ответ-401-а-что-403\)/,
+    );
     // строка в «Цитатах» осталась простым текстом (без markdown-ссылки)
     assert.match(out, /- «authorization\.md › не ссылка»/);
     assert.doesNotMatch(out, /не ссылка»\]\(/);
@@ -104,7 +111,7 @@ describe('linkifySources', () => {
     assert.equal(linkifySources(answer, [], context), answer);
   });
 
-  it('источник совпал по файлу, но не по разделу → ссылка на файл без якоря', () => {
+  it('метка без разделителя, совпал только файл → одна ссылка на файл без якоря', () => {
     const out = linkifySources(
       'Источники:\n- authorization.md (общий раздел без совпадения)',
       CHUNKS,
@@ -112,6 +119,39 @@ describe('linkifySources', () => {
     );
     assert.match(out, /\/support-bot\/faq\/authorization\.md\)/);
     assert.doesNotMatch(out, /authorization\.md#/);
+  });
+
+  it('есть разделитель, но раздел не сопоставлен → файл ссылкой, раздел текстом', () => {
+    const out = linkifySources(
+      'Источники:\n- authorization.md › Несуществующий раздел',
+      CHUNKS,
+      context,
+    );
+    assert.match(out, /- \[authorization\.md\]\(.*authorization\.md\) › Несуществующий раздел$/);
+    assert.doesNotMatch(out, /authorization\.md#/); // якоря нет — раздел не сопоставлен
+  });
+
+  it('разделитель есть, но одна из частей пуста → одна ссылка (метка целиком)', () => {
+    // «authorization.md ›» — часть-раздел пустая → splitSourceLabel возвращает null → одна ссылка.
+    const out = linkifySources('Источники:\n- authorization.md ›', CHUNKS, context);
+    assert.match(out, /- \[authorization\.md ›\]\(.*authorization\.md\)$/);
+  });
+
+  it('метка с chunk_id после · → раздел берётся до ·, файл и секция ссылками', () => {
+    const out = linkifySources(
+      'Источники:\n- authorization.md › Что означает ответ 401, а что 403? · authorization.md#2',
+      CHUNKS,
+      context,
+    );
+    assert.match(
+      out,
+      /- \[authorization\.md\]\(.*authorization\.md\) › \[Что означает ответ 401, а что 403\?\]\(.*#что-означает-ответ-401-а-что-403\)/,
+    );
+  });
+
+  it('метка начинается с разделителя (часть-файл пустая) → одна ссылка целиком', () => {
+    const out = linkifySources('Источники:\n- › authorization.md подробнее', CHUNKS, context);
+    assert.match(out, /- \[› authorization\.md подробнее\]\(.*authorization\.md\)$/);
   });
 
   it('источник не сопоставлен с чанком → строка как есть', () => {

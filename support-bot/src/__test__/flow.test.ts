@@ -128,7 +128,7 @@ describe('runSupportFlow', () => {
     const body = posted[0].body as string;
     assert.match(
       body,
-      /- \[authorization\.md › Авторизация\]\(https:\/\/example\/o\/r\/blob\/SHA1\/support-bot\/faq\/authorization\.md#авторизация\)/,
+      /- \[authorization\.md\]\(https:\/\/example\/o\/r\/blob\/SHA1\/support-bot\/faq\/authorization\.md\) › \[Авторизация\]\(https:\/\/example\/o\/r\/blob\/SHA1\/support-bot\/faq\/authorization\.md#авторизация\)/,
     );
   });
 
