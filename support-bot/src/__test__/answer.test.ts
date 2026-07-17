@@ -1,7 +1,24 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { answerSupportQuestion } from '../index.ts';
+import { answerSupportQuestion, stripAnswerLabel } from '../index.ts';
 import type { SearchChunk } from '../../../grounding/src/index.ts';
+
+describe('stripAnswerLabel', () => {
+  it('снимает ведущий «Ответ:» (в т.ч. с переносом и markdown-заголовком)', () => {
+    assert.equal(stripAnswerLabel('Ответ: текст ответа'), 'текст ответа');
+    assert.equal(stripAnswerLabel('Ответ:\nтекст'), 'текст');
+    assert.equal(stripAnswerLabel('## Ответ: текст'), 'текст');
+    assert.equal(stripAnswerLabel('**Ответ:** текст'), 'текст');
+  });
+
+  it('не трогает многострочность после первой строки', () => {
+    assert.equal(stripAnswerLabel('Ответ: строка1\nстрока2'), 'строка1\nстрока2');
+  });
+
+  it('без ярлыка (фолбэк «Не знаю…») — без изменений', () => {
+    assert.equal(stripAnswerLabel('Не знаю: контекста нет.'), 'Не знаю: контекста нет.');
+  });
+});
 
 const FAQ: SearchChunk[] = [
   {

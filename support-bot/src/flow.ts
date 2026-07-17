@@ -2,7 +2,7 @@ import type { ChatMessage, ToolSet } from '../../core/src/index.ts';
 import type { SearchChunk } from '../../grounding/src/index.ts';
 import { readTicketThread, postReply } from './ticket-client.ts';
 import { formatTicketContext, pickQuestion } from './ticket-context.ts';
-import { answerSupportQuestion } from './answer.ts';
+import { answerSupportQuestion, stripAnswerLabel } from './answer.ts';
 import { buildSourceLinkContext, linkifySources } from './source-links.ts';
 
 /** Зависимости потока ответа (инъекция — CRM через MCP, FAQ и модель подставляются). */
@@ -64,8 +64,9 @@ export async function runSupportFlow(deps: SupportFlowDeps): Promise<SupportFlow
     deps.linkRef && deps.repoRoot
       ? buildSourceLinkContext(ticket.url, deps.linkRef, deps.repoRoot)
       : null;
-  const linked = linkifySources(answer, faqChunks, linkContext);
+  // Ярлык «Ответ:» в опубликованном комментарии избыточен — снимаем перед постингом.
+  const body = stripAnswerLabel(linkifySources(answer, faqChunks, linkContext));
 
-  await postReply(deps.toolSet, deps.issueId, linked);
-  return { posted: true, question, answer: linked };
+  await postReply(deps.toolSet, deps.issueId, body);
+  return { posted: true, question, answer: body };
 }

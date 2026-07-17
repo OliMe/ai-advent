@@ -78,7 +78,12 @@ describe('runSupportFlow', () => {
     assert.equal(result.posted, true);
     assert.equal(result.question, 'После обновления не пускает');
     assert.equal(askedQuery, 'После обновления не пускает');
-    assert.deepEqual(posted, [{ id: 42, body: GOOD_ANSWER }]);
+    // Ярлык «Ответ:» снят перед постингом.
+    const body = posted[0].body as string;
+    assert.equal(posted.length, 1);
+    assert.doesNotMatch(body, /^Ответ:/);
+    assert.match(body, /^Проверьте заголовок\./);
+    assert.match(body, /Источники:/);
   });
 
   it('follow-up: вопрос = последняя реплика пользователя', async () => {
