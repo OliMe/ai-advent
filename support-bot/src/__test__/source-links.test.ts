@@ -179,6 +179,36 @@ describe('linkifySources', () => {
     assert.doesNotMatch(out, /› \[read_file\]/);
   });
 
+  it('git_grep-чанк (file=шаблон) пропускается — ссылка строится на read_file (реальный путь)', () => {
+    const codeChunks: SearchChunk[] = [
+      // git_grep-чанк идёт ПЕРВЫМ, но его file — шаблон «loop-guard», не путь.
+      {
+        chunk_id: 'проект › loop-guard',
+        source: '/repo',
+        file: 'loop-guard',
+        section: 'git_grep',
+        score: 1,
+        text: 'support-mcp/src/loop-guard.ts:1:export const SUPPORT_MARKER',
+      },
+      // read_file-чанк с реальным путём.
+      {
+        chunk_id: 'проект › support-mcp/src/loop-guard.ts',
+        source: '/repo',
+        file: 'support-mcp/src/loop-guard.ts',
+        section: 'read_file',
+        score: 1,
+        text: 'export const SUPPORT_MARKER = ...',
+      },
+    ];
+    const out = linkifySources('Источники:\n- support-mcp/src/loop-guard.ts', codeChunks, context);
+    // Полный путь, а не обрезанный «loop-guard».
+    assert.match(
+      out,
+      /\[support-mcp\/src\/loop-guard\.ts\]\(.*\/support-mcp\/src\/loop-guard\.ts\)$/,
+    );
+    assert.doesNotMatch(out, /blob\/SHA\/loop-guard\)/);
+  });
+
   it('источник не сопоставлен с чанком → строка как есть', () => {
     const out = linkifySources('Источники:\n- unknown.md › раздел', CHUNKS, context);
     assert.match(out, /- unknown\.md › раздел$/);

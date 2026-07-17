@@ -63,6 +63,13 @@ const CODE_TOOL_SECTIONS = new Set([
   'git_log',
 ]);
 
+/**
+ * Инструменты, у чьих чанков `file` — НЕ путь к файлу (git_grep → шаблон поиска, git_list_files →
+ * подкаталог), поэтому ссылку на файл по ним не построить. Такие чанки при сопоставлении источника
+ * пропускаем — линкуем на read_file-чанк (у него `file` = реальный путь) или на FAQ.
+ */
+const NON_FILE_SECTIONS = new Set(['git_grep', 'git_list_files']);
+
 /** Путь файла чанка относительно корня репозитория, POSIX-разделители (для URL). */
 function repoRelativePath(chunk: SearchChunk, repoRoot: string): string {
   return relative(repoRoot, join(chunk.source, chunk.file))
@@ -126,6 +133,9 @@ function matchSource(
   const haystack = normalizeForMatch(label);
   let fileOnly: SearchChunk | null = null;
   for (const chunk of chunks) {
+    if (NON_FILE_SECTIONS.has(chunk.section)) {
+      continue; // file — не путь (шаблон/подкаталог), ссылку на файл по нему не построить
+    }
     const file = normalizeForMatch(chunk.file);
     if (file.length >= 3 && haystack.includes(file)) {
       const section = normalizeForMatch(chunk.section);
