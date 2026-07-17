@@ -16,7 +16,6 @@ import type { ChatMessage } from '../../core/src/index.ts';
 import { loadLocalDocuments, nodeLocalIo } from '../../rag/src/index.ts';
 import { retrieveDocChunks, warmDocsIndex, FileIndexCache } from '../../grounding/src/index.ts';
 import type { IndexCacheIo } from '../../grounding/src/index.ts';
-import { McpToolSet, connectionFactory } from '../../mcp-client/src/index.ts';
 import { loadSupportBotConfig } from './config.ts';
 import { runSupportFlow } from './flow.ts';
 
@@ -82,6 +81,9 @@ async function main(): Promise<void> {
   childEnv.SUPPORT_TOKEN = config.token;
   childEnv.SUPPORT_API_URL = config.apiBaseUrl;
 
+  // Ленивый импорт mcp-client: он тянет @modelcontextprotocol/sdk, который нужен ТОЛЬКО в полном
+  // потоке ответа. Прогрев кэша (--warm-cache, ветка выше) обходится без него и без npm install SDK.
+  const { McpToolSet, connectionFactory } = await import('../../mcp-client/src/index.ts');
   const supportMcpCli = join(packageDir, '..', 'support-mcp', 'src', 'cli.ts');
   const toolSet = new McpToolSet(connectionFactory());
   await toolSet.addServer('support', {
