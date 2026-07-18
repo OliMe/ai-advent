@@ -19,6 +19,7 @@ import type { AgentRole, TeamPlan } from './stage-team.ts';
 import type { ToolSet } from './tool-set.ts';
 import type { CommandCheck, FileWorkspace } from './run-workspace.ts';
 import type { CommandResult } from './command-runner.ts';
+import { InvariantViolationError } from './invariant-guard.ts';
 
 /** Контекст этапа: всё, что нужно раннеру для одного прогона этапа. */
 export interface StageContext {
@@ -630,9 +631,24 @@ async function runFileExecution(
   const prompt =
     `${projectPrefix(ctx)}${memoryPrefix(ctx)}Задача: ${ctx.run.title}${requirementsBlock(ctx)}` +
     `\n\nПлан:\n${planBody}\n\nКритерии приёмки:\n${criteria}${revision}`;
-  const summaryText = await guarded(ctx, feedback =>
-    conversation.ask(feedback ?? prompt).then(result => result.content),
-  );
+  // Агентный цикл может оборваться на ДЛИННОЙ задаче (лимит раундов инструментов при обновлении
+  // зависимостей: ncu → install → правки → тесты → фиксы; сетевой обрыв провайдера). Правки уже в
+  // копии — НЕ теряем их: снимаем diff и отдаём как результат, проверка разберётся, докрутить ли (в
+  // той же копии). Нарушение инвариантов — жёсткий стоп, его пропускаем наверх (пауза пользователю).
+  let summaryText: string;
+  try {
+    summaryText = await guarded(ctx, feedback =>
+      conversation.ask(feedback ?? prompt).then(result => result.content),
+    );
+  } catch (error) {
+    if (error instanceof InvariantViolationError) {
+      throw error;
+    }
+    summaryText =
+      '⚠ Выполнение прервано и не доведено до конца ' +
+      `(${error instanceof Error ? error.message : String(error)}). ` +
+      'Ниже — уже сделанные в проекте изменения; при доработке продолжи с этого состояния.';
+  }
   const { diff, files } = await workspace.changeSummary();
   const cleaned = stripCodeFence(summaryText).trim();
   const text =

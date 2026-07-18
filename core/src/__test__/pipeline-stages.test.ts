@@ -15,6 +15,7 @@ import {
   createRun,
   structuredLimits,
   PLANNING_SCHEMA,
+  InvariantViolationError,
 } from '../index.ts';
 import type {
   GenerationLimits,
@@ -1070,6 +1071,72 @@ describe('работа с файлами и командами (День 34)', (
     assert.match(artifact.text, /Изменения в файлах:/);
     assert.match(artifact.text, /\+новое/);
     assert.match(artifact.summary, /Изменено файлов: 1 \(README\.md\)/);
+  });
+
+  it('runExecution с fileWorkspace: обрыв агентного цикла не теряет правки (снимает diff)', async t => {
+    const run = planned(createRun('Обнови зависимости', { idSuffix: 'cut' }));
+    const make: StageContext['makeConversation'] = systemPrompt => {
+      const client = clientWith(t, async () => {
+        throw new Error('Превышен лимит раундов вызова инструментов (20).');
+      });
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: 0.2,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+      });
+    };
+    const artifact = await runExecution({
+      run,
+      makeConversation: make,
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      fileWorkspace: fakeWorkspace('--- a/package.json\n+++ b/package.json\n+обновлено', ['package.json']),
+    });
+
+    assert.match(artifact.text, /Выполнение прервано/); // пометка обрыва
+    assert.match(artifact.text, /\+обновлено/); // но diff сохранён — работа не потеряна
+    assert.deepEqual(artifact.files, ['package.json']);
+  });
+
+  it('runExecution с fileWorkspace: обрыв не-Error значением тоже сохраняет правки', async t => {
+    const run = planned(createRun('Y', { idSuffix: 'cut2' }));
+    const make: StageContext['makeConversation'] = systemPrompt => {
+      const client = clientWith(t, async () => {
+        throw 'строковый сбой'; // не Error → ветка String(error)
+      });
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: 0.2,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+      });
+    };
+    const artifact = await runExecution({
+      run,
+      makeConversation: make,
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      fileWorkspace: fakeWorkspace('d', ['f']),
+    });
+    assert.match(artifact.text, /строковый сбой/);
+  });
+
+  it('runExecution с fileWorkspace: нарушение инвариантов — жёсткий стоп (пробрасывается)', async t => {
+    const run = planned(createRun('X', { idSuffix: 'inv' }));
+    await assert.rejects(
+      runExecution({
+        run,
+        makeConversation: makeConv(t, 'ответ'),
+        writeArtifact: () => null,
+        memoryContext: () => '',
+        enforce: async () => {
+          throw new InvariantViolationError(['нарушено']);
+        },
+        fileWorkspace: fakeWorkspace('diff', ['a']),
+      }),
+      err => err instanceof InvariantViolationError,
+    );
   });
 
   it('runExecution с fileWorkspace без правок: помечает отсутствие изменений, резюме из ответа', async t => {
