@@ -7,6 +7,8 @@ import {
   createRunWorkspace,
   resolveInside,
   readProjectScripts,
+  parseDotenv,
+  loadProjectEnv,
 } from '../run-workspace.ts';
 import type { WorkspaceIo } from '../run-workspace.ts';
 import type {
@@ -263,6 +265,48 @@ describe('readProjectScripts', () => {
   });
 });
 
+describe('parseDotenv', () => {
+  it('пары, кавычки, export; пропуск комментариев/пустых/без-=/пустого-ключа/незакрытых кавычек', () => {
+    const env = parseDotenv(
+      [
+        '# комментарий',
+        '',
+        'export FOO=bar',
+        'QUOTED="в кавычках"',
+        "SINGLE='одинарные'",
+        'PLAIN=значение',
+        'SHORT=x', // однобуквенное — кавычки не снимаются (length<2)
+        'BAD="незакрыто', // открытая кавычка без пары — не снимается
+        'без_равно',
+        '=пустой_ключ',
+        '  SPACED  =  y  ',
+      ].join('\n'),
+    );
+    assert.deepEqual(env, {
+      FOO: 'bar',
+      QUOTED: 'в кавычках',
+      SINGLE: 'одинарные',
+      PLAIN: 'значение',
+      SHORT: 'x',
+      BAD: '"незакрыто',
+      SPACED: 'y',
+    });
+  });
+});
+
+describe('loadProjectEnv', () => {
+  it('.env.development перекрывает .env; нет файлов → пусто; нечитаемый пропускается', () => {
+    assert.deepEqual(loadProjectEnv(new FakeIo(), '/p'), {}); // файлов нет
+
+    const io = new FakeIo({ '/p/.env': 'A=base\nB=base', '/p/.env.development': 'B=dev\nC=dev' });
+    assert.deepEqual(loadProjectEnv(io, '/p'), { A: 'base', B: 'dev', C: 'dev' }); // dev перекрыл B
+
+    const broken = new FakeIo({ '/p/.env': 'X=1' });
+    broken.unreadable.add('/p/.env');
+    assert.deepEqual(loadProjectEnv(broken, '/p'), {}); // чтение бросило → пропуск
+  });
+});
+
 describe('WorkspaceCommandToolSet', () => {
   function cmd(
     scripts: Record<string, string>,
@@ -362,6 +406,35 @@ describe('RunWorkspace', () => {
     assert.equal(io.files.has('/proj/old.txt'), false); // D удалён
   });
 
+  it('run и run_command подмешивают переменные .env проекта', async () => {
+    let sawRun: Record<string, string> | undefined;
+    let sawCmd: Record<string, string> | undefined;
+    const runner: ProjectCommandRunner = {
+      run: async (command, options) => {
+        if (command.includes('run format')) {
+          sawCmd = options.env;
+        } else {
+          sawRun = options.env;
+        }
+        return { command, code: 0, stdout: '', stderr: '', timedOut: false };
+      },
+    };
+    const workspace = new RunWorkspace(
+      PROJECT,
+      '/w/worktree',
+      '/w',
+      new FakeIo(),
+      runner,
+      1000,
+      { format: 'prettier -w' },
+      { BUILD_PUBLIC_BASE: '/app' },
+    );
+    await workspace.run('npm run build:main'); // команда проверки
+    await workspace.tools.call('run_command', { script: 'format' }); // команда исполнителя
+    assert.deepEqual(sawRun, { BUILD_PUBLIC_BASE: '/app' });
+    assert.deepEqual(sawCmd, { BUILD_PUBLIC_BASE: '/app' });
+  });
+
   it('run_command исполнителя использует packageManager проекта', async () => {
     const calls: { command: string; cwd: string; timeoutMs?: number }[] = [];
     const project = { ...PROJECT, packageManager: 'pnpm' };
@@ -433,6 +506,22 @@ describe('createRunWorkspace', () => {
     });
     const workspace = await createRunWorkspace(PROJECT, io, fakeRunner([{ match: c => c.includes('worktree add') }]));
     assert.ok(!workspace.tools.specs().some(spec => spec.name === 'run_command'));
+  });
+
+  it('загружает .env.development копии в команды проверки', async () => {
+    const io = new FakeIo({ '/tmp/ws/worktree/.env.development': 'BUILD_PUBLIC_BASE=/app' });
+    let sawEnv: Record<string, string> | undefined;
+    const runner: ProjectCommandRunner = {
+      run: async (command, options) => {
+        if (command === 'npm run build') {
+          sawEnv = options.env;
+        }
+        return { command, code: 0, stdout: '', stderr: '', timedOut: false };
+      },
+    };
+    const workspace = await createRunWorkspace(PROJECT, io, runner);
+    await workspace.run('npm run build');
+    assert.deepEqual(sawEnv, { BUILD_PUBLIC_BASE: '/app' });
   });
 
   it('путь копии с пробелом — экранируется кавычками', async () => {

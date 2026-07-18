@@ -52,14 +52,15 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 300000;
 export const nodeCommandRunner: ProjectCommandRunner = {
   run: (command: string, options: CommandRunOptions): Promise<CommandResult> =>
     new Promise(resolve => {
-      // node_modules/.bin в PATH — иначе «голые» бинарники скриптов (напр. `jest`) не находятся
-      // (127), хотя `npm run …` работал бы (npm сам добавляет .bin). Копия шарит node_modules
-      // симлинком, поэтому .bin в ней резолвится.
+      // Переменные проекта (.env/.env.development) — поверх process.env: команды сборки/тестов
+      // видят требуемые переменные. node_modules/.bin в PATH — иначе «голые» бинарники скриптов
+      // (напр. `jest`) не находятся (127); .bin резолвится через симлинк node_modules в копии.
       const binDir = join(options.cwd, 'node_modules', '.bin');
+      const baseEnv = { ...process.env, ...options.env };
       const child = spawn(command, {
         cwd: options.cwd,
         shell: true,
-        env: { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}` },
+        env: { ...baseEnv, PATH: `${binDir}${delimiter}${baseEnv.PATH ?? ''}` },
       });
       let stdout = '';
       let stderr = '';

@@ -6,6 +6,7 @@ import type {
   ProjectCommands,
   ProjectCommandRunner,
   CommandResult,
+  CommandRunOptions,
   FileWorkspace,
   CommandCheck,
   WorkspaceChangeSummary,
@@ -273,6 +274,19 @@ export class WorkspaceFileToolSet implements ToolSet {
   }
 }
 
+/** Опции запуска команды проекта: cwd + (если заданы) таймаут и переменные .env. */
+function commandRunOptions(
+  cwd: string,
+  timeoutMs: number | undefined,
+  env: Record<string, string>,
+): CommandRunOptions {
+  return {
+    cwd,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+  };
+}
+
 /** Максимум символов вывода команды в ответе инструмента (хвост важнее — там ошибка). */
 const COMMAND_TAIL_LIMIT = 2000;
 
@@ -318,6 +332,55 @@ export function readProjectScripts(io: WorkspaceIo, root: string): Record<string
   }
 }
 
+/** Файлы окружения, подмешиваемые в команды проекта (базовый + dev; dev перекрывает базовый). */
+const PROJECT_ENV_FILES = ['.env', '.env.development'];
+
+/** Разбирает содержимое `.env` (построчно `KEY=VALUE`): комментарии/пустые пропускаются, кавычки снимаются. */
+export function parseDotenv(content: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) {
+      continue;
+    }
+    const body = line.startsWith('export ') ? line.slice('export '.length).trim() : line;
+    const separator = body.indexOf('=');
+    if (separator <= 0) {
+      continue; // нет '=' или пустой ключ
+    }
+    const key = body.slice(0, separator).trim();
+    let value = body.slice(separator + 1).trim();
+    const quote = value[0];
+    if (value.length >= 2 && (quote === '"' || quote === "'") && value.at(-1) === quote) {
+      value = value.slice(1, -1);
+    }
+    if (key !== '') {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * Загружает переменные окружения проекта из `.env`/`.env.development` рабочей копии (dev перекрывает
+ * базовый) — чтобы команды сборки/тестов видели нужные переменные локального запуска. Нет файлов /
+ * нечитаемы → пусто.
+ */
+export function loadProjectEnv(io: WorkspaceIo, root: string): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const name of PROJECT_ENV_FILES) {
+    const path = join(root, name);
+    if (io.exists(path)) {
+      try {
+        Object.assign(merged, parseDotenv(io.readFile(path)));
+      } catch {
+        // нечитаемый .env — пропускаем
+      }
+    }
+  }
+  return merged;
+}
+
 /**
  * Инструмент запуска СКРИПТОВ проекта (`<pm> run <script>`) в рабочей копии — для этапа выполнения:
  * исполнитель проверяет/форматирует свои правки и чинит их до зелёного. Allow-list — скрипты проекта
@@ -329,6 +392,7 @@ export class WorkspaceCommandToolSet implements ToolSet {
   private readonly scripts: Record<string, string>;
   private readonly runner: ProjectCommandRunner;
   private readonly timeoutMs: number | undefined;
+  private readonly projectEnv: Record<string, string>;
 
   constructor(
     worktree: string,
@@ -336,12 +400,14 @@ export class WorkspaceCommandToolSet implements ToolSet {
     scripts: Record<string, string>,
     runner: ProjectCommandRunner,
     timeoutMs: number | undefined,
+    projectEnv: Record<string, string> = {},
   ) {
     this.worktree = worktree;
     this.packageManager = packageManager;
     this.scripts = scripts;
     this.runner = runner;
     this.timeoutMs = timeoutMs;
+    this.projectEnv = projectEnv;
   }
 
   /** Имена скриптов, которые разрешено запускать. */
@@ -377,9 +443,7 @@ export class WorkspaceCommandToolSet implements ToolSet {
     }
     const result = await this.runner.run(
       `${this.packageManager} run ${script}`,
-      this.timeoutMs === undefined
-        ? { cwd: this.worktree }
-        : { cwd: this.worktree, timeoutMs: this.timeoutMs },
+      commandRunOptions(this.worktree, this.timeoutMs, this.projectEnv),
     );
     return `${script}: код ${result.code}${result.timedOut ? ' (таймаут)' : ''}\n${commandTail(result)}`;
   }
@@ -422,6 +486,7 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
   private readonly io: WorkspaceIo;
   private readonly runner: ProjectCommandRunner;
   private readonly timeoutMs: number | undefined;
+  private readonly projectEnv: Record<string, string>;
 
   constructor(
     project: ProjectContext,
@@ -431,6 +496,7 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
     runner: ProjectCommandRunner,
     timeoutMs: number | undefined,
     scripts: Record<string, string> = {},
+    projectEnv: Record<string, string> = {},
   ) {
     this.project = project;
     this.worktree = worktree;
@@ -438,6 +504,7 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
     this.io = io;
     this.runner = runner;
     this.timeoutMs = timeoutMs;
+    this.projectEnv = projectEnv;
     // Исполнителю — файловые инструменты + (если у проекта есть безопасные скрипты) запуск скриптов,
     // чтобы он сам форматировал/проверял правки и чинил их до зелёного.
     const fileTools = new WorkspaceFileToolSet(worktree, io);
@@ -447,6 +514,7 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
       scripts,
       runner,
       timeoutMs,
+      projectEnv,
     );
     this.tools =
       commandTools.allowedScripts().length > 0
@@ -455,14 +523,9 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
     this.commands = project.commands;
   }
 
-  /** Запуск команды проекта в копии (для этапа проверки). */
+  /** Запуск команды проекта в копии (для этапа проверки), с переменными .env проекта. */
   run(command: string): Promise<CommandResult> {
-    return this.runner.run(
-      command,
-      this.timeoutMs === undefined
-        ? { cwd: this.worktree }
-        : { cwd: this.worktree, timeoutMs: this.timeoutMs },
-    );
+    return this.runner.run(command, commandRunOptions(this.worktree, this.timeoutMs, this.projectEnv));
   }
 
   /** Ставит все правки в индекс и возвращает список изменений (A/M/D). */
@@ -550,7 +613,9 @@ export async function createRunWorkspace(
   if (io.exists(nodeModules)) {
     io.symlink(nodeModules, join(worktree, 'node_modules'));
   }
-  // Скрипты проекта — чтобы исполнитель мог запускать проверочные/фиксящие (форматтер и т.п.).
+  // Скрипты проекта — чтобы исполнитель мог запускать проверочные/фиксящие (форматтер и т.п.);
+  // переменные .env/.env.development — чтобы команды сборки/тестов видели нужное окружение.
   const scripts = readProjectScripts(io, worktree);
-  return new RunWorkspace(project, worktree, base, io, runner, options.timeoutMs, scripts);
+  const projectEnv = loadProjectEnv(io, worktree);
+  return new RunWorkspace(project, worktree, base, io, runner, options.timeoutMs, scripts, projectEnv);
 }
