@@ -310,19 +310,27 @@ function scriptAllowed(name: string): boolean {
   return SAFE_SCRIPT_NAME.test(name) && !UNSAFE_SCRIPT_NAME.test(name);
 }
 
-/** Разрешённые пакетные команды менеджеров (установка/обновление зависимостей + npm-check-updates). */
-const PACKAGE_COMMAND =
-  /^(npm (i|install|ci|update|up|uninstall|remove|dedupe|audit|outdated|ls|rebuild)\b|npx (npm-check-updates|ncu)\b|yarn (add|remove|upgrade|install)\b|pnpm (i|install|update|add|remove|dedupe)\b)/;
+/** Менеджеры пакетов и их безопасные глаголы (установка/обновление зависимостей). Флаги после — любые. */
+const PACKAGE_MANAGER_VERB =
+  /^(npm|yarn|pnpm)\s+(i|install|ci|add|update|up|upgrade|remove|uninstall|dedupe|audit|outdated|ls|rebuild)\b/;
+/**
+ * Запуск обновлятора версий через npx — С ЛЮБЫМИ флагами перед именем (`npx --yes npm-check-updates`,
+ * `npx -y ncu`): именно так его зовут неинтерактивно, чтобы npx не спрашивал подтверждение установки.
+ */
+const NPX_UPDATER = /^npx\b.*\b(npm-check-updates|ncu)\b/;
 /** Служебные символы оболочки — их в пакетной команде не допускаем (цепочки/подстановки/перенаправления). */
 const SHELL_METACHAR = /[;&|`$(){}<>\n\\]/;
 
 /**
- * Пакетная ли это команда, безопасная к запуску исполнителем: начинается с разрешённого глагола
- * менеджера пакетов И без служебных символов оболочки (одна команда, без `&&`/`;`/`|`/подстановок).
+ * Пакетная ли это команда, безопасная к запуску исполнителем: менеджер пакетов с разрешённым глаголом
+ * ИЛИ npx-запуск обновлятора версий, и БЕЗ служебных символов оболочки (одна команда, без `&&`/`;`/`|`).
  */
 export function isPackageCommand(command: string): boolean {
   const trimmed = command.trim();
-  return PACKAGE_COMMAND.test(trimmed) && !SHELL_METACHAR.test(trimmed);
+  if (SHELL_METACHAR.test(trimmed)) {
+    return false;
+  }
+  return PACKAGE_MANAGER_VERB.test(trimmed) || NPX_UPDATER.test(trimmed);
 }
 
 /** Скрипты проекта из `package.json` рабочей копии (только строковые значения; нет/битый → пусто). */
@@ -501,8 +509,8 @@ export class WorkspacePackageToolSet implements ToolSet {
         name: 'run_package_command',
         description:
           'Запустить команду менеджера пакетов в рабочей копии для установки/обновления зависимостей ' +
-          '(напр. `npx npm-check-updates -u`, затем `npm install`; либо `npm update`). ОДНА команда без ' +
-          'цепочек (`&&`/`;`/`|`). Копия получает СВОЮ node_modules — реальный проект не трогается.',
+          '(напр. `npx --yes npm-check-updates -u`, затем `npm install`; либо `npm update`). ОДНА команда ' +
+          'без цепочек (`&&`/`;`/`|`). Копия получает СВОЮ node_modules — реальный проект не трогается.',
         parameters: {
           type: 'object',
           properties: { command: { type: 'string', description: 'команда менеджера пакетов целиком' } },

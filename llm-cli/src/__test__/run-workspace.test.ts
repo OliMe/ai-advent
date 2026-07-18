@@ -396,7 +396,7 @@ describe('WorkspaceCommandToolSet', () => {
 });
 
 describe('isPackageCommand', () => {
-  it('разрешает пакетные команды менеджеров и npm-check-updates', () => {
+  it('разрешает пакетные команды менеджеров и npm-check-updates (в т.ч. npx с флагами)', () => {
     for (const ok of [
       'npm install',
       'npm i',
@@ -406,8 +406,12 @@ describe('isPackageCommand', () => {
       'npm audit fix',
       'npx npm-check-updates -u',
       'npx ncu -u',
+      'npx --yes npm-check-updates -u', // неинтерактивный npx с флагом
+      'npx -y ncu -u --target minor',
       'yarn add lodash',
+      'yarn upgrade',
       'pnpm update',
+      'pnpm add lodash',
     ]) {
       assert.ok(isPackageCommand(ok), ok);
     }
