@@ -223,6 +223,18 @@ describe('WorkspaceFileToolSet', () => {
     assert.match(await set.call('grep', { pattern: 'foo', path: '../..' }), /вне проекта/);
   });
 
+  it('служебные каталоги (node_modules/.git) недоступны всем операциям', async () => {
+    const { tools: set, io } = tools({
+      '/w/worktree/node_modules/dep/index.js': 'бандл',
+      '/w/worktree/.git/config': 'cfg',
+    });
+    assert.match(await set.call('read_file', { path: 'node_modules/dep/index.js' }), /служебный каталог/);
+    assert.match(await set.call('list_dir', { path: 'node_modules' }), /служебный каталог/);
+    assert.match(await set.call('grep', { pattern: 'x', path: '.git' }), /служебный каталог/);
+    assert.match(await set.call('write_file', { path: 'node_modules/x', content: 'y' }), /служебный каталог/);
+    assert.equal(io.files.has('/w/worktree/node_modules/x'), false); // запись не прошла
+  });
+
   it('неизвестный инструмент → сообщение', async () => {
     const { tools: set } = tools();
     assert.match(await set.call('unknown_tool', {}), /Неизвестный инструмент/);

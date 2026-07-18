@@ -76,6 +76,13 @@ export function resolveInside(base: string, relativePath: string): string | null
   return relative(base, resolved).startsWith('..') ? null : resolved;
 }
 
+/** Указывает ли путь внутрь служебного каталога (node_modules/.git) относительно корня копии. */
+function inServiceDir(root: string, resolved: string): boolean {
+  return relative(root, resolved)
+    .split(/[\\/]/)
+    .some(segment => SKIP_ENTRIES.has(segment));
+}
+
 /** Рекурсивно собирает файлы каталога (кроме служебных), для grep. */
 function collectFiles(io: WorkspaceIo, dir: string, acc: string[]): void {
   for (const name of io.listDir(dir)) {
@@ -172,15 +179,21 @@ export class WorkspaceFileToolSet implements ToolSet {
     return `Неизвестный инструмент: ${name}`;
   }
 
-  /** Абсолютный путь внутри копии или сообщение об отказе (путь наружу). */
+  /** Абсолютный путь внутри копии или сообщение об отказе (путь наружу / служебный каталог). */
   private inside(relativePath: string): { path: string } | { error: string } {
     if (relativePath === '') {
       return { error: 'Ошибка: не указан путь.' };
     }
     const resolved = resolveInside(this.root, relativePath);
-    return resolved === null
-      ? { error: `Ошибка: путь вне проекта: ${relativePath}` }
-      : { path: resolved };
+    if (resolved === null) {
+      return { error: `Ошибка: путь вне проекта: ${relativePath}` };
+    }
+    // Служебные каталоги (node_modules/.git) агенту недоступны: это шум и раздувание контекста
+    // (минифицированные бандлы в node_modules переполняли окно → провайдер закрывал соединение).
+    if (inServiceDir(this.root, resolved)) {
+      return { error: `Ошибка: служебный каталог недоступен (node_modules/.git): ${relativePath}` };
+    }
+    return { path: resolved };
   }
 
   private readFile(path: string): string {

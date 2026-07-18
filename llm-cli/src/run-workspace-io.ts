@@ -15,7 +15,7 @@ import {
   mkdtempSync,
   symlinkSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import type { ProjectCommandRunner, CommandResult, CommandRunOptions } from '../../core/src/index.ts';
@@ -52,10 +52,14 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 300000;
 export const nodeCommandRunner: ProjectCommandRunner = {
   run: (command: string, options: CommandRunOptions): Promise<CommandResult> =>
     new Promise(resolve => {
+      // node_modules/.bin в PATH — иначе «голые» бинарники скриптов (напр. `jest`) не находятся
+      // (127), хотя `npm run …` работал бы (npm сам добавляет .bin). Копия шарит node_modules
+      // симлинком, поэтому .bin в ней резолвится.
+      const binDir = join(options.cwd, 'node_modules', '.bin');
       const child = spawn(command, {
         cwd: options.cwd,
         shell: true,
-        env: process.env,
+        env: { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}` },
       });
       let stdout = '';
       let stderr = '';
