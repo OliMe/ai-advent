@@ -224,32 +224,6 @@ export class RunController {
     return this.pause !== null;
   }
 
-  /**
-   * Подчищает осиротевшие рабочие копии (worktree брошенных прогонов) во всех привязанных проектах —
-   * вызывается на старте. Best-effort: сбой очистки не мешает запуску. Копии от ДРУГОЙ активной сессии
-   * на том же репозитории тоже снимутся (редкий случай).
-   */
-  async cleanupOrphanWorktrees(): Promise<void> {
-    if (this.deps.commandRunner === undefined || this.deps.workspaceIo === undefined) {
-      return;
-    }
-    for (const project of this.deps.projects?.() ?? []) {
-      try {
-        const removed = await pruneOrphanWorktrees(
-          project.root,
-          this.deps.workspaceIo,
-          this.deps.commandRunner,
-          this.deps.commandTimeoutMs,
-        );
-        if (removed.length > 0) {
-          this.write(`🧹 Убрано осиротевших рабочих копий (${project.name}): ${removed.length}`);
-        }
-      } catch {
-        // best-effort — сбой очистки не мешает старту
-      }
-    }
-  }
-
   /** Просит поставить текущий прогон на паузу (сработает на границе этапа). */
   requestPause(): void {
     this.pause?.abort();
@@ -487,6 +461,19 @@ export class RunController {
       return this.workspace; // та же копия для паузы/продолжения
     }
     await this.disposeWorkspace(); // копия прежнего прогона больше не нужна
+    // Перед созданием новой копии подчищаем осиротевшие worktree брошенных прогонов этого проекта
+    // (закрыли CLI / убили процесс без /run abort). Best-effort. Тем же ИНЖЕКТИРУЕМЫМ runner, что и у
+    // createRunWorkspace, — в тестах он фейковый, реальный git не трогается (и не висит на нём).
+    try {
+      await pruneOrphanWorktrees(
+        project.root,
+        this.deps.workspaceIo,
+        this.deps.commandRunner,
+        this.deps.commandTimeoutMs,
+      );
+    } catch {
+      // сбой очистки не мешает созданию новой копии
+    }
     try {
       this.workspace = await createRunWorkspace(
         project,

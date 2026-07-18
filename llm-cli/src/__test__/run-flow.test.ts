@@ -1178,81 +1178,30 @@ describe('RunController: рабочая копия проекта (День 34)'
     assert.doesNotMatch(outNoIo.text(), /Рабочая копия/); // ни там, ни там копия не создаётся
   });
 
-  /** Раннер, отдающий заданный список worktree на `worktree list`; фиксирует команды. */
-  function worktreeRunner(list: string, calls: string[], throwing = false): ProjectCommandRunner {
-    return {
+  it('перед созданием копии чистит осиротевшие worktree; сбой очистки не срывает прогон', async t => {
+    const out = makeCollector();
+    // Раннер БРОСАЕТ на `worktree list` (этап очистки) — прогон всё равно должен создать копию и пройти.
+    const runner: ProjectCommandRunner = {
       run: async command => {
-        if (throwing) {
-          throw new Error('git упал');
+        if (command.includes('worktree list')) {
+          throw new Error('git list упал');
         }
-        calls.push(command);
-        return {
-          command,
-          code: 0,
-          stdout: command.includes('worktree list') ? list : '',
-          stderr: '',
-          timedOut: false,
-        };
+        return { command, code: 0, stdout: '', stderr: '', timedOut: false };
       },
     };
-  }
-
-  it('cleanupOrphanWorktrees: снимает осиротевшие копии и сообщает', async t => {
-    const out = makeCollector();
-    const calls: string[] = [];
     const controller = new RunController({
       store: fakeStore(),
       makeConversation: factory(t, content()),
       output: out.stream,
-      ask: answers([]),
+      ask: answers(['да']),
       taskBridge: fakeBridge().bridge,
       projects: () => [FILE_PROJECT],
-      commandRunner: worktreeRunner('worktree /proj\nworktree /tmp/llm-run-Z/worktree\n', calls),
+      commandRunner: runner,
       workspaceIo: new MemIo(),
     });
-    await controller.cleanupOrphanWorktrees();
-    assert.ok(calls.some(c => c.includes('worktree remove --force') && c.includes('llm-run-Z')));
-    assert.match(out.text(), /Убрано осиротевших/);
-  });
-
-  it('cleanupOrphanWorktrees: нет осиротевших → без сообщения', async t => {
-    const out = makeCollector();
-    const controller = new RunController({
-      store: fakeStore(),
-      makeConversation: factory(t, content()),
-      output: out.stream,
-      ask: answers([]),
-      taskBridge: fakeBridge().bridge,
-      projects: () => [FILE_PROJECT],
-      commandRunner: worktreeRunner('worktree /proj\n', []),
-      workspaceIo: new MemIo(),
-    });
-    await controller.cleanupOrphanWorktrees();
-    assert.doesNotMatch(out.text(), /Убрано осиротевших/);
-  });
-
-  it('cleanupOrphanWorktrees: нет швов/проектов и сбой — не роняет старт', async t => {
-    const base = {
-      store: fakeStore(),
-      makeConversation: factory(t, content()),
-      output: makeCollector().stream,
-      ask: answers([]),
-      taskBridge: fakeBridge().bridge,
-    };
-    await new RunController(base).cleanupOrphanWorktrees(); // нет commandRunner/workspaceIo → выход
-    // швы есть, но проектов нет → пустой цикл
-    await new RunController({
-      ...base,
-      commandRunner: worktreeRunner('', []),
-      workspaceIo: new MemIo(),
-    }).cleanupOrphanWorktrees();
-    // сбой git → перехвачен (best-effort)
-    await new RunController({
-      ...base,
-      projects: () => [FILE_PROJECT],
-      commandRunner: worktreeRunner('', [], true),
-      workspaceIo: new MemIo(),
-    }).cleanupOrphanWorktrees();
+    await controller.start('Задача');
+    assert.match(out.text(), /Рабочая копия проекта «proj» создана/); // очистка упала, но прогон прошёл
+    assert.match(out.text(), /завершена и подтверждена/);
   });
 
   it('пауза и продолжение переиспользуют одну рабочую копию', async t => {
