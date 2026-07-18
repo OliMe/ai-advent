@@ -109,6 +109,10 @@ export function historyBudgetTokens(contextTokens: number, maxTokens?: number): 
  * Скользящее окно истории по токенам: всегда сохраняет системные сообщения и
  * оставляет самые свежие реплики, пока укладывается в бюджет. Самое последнее
  * сообщение сохраняется всегда — даже если оно одно превышает бюджет.
+ *
+ * Не рвёт группы tool-вызовов: `tool`-сообщение обязано следовать за `assistant` с
+ * `tool_calls`. Если окно обрезало этот `assistant`, ведущие «осиротевшие» `tool`-ответы
+ * тоже отбрасываются — иначе провайдер вернёт 400 («role 'tool' must follow tool_calls»).
  */
 export function trimHistoryToBudget(history: ChatMessage[], budgetTokens: number): ChatMessage[] {
   const systemMessages = history.filter(message => message.role === 'system');
@@ -125,5 +129,10 @@ export function trimHistoryToBudget(history: ChatMessage[], budgetTokens: number
     usedTokens += cost;
   }
   keptInReverse.reverse();
-  return [...systemMessages, ...keptInReverse];
+  // Отбрасываем ведущие tool-ответы, чей assistant с tool_calls не попал в окно.
+  let firstValid = 0;
+  while (firstValid < keptInReverse.length && keptInReverse[firstValid].role === 'tool') {
+    firstValid++;
+  }
+  return [...systemMessages, ...keptInReverse.slice(firstValid)];
 }

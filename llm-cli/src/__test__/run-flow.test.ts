@@ -527,6 +527,24 @@ describe('RunController', () => {
     assert.match(planPrompt, /бюджет 100к/);
   });
 
+  it('аналитик требований получает карточку проекта (не переспрашивает про корень/файлы)', async t => {
+    const clarifierPrompts: string[] = [];
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content(), { onClarifier: p => clarifierPrompts.push(p) }, [
+        '{"question":"Что именно актуализировать?","suggestion":"описание"}',
+        '{"done":true}',
+      ]),
+      output: makeCollector().stream,
+      ask: answers(['', 'да']), // принять предложение аналитика, затем подтвердить завершение
+      taskBridge: fakeBridge().bridge,
+      projectContext: () => 'Проект «entry-forms»\n- корень: /repo',
+    });
+    await controller.start('Актуализируй README');
+    assert.ok(clarifierPrompts.length > 0);
+    assert.match(clarifierPrompts[0], /Проект «entry-forms»/); // карточка проекта ушла аналитику
+  });
+
   it('провал проверки → авто-возврат в выполнение, затем успех', async t => {
     const out = makeCollector();
     let verifyCalls = 0;

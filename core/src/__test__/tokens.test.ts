@@ -160,4 +160,34 @@ describe('trimHistoryToBudget', () => {
     assert.equal(result.length, 2); // система + последний ход
     assert.ok(result.some(message => message.content.startsWith('user-1')));
   });
+
+  it('не оставляет осиротевший tool-ответ в начале окна (обрезан его assistant с tool_calls)', () => {
+    const assistantWithCalls: ChatMessage = {
+      role: 'assistant',
+      content: `assistant-1 ${'x'.repeat(60)}`,
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
+    };
+    const toolReply: ChatMessage = { role: 'tool', tool_call_id: 'c1', content: 'x'.repeat(60) };
+    const history = [system, assistantWithCalls, toolReply, turn('user', 2)];
+    // Бюджет вмещает только систему + пару свежих сообщений — assistant с tool_calls выпадет.
+    const result = trimHistoryToBudget(history, 70);
+
+    assert.equal(result[0], system);
+    // Первое НЕсистемное сообщение не должно быть tool (иначе провайдер вернёт 400).
+    assert.notEqual(result[1]?.role, 'tool');
+    assert.ok(result.some(message => message.content.startsWith('user-2'))); // свежий ход остался
+  });
+
+  it('оставляет группу tool-вызова целиком, если её assistant попал в окно', () => {
+    const assistantWithCalls: ChatMessage = {
+      role: 'assistant',
+      content: 'assistant-1',
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{}' } }],
+    };
+    const toolReply: ChatMessage = { role: 'tool', tool_call_id: 'c1', content: 'итог' };
+    const history = [system, assistantWithCalls, toolReply];
+    const result = trimHistoryToBudget(history, 10_000); // всё влезает
+
+    assert.deepEqual(result, history); // группа не тронута
+  });
 });
