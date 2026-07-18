@@ -626,11 +626,16 @@ describe('командное планирование (несколько аге
   function teamConversation(
     t: TestContext,
     replies: { orchestrator: string; role: (system: string) => string; synthesizer: string },
-    capture?: (call: { system: string; temperature?: number }) => void,
+    capture?: (call: {
+      system: string;
+      temperature?: number;
+      tools?: ToolSet;
+      prompt: string;
+    }) => void,
   ) {
-    return (system: string, limits?: GenerationLimits, temperature?: number) => {
-      const client = clientWith(t, async () => {
-        capture?.({ system, temperature });
+    return (system: string, limits?: GenerationLimits, temperature?: number, tools?: ToolSet) => {
+      const client = clientWith(t, async messages => {
+        capture?.({ system, temperature, tools, prompt: messages.at(-1)?.content ?? '' });
         if (system.includes('оркестратор команды')) {
           return { content: replies.orchestrator, usage: undefined };
         }
@@ -652,7 +657,12 @@ describe('командное планирование (несколько аге
   it('команда ролей → синтез единого плана и запись вкладов', async t => {
     const run = createRun('Сложная система', { idSuffix: 'team' });
     const written: Array<{ name: string }> = [];
-    const calls: Array<{ system: string; temperature?: number }> = [];
+    const calls: Array<{
+      system: string;
+      temperature?: number;
+      tools?: ToolSet;
+      prompt: string;
+    }> = [];
     const teams: TeamPlan[] = [];
     const ctx: StageContext = {
       run,
@@ -703,6 +713,11 @@ describe('командное планирование (несколько аге
     // в промпте которого эта фраза тоже встречается.
     const synthCall = calls.find(call => call.system.startsWith('Ты — ведущий планировщик'));
     assert.equal(synthCall?.temperature, 0.3);
+    // Синтезатору инструменты НЕ даём (не уходит в агентный цикл), а вклады экспертов — в его промпте.
+    assert.equal(synthCall?.tools, undefined);
+    assert.match(synthCall?.prompt ?? '', /Предложения экспертов/);
+    assert.match(synthCall?.prompt ?? '', /модульность/); // вклад архитектора
+    assert.match(synthCall?.prompt ?? '', /валидация/); // вклад безопасности
   });
 
   it('все эксперты упали → откат к одиночному плану', async t => {
