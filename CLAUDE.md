@@ -454,7 +454,14 @@ override `undefined`, запрос идёт на модель клиента, р
   деталь безопасности) вместо `ctx.tools`. Function-calling цикл `Conversation` сам решает, что читать/
   менять — цель на уровне плана (`EXECUTOR_FILE_SYSTEM`: «вноси реальные правки инструментами, а не
   описывай»). Артефакт: `text` = резюме агента + `git diff` копии, `files` = изменённые пути. Нет
-  `fileWorkspace` → прежнее текстовое выполнение.
+  `fileWorkspace` → прежнее текстовое выполнение. **`run_command` (самопроверка/самоисправление):** если
+  у проекта есть безопасные скрипты, к файловым инструментам добавляется `WorkspaceCommandToolSet` —
+  агент запускает СКРИПТЫ проекта (`<pm> run <script>`) в копии, чтобы форматировать/проверять свои
+  правки и чинить до зелёного ещё в выполнении (напр. `prettier`/линтер). Allow-list — скрипты
+  `package.json` по имени: проверочные/фиксящие (`test`/`build`/`lint`/`type*`/`format`/`prettier`/`*fix*`),
+  а деплой/lifecycle (`deploy`/`publish`/`start`/`install`/`clean`) отсеиваются (`scriptAllowed`) — модель
+  своей команды не добавит. `.bin` копии в `PATH`, служебные каталоги `node_modules`/`.git` агенту
+  недоступны (иначе минифицированные бандлы переполняли контекст).
 - **verification прогоняет команды проекта** (`StageContext.commandCheck` → `runProjectCommands`): гонит
   обнаруженные `test`/`build`/`lint` (`ProjectContext.commands`, `start` исключён — не завершается) на
   изменениях. Любой ненулевой код/таймаут → `passed=false` + вывод в `issues`, БЕЗ вызова модели

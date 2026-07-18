@@ -10,6 +10,7 @@ import type {
   CommandCheck,
   WorkspaceChangeSummary,
 } from '../../core/src/index.ts';
+import { CompositeToolSet } from './composite-tool-set.ts';
 
 /**
  * Рабочее пространство прогона пайплайна (День 34): изолированная git-копия (worktree) проекта, в
@@ -272,6 +273,118 @@ export class WorkspaceFileToolSet implements ToolSet {
   }
 }
 
+/** Максимум символов вывода команды в ответе инструмента (хвост важнее — там ошибка). */
+const COMMAND_TAIL_LIMIT = 2000;
+
+/** Хвост вывода команды для ответа инструмента (последние символы stdout+stderr). */
+function commandTail(result: CommandResult): string {
+  const combined = `${result.stdout}\n${result.stderr}`.trim();
+  return combined.length > COMMAND_TAIL_LIMIT
+    ? `…${combined.slice(-COMMAND_TAIL_LIMIT)}`
+    : combined;
+}
+
+/** Скрипты, которые исполнителю МОЖНО запускать: проверка/типы/линт/формат/фиксы. */
+const SAFE_SCRIPT_NAME = /^(test|build|lint|type|typecheck|format|prettier|stylelint|eslint|knip|fix|check)([:_-].*)?$/i;
+/** Явно опасные скрипты — не запускаем даже в копии (внешние эффекты / lifecycle). */
+const UNSAFE_SCRIPT_NAME = /(deploy|publish|release|start|serve|clean|install)/i;
+
+/** Разрешён ли скрипт к запуску исполнителем (проверочный/фиксящий, не деплой/lifecycle). */
+function scriptAllowed(name: string): boolean {
+  return SAFE_SCRIPT_NAME.test(name) && !UNSAFE_SCRIPT_NAME.test(name);
+}
+
+/** Скрипты проекта из `package.json` рабочей копии (только строковые значения; нет/битый → пусто). */
+export function readProjectScripts(io: WorkspaceIo, root: string): Record<string, string> {
+  const manifestPath = join(root, 'package.json');
+  if (!io.exists(manifestPath)) {
+    return {};
+  }
+  try {
+    const manifest = JSON.parse(io.readFile(manifestPath)) as { scripts?: Record<string, unknown> };
+    const scripts = manifest.scripts;
+    if (scripts === undefined || scripts === null || typeof scripts !== 'object') {
+      return {};
+    }
+    const result: Record<string, string> = {};
+    for (const [name, value] of Object.entries(scripts)) {
+      if (typeof value === 'string') {
+        result[name] = value;
+      }
+    }
+    return result;
+  } catch {
+    return {}; // битый package.json
+  }
+}
+
+/**
+ * Инструмент запуска СКРИПТОВ проекта (`<pm> run <script>`) в рабочей копии — для этапа выполнения:
+ * исполнитель проверяет/форматирует свои правки и чинит их до зелёного. Allow-list — скрипты проекта
+ * (проверочные/фиксящие), деплой/lifecycle отсеиваются: команда от модели своей подкоманды не добавит.
+ */
+export class WorkspaceCommandToolSet implements ToolSet {
+  private readonly worktree: string;
+  private readonly packageManager: string;
+  private readonly scripts: Record<string, string>;
+  private readonly runner: ProjectCommandRunner;
+  private readonly timeoutMs: number | undefined;
+
+  constructor(
+    worktree: string,
+    packageManager: string,
+    scripts: Record<string, string>,
+    runner: ProjectCommandRunner,
+    timeoutMs: number | undefined,
+  ) {
+    this.worktree = worktree;
+    this.packageManager = packageManager;
+    this.scripts = scripts;
+    this.runner = runner;
+    this.timeoutMs = timeoutMs;
+  }
+
+  /** Имена скриптов, которые разрешено запускать. */
+  allowedScripts(): string[] {
+    return Object.keys(this.scripts).filter(scriptAllowed);
+  }
+
+  specs(): ToolSpec[] {
+    return [
+      {
+        name: 'run_command',
+        description:
+          'Запустить скрипт проекта в рабочей копии, чтобы проверить/отформатировать свои правки и ' +
+          `исправить их до зелёного (напр. форматтер/линтер). Доступные скрипты: ${this.allowedScripts().join(', ')}.`,
+        parameters: {
+          type: 'object',
+          properties: {
+            script: { type: 'string', description: 'имя скрипта проекта из списка доступных' },
+          },
+          required: ['script'],
+        },
+      },
+    ];
+  }
+
+  async call(name: string, args: Record<string, unknown>): Promise<string> {
+    if (name !== 'run_command') {
+      return `Неизвестный инструмент: ${name}`;
+    }
+    const script = stringArg(args, 'script');
+    if (!(script in this.scripts) || !scriptAllowed(script)) {
+      return `Скрипт недоступен: ${script || '(пусто)'}. Доступны: ${this.allowedScripts().join(', ') || 'нет'}`;
+    }
+    const result = await this.runner.run(
+      `${this.packageManager} run ${script}`,
+      this.timeoutMs === undefined
+        ? { cwd: this.worktree }
+        : { cwd: this.worktree, timeoutMs: this.timeoutMs },
+    );
+    return `${script}: код ${result.code}${result.timedOut ? ' (таймаут)' : ''}\n${commandTail(result)}`;
+  }
+}
+
 /** Изменение файла в копии: статус git (A/M/D) + путь относительно корня. */
 interface WorkspaceChange {
   status: string;
@@ -317,6 +430,7 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
     io: WorkspaceIo,
     runner: ProjectCommandRunner,
     timeoutMs: number | undefined,
+    scripts: Record<string, string> = {},
   ) {
     this.project = project;
     this.worktree = worktree;
@@ -324,7 +438,20 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
     this.io = io;
     this.runner = runner;
     this.timeoutMs = timeoutMs;
-    this.tools = new WorkspaceFileToolSet(worktree, io);
+    // Исполнителю — файловые инструменты + (если у проекта есть безопасные скрипты) запуск скриптов,
+    // чтобы он сам форматировал/проверял правки и чинил их до зелёного.
+    const fileTools = new WorkspaceFileToolSet(worktree, io);
+    const commandTools = new WorkspaceCommandToolSet(
+      worktree,
+      project.packageManager ?? 'npm',
+      scripts,
+      runner,
+      timeoutMs,
+    );
+    this.tools =
+      commandTools.allowedScripts().length > 0
+        ? new CompositeToolSet([fileTools, commandTools])
+        : fileTools;
     this.commands = project.commands;
   }
 
@@ -423,5 +550,7 @@ export async function createRunWorkspace(
   if (io.exists(nodeModules)) {
     io.symlink(nodeModules, join(worktree, 'node_modules'));
   }
-  return new RunWorkspace(project, worktree, base, io, runner, options.timeoutMs);
+  // Скрипты проекта — чтобы исполнитель мог запускать проверочные/фиксящие (форматтер и т.п.).
+  const scripts = readProjectScripts(io, worktree);
+  return new RunWorkspace(project, worktree, base, io, runner, options.timeoutMs, scripts);
 }

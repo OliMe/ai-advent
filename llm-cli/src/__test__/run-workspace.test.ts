@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   RunWorkspace,
   WorkspaceFileToolSet,
+  WorkspaceCommandToolSet,
   createRunWorkspace,
   resolveInside,
+  readProjectScripts,
 } from '../run-workspace.ts';
 import type { WorkspaceIo } from '../run-workspace.ts';
 import type {
@@ -241,6 +243,91 @@ describe('WorkspaceFileToolSet', () => {
   });
 });
 
+describe('readProjectScripts', () => {
+  it('нет package.json → пусто', () => {
+    assert.deepEqual(readProjectScripts(new FakeIo(), '/p'), {});
+  });
+  it('валидные строковые скрипты (нестроковые отброшены)', () => {
+    const io = new FakeIo({
+      '/p/package.json': JSON.stringify({ scripts: { test: 'jest', build: 'tsc', bad: 5 } }),
+    });
+    assert.deepEqual(readProjectScripts(io, '/p'), { test: 'jest', build: 'tsc' });
+  });
+  it('scripts отсутствует / null / не объект → пусто', () => {
+    assert.deepEqual(readProjectScripts(new FakeIo({ '/p/package.json': '{"name":"x"}' }), '/p'), {});
+    assert.deepEqual(readProjectScripts(new FakeIo({ '/p/package.json': '{"scripts":null}' }), '/p'), {});
+    assert.deepEqual(readProjectScripts(new FakeIo({ '/p/package.json': '{"scripts":"нет"}' }), '/p'), {});
+  });
+  it('битый package.json → пусто', () => {
+    assert.deepEqual(readProjectScripts(new FakeIo({ '/p/package.json': '{не json' }), '/p'), {});
+  });
+});
+
+describe('WorkspaceCommandToolSet', () => {
+  function cmd(
+    scripts: Record<string, string>,
+    calls?: { command: string; cwd: string; timeoutMs?: number }[],
+    timeoutMs: number | undefined = 1000,
+  ) {
+    return new WorkspaceCommandToolSet('/w/worktree', 'npm', scripts, fakeRunner([], calls), timeoutMs);
+  }
+
+  it('allowedScripts: пропускает проверочные/фиксящие, режет деплой/lifecycle и прочее', () => {
+    const set = cmd({
+      test: 'jest',
+      'prettier:write': 'prettier -w',
+      lint: 'eslint',
+      'lint:fix': 'eslint --fix',
+      deploy: 'x',
+      start: 'x',
+      foo: 'x', // не проверочный/фиксящий — тоже не пускаем
+    });
+    assert.deepEqual(set.allowedScripts().sort(), ['lint', 'lint:fix', 'prettier:write', 'test']);
+  });
+
+  it('specs: run_command перечисляет доступные скрипты', () => {
+    const specs = cmd({ format: 'prettier -w' }).specs();
+    assert.equal(specs[0].name, 'run_command');
+    assert.match(specs[0].description, /format/);
+  });
+
+  it('запускает разрешённый скрипт как <pm> run <script> в копии', async () => {
+    const calls: { command: string; cwd: string; timeoutMs?: number }[] = [];
+    const out = await cmd({ format: 'prettier -w' }, calls).call('run_command', { script: 'format' });
+    assert.deepEqual(calls[0], { command: 'npm run format', cwd: '/w/worktree', timeoutMs: 1000 });
+    assert.match(out, /format: код 0/);
+  });
+
+  it('код и хвост вывода в ответе; таймаут помечается (timeoutMs не задан)', async () => {
+    const runner = fakeRunner([
+      { match: () => true, result: { code: 2, stderr: 'ошибка сборки', timedOut: true } },
+    ]);
+    const set = new WorkspaceCommandToolSet('/w/worktree', 'npm', { build: 'tsc' }, runner, undefined);
+    const out = await set.call('run_command', { script: 'build' });
+    assert.match(out, /build: код 2 \(таймаут\)/);
+    assert.match(out, /ошибка сборки/);
+  });
+
+  it('длинный вывод усечён', async () => {
+    const runner = fakeRunner([{ match: () => true, result: { code: 1, stdout: 'ш'.repeat(3000) } }]);
+    const set = new WorkspaceCommandToolSet('/w/worktree', 'npm', { test: 'jest' }, runner, 1000);
+    assert.ok((await set.call('run_command', { script: 'test' })).includes('…'));
+  });
+
+  it('недоступный скрипт (неизвестный / опасный / пустой) → отказ', async () => {
+    const set = cmd({ test: 'jest', deploy: 'x' });
+    assert.match(await set.call('run_command', { script: 'нетакого' }), /недоступен/);
+    assert.match(await set.call('run_command', { script: 'deploy' }), /недоступен/);
+    assert.match(await set.call('run_command', { script: '' }), /недоступен/);
+    // Совсем нет доступных скриптов → список «нет».
+    assert.match(await cmd({ deploy: 'x' }).call('run_command', { script: 'deploy' }), /Доступны: нет/);
+  });
+
+  it('неизвестный инструмент → сообщение', async () => {
+    assert.match(await cmd({}).call('other', {}), /Неизвестный инструмент/);
+  });
+});
+
 describe('RunWorkspace', () => {
   const NAME_STATUS = 'A\tnew.md\nM\tmod.ts\nD\told.txt\n\nbad\n';
 
@@ -273,6 +360,16 @@ describe('RunWorkspace', () => {
     assert.equal(io.files.get('/proj/new.md'), 'новое'); // A скопирован
     assert.equal(io.files.get('/proj/mod.ts'), 'изменено'); // M скопирован
     assert.equal(io.files.has('/proj/old.txt'), false); // D удалён
+  });
+
+  it('run_command исполнителя использует packageManager проекта', async () => {
+    const calls: { command: string; cwd: string; timeoutMs?: number }[] = [];
+    const project = { ...PROJECT, packageManager: 'pnpm' };
+    const workspace = new RunWorkspace(project, '/w/worktree', '/w', new FakeIo(), fakeRunner([], calls), 1000, {
+      format: 'prettier -w',
+    });
+    await workspace.tools.call('run_command', { script: 'format' });
+    assert.ok(calls.some(entry => entry.command === 'pnpm run format'));
   });
 
   it('run: команда проекта идёт в cwd копии (с таймаутом и без)', async () => {
@@ -318,6 +415,24 @@ describe('createRunWorkspace', () => {
     const runner = fakeRunner([{ match: c => c.includes('worktree add') }]);
     await createRunWorkspace(PROJECT, io, runner);
     assert.deepEqual(io.symlinks, []);
+  });
+
+  it('со скриптами проекта: исполнителю доступен run_command вместе с файловыми', async () => {
+    const io = new FakeIo({
+      '/tmp/ws/worktree/package.json': JSON.stringify({ scripts: { format: 'prettier -w' } }),
+    });
+    const workspace = await createRunWorkspace(PROJECT, io, fakeRunner([{ match: c => c.includes('worktree add') }]));
+    const names = workspace.tools.specs().map(spec => spec.name);
+    assert.ok(names.includes('run_command'));
+    assert.ok(names.includes('write_file')); // файловые инструменты тоже на месте
+  });
+
+  it('без безопасных скриптов — только файловые инструменты (run_command не добавляется)', async () => {
+    const io = new FakeIo({
+      '/tmp/ws/worktree/package.json': JSON.stringify({ scripts: { deploy: 'x' } }),
+    });
+    const workspace = await createRunWorkspace(PROJECT, io, fakeRunner([{ match: c => c.includes('worktree add') }]));
+    assert.ok(!workspace.tools.specs().some(spec => spec.name === 'run_command'));
   });
 
   it('путь копии с пробелом — экранируется кавычками', async () => {
