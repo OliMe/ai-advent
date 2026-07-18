@@ -4,11 +4,13 @@ import {
   RunWorkspace,
   WorkspaceFileToolSet,
   WorkspaceCommandToolSet,
+  WorkspacePackageToolSet,
   createRunWorkspace,
   resolveInside,
   readProjectScripts,
   parseDotenv,
   loadProjectEnv,
+  isPackageCommand,
 } from '../run-workspace.ts';
 import type { WorkspaceIo } from '../run-workspace.ts';
 import type {
@@ -23,6 +25,7 @@ class FakeIo implements WorkspaceIo {
   unreadable = new Set<string>();
   symlinks: [string, string][] = [];
   removedDirs: string[] = [];
+  deleted: string[] = [];
   tempPath: string;
 
   constructor(seed: Record<string, string> = {}, tempPath = '/tmp/ws') {
@@ -70,6 +73,7 @@ class FakeIo implements WorkspaceIo {
     return [...names];
   }
   deleteFile(path: string): void {
+    this.deleted.push(path);
     this.files.delete(path);
   }
   copyFile(source: string, destination: string): void {
@@ -386,6 +390,61 @@ describe('WorkspaceCommandToolSet', () => {
   });
 });
 
+describe('isPackageCommand', () => {
+  it('разрешает пакетные команды менеджеров и npm-check-updates', () => {
+    for (const ok of [
+      'npm install',
+      'npm i',
+      'npm ci',
+      'npm update',
+      'npm install --save-dev typescript@5',
+      'npm audit fix',
+      'npx npm-check-updates -u',
+      'npx ncu -u',
+      'yarn add lodash',
+      'pnpm update',
+    ]) {
+      assert.ok(isPackageCommand(ok), ok);
+    }
+  });
+
+  it('отвергает не-пакетные и команды с символами оболочки', () => {
+    for (const bad of [
+      'npm run build', // это скрипт, не пакетная операция
+      'rm -rf node_modules',
+      'echo hi',
+      'npm install && npm test', // цепочка
+      'npm install; echo x',
+      'npm install | cat',
+      'npm install `whoami`',
+      'npm install $(cat secret)',
+      '',
+    ]) {
+      assert.ok(!isPackageCommand(bad), bad);
+    }
+  });
+});
+
+describe('WorkspacePackageToolSet', () => {
+  it('specs: run_package_command', () => {
+    assert.equal(new WorkspacePackageToolSet(async () => 'ok').specs()[0].name, 'run_package_command');
+  });
+
+  it('делегирует run_package_command в переданную функцию', async () => {
+    let got = '';
+    const set = new WorkspacePackageToolSet(async command => {
+      got = command;
+      return 'готово';
+    });
+    assert.equal(await set.call('run_package_command', { command: 'npm install' }), 'готово');
+    assert.equal(got, 'npm install');
+  });
+
+  it('неизвестный инструмент → сообщение', async () => {
+    assert.match(await new WorkspacePackageToolSet(async () => 'ok').call('other', {}), /Неизвестный инструмент/);
+  });
+});
+
 describe('RunWorkspace', () => {
   const NAME_STATUS = 'A\tnew.md\nM\tmod.ts\nD\told.txt\n\nbad\n';
 
@@ -418,6 +477,70 @@ describe('RunWorkspace', () => {
     assert.equal(io.files.get('/proj/new.md'), 'новое'); // A скопирован
     assert.equal(io.files.get('/proj/mod.ts'), 'изменено'); // M скопирован
     assert.equal(io.files.has('/proj/old.txt'), false); // D удалён
+  });
+
+  it('runPackageCommand: валидная команда снимает симлинк node_modules один раз и запускает', async () => {
+    const calls: string[] = [];
+    const runner: ProjectCommandRunner = {
+      run: async command => {
+        calls.push(command);
+        return { command, code: 0, stdout: 'ok', stderr: '', timedOut: false };
+      },
+    };
+    const io = new FakeIo();
+    const workspace = new RunWorkspace(PROJECT, '/w/worktree', '/w', io, runner, 1000, {}, {}, true);
+    const out = await workspace.runPackageCommand('npx npm-check-updates -u');
+    await workspace.runPackageCommand('npm install'); // второй раз симлинк не снимаем повторно
+    assert.match(out, /код 0/);
+    assert.deepEqual(io.deleted, ['/w/worktree/node_modules']); // ровно один раз
+    assert.deepEqual(calls, ['npx npm-check-updates -u', 'npm install']);
+  });
+
+  it('runPackageCommand: код и таймаут помечаются в ответе', async () => {
+    const runner: ProjectCommandRunner = {
+      run: async command => ({ command, code: 1, stdout: '', stderr: 'долго', timedOut: true }),
+    };
+    const workspace = new RunWorkspace(PROJECT, '/w/worktree', '/w', new FakeIo(), runner, 1000, {}, {}, false);
+    const out = await workspace.runPackageCommand('npm install');
+    assert.match(out, /код 1 \(таймаут\)/);
+    assert.match(out, /долго/);
+  });
+
+  it('runPackageCommand: без симлинка node_modules не трогает', async () => {
+    const io = new FakeIo();
+    const workspace = new RunWorkspace(PROJECT, '/w/worktree', '/w', io, fakeRunner([]), 1000, {}, {}, false);
+    await workspace.runPackageCommand('npm install');
+    assert.deepEqual(io.deleted, []); // нечего снимать
+  });
+
+  it('runPackageCommand: недопустимая команда → отказ, без запуска и без снятия симлинка', async () => {
+    const calls: string[] = [];
+    const runner: ProjectCommandRunner = {
+      run: async command => {
+        calls.push(command);
+        return { command, code: 0, stdout: '', stderr: '', timedOut: false };
+      },
+    };
+    const io = new FakeIo();
+    const workspace = new RunWorkspace(PROJECT, '/w/worktree', '/w', io, runner, 1000, {}, {}, true);
+    assert.match(await workspace.runPackageCommand('rm -rf node_modules'), /недоступна/);
+    assert.match(await workspace.runPackageCommand(''), /недоступна/); // пустая
+    assert.deepEqual(calls, []); // не запускалось
+    assert.deepEqual(io.deleted, []); // симлинк не снят
+  });
+
+  it('tools исполнителя включают run_package_command и он работает через композит', async () => {
+    const calls: string[] = [];
+    const runner: ProjectCommandRunner = {
+      run: async command => {
+        calls.push(command);
+        return { command, code: 0, stdout: '', stderr: '', timedOut: false };
+      },
+    };
+    const workspace = new RunWorkspace(PROJECT, '/w/worktree', '/w', new FakeIo(), runner, 1000);
+    assert.ok(workspace.tools.specs().some(spec => spec.name === 'run_package_command'));
+    await workspace.tools.call('run_package_command', { command: 'npm install' });
+    assert.deepEqual(calls, ['npm install']); // делегат композита вызвал runPackageCommand
   });
 
   it('run и run_command подмешивают переменные .env проекта', async () => {

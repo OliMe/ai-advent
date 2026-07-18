@@ -308,6 +308,21 @@ function scriptAllowed(name: string): boolean {
   return SAFE_SCRIPT_NAME.test(name) && !UNSAFE_SCRIPT_NAME.test(name);
 }
 
+/** Разрешённые пакетные команды менеджеров (установка/обновление зависимостей + npm-check-updates). */
+const PACKAGE_COMMAND =
+  /^(npm (i|install|ci|update|up|uninstall|remove|dedupe|audit|outdated|ls|rebuild)\b|npx (npm-check-updates|ncu)\b|yarn (add|remove|upgrade|install)\b|pnpm (i|install|update|add|remove|dedupe)\b)/;
+/** Служебные символы оболочки — их в пакетной команде не допускаем (цепочки/подстановки/перенаправления). */
+const SHELL_METACHAR = /[;&|`$(){}<>\n\\]/;
+
+/**
+ * Пакетная ли это команда, безопасная к запуску исполнителем: начинается с разрешённого глагола
+ * менеджера пакетов И без служебных символов оболочки (одна команда, без `&&`/`;`/`|`/подстановок).
+ */
+export function isPackageCommand(command: string): boolean {
+  const trimmed = command.trim();
+  return PACKAGE_COMMAND.test(trimmed) && !SHELL_METACHAR.test(trimmed);
+}
+
 /** Скрипты проекта из `package.json` рабочей копии (только строковые значения; нет/битый → пусто). */
 export function readProjectScripts(io: WorkspaceIo, root: string): Record<string, string> {
   const manifestPath = join(root, 'package.json');
@@ -465,6 +480,44 @@ export class WorkspaceCommandToolSet implements ToolSet {
   }
 }
 
+/**
+ * Инструмент запуска ПАКЕТНЫХ команд менеджера (`npm install`/`npm update`/`npx npm-check-updates`…)
+ * для задач установки/обновления зависимостей. Делегирует в `RunWorkspace.runPackageCommand`, которая
+ * перед первой такой командой даёт копии СВОЮ node_modules (реальный проект не трогается) и валидирует
+ * команду (allow-list глаголов + запрет символов оболочки).
+ */
+export class WorkspacePackageToolSet implements ToolSet {
+  private readonly runPackage: (command: string) => Promise<string>;
+
+  constructor(runPackage: (command: string) => Promise<string>) {
+    this.runPackage = runPackage;
+  }
+
+  specs(): ToolSpec[] {
+    return [
+      {
+        name: 'run_package_command',
+        description:
+          'Запустить команду менеджера пакетов в рабочей копии для установки/обновления зависимостей ' +
+          '(напр. `npx npm-check-updates -u`, затем `npm install`; либо `npm update`). ОДНА команда без ' +
+          'цепочек (`&&`/`;`/`|`). Копия получает СВОЮ node_modules — реальный проект не трогается.',
+        parameters: {
+          type: 'object',
+          properties: { command: { type: 'string', description: 'команда менеджера пакетов целиком' } },
+          required: ['command'],
+        },
+      },
+    ];
+  }
+
+  async call(name: string, args: Record<string, unknown>): Promise<string> {
+    if (name !== 'run_package_command') {
+      return `Неизвестный инструмент: ${name}`;
+    }
+    return this.runPackage(stringArg(args, 'command'));
+  }
+}
+
 /** Изменение файла в копии: статус git (A/M/D) + путь относительно корня. */
 interface WorkspaceChange {
   status: string;
@@ -503,6 +556,10 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
   private readonly runner: ProjectCommandRunner;
   private readonly timeoutMs: number | undefined;
   private readonly projectEnv: Record<string, string>;
+  /** node_modules копии — симлинк на реальный проект (иначе своя/нет). Для пакетных команд снимаем. */
+  private readonly symlinkedNodeModules: boolean;
+  /** node_modules копии уже отвязана от реального (материализована) — чтобы снять симлинк один раз. */
+  private nodeModulesMaterialized = false;
 
   constructor(
     project: ProjectContext,
@@ -513,6 +570,7 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
     timeoutMs: number | undefined,
     scripts: Record<string, string> = {},
     projectEnv: Record<string, string> = {},
+    symlinkedNodeModules = false,
   ) {
     this.project = project;
     this.worktree = worktree;
@@ -521,8 +579,10 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
     this.runner = runner;
     this.timeoutMs = timeoutMs;
     this.projectEnv = projectEnv;
-    // Исполнителю — файловые инструменты + (если у проекта есть безопасные скрипты) запуск скриптов,
-    // чтобы он сам форматировал/проверял правки и чинил их до зелёного.
+    this.symlinkedNodeModules = symlinkedNodeModules;
+    this.commands = project.commands;
+    // Исполнителю — файловые инструменты + (если есть безопасные скрипты) запуск скриптов + пакетные
+    // команды (установка/обновление зависимостей): сам форматирует/проверяет/обновляет и чинит до зелёного.
     const fileTools = new WorkspaceFileToolSet(worktree, io);
     const commandTools = new WorkspaceCommandToolSet(
       worktree,
@@ -532,16 +592,50 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
       timeoutMs,
       projectEnv,
     );
-    this.tools =
-      commandTools.allowedScripts().length > 0
-        ? new CompositeToolSet([fileTools, commandTools])
-        : fileTools;
-    this.commands = project.commands;
+    const packageTools = new WorkspacePackageToolSet(command => this.runPackageCommand(command));
+    const sets: ToolSet[] = [fileTools];
+    if (commandTools.allowedScripts().length > 0) {
+      sets.push(commandTools);
+    }
+    sets.push(packageTools);
+    this.tools = new CompositeToolSet(sets);
   }
 
   /** Запуск команды проекта в копии (для этапа проверки), с переменными .env проекта. */
   run(command: string): Promise<CommandResult> {
     return this.runner.run(command, commandRunOptions(this.worktree, this.timeoutMs, this.projectEnv));
+  }
+
+  /**
+   * Перед пакетной командой даёт копии СВОЮ node_modules: снимает симлинк на реальный проект (менеджер
+   * соберёт свежую node_modules в копии) — установка/обновление не портит реальный node_modules. Один
+   * раз за прогон; не было симлинка — ничего не делаем.
+   */
+  private ensureOwnNodeModules(): void {
+    if (this.symlinkedNodeModules && !this.nodeModulesMaterialized) {
+      this.io.deleteFile(join(this.worktree, 'node_modules')); // удаляет симлинк, не трогая его цель
+      this.nodeModulesMaterialized = true;
+    }
+  }
+
+  /**
+   * Пакетная команда исполнителя (`npm install`/`update`/`npx npm-check-updates`…): валидируется
+   * (allow-list + без символов оболочки), затем гонится в копии с её СВОЕЙ node_modules. Реальный
+   * проект не трогается; в применение попадут только `package.json`/lock (node_modules gitignore-нут).
+   */
+  async runPackageCommand(command: string): Promise<string> {
+    if (!isPackageCommand(command)) {
+      return (
+        `Команда недоступна: ${command || '(пусто)'}. Разрешены пакетные команды менеджера ` +
+        '(`npm`/`yarn`/`pnpm` install/update/…, `npx npm-check-updates`) — ОДНА команда без символов оболочки.'
+      );
+    }
+    this.ensureOwnNodeModules();
+    const result = await this.runner.run(
+      command,
+      commandRunOptions(this.worktree, this.timeoutMs, this.projectEnv),
+    );
+    return `${command}: код ${result.code}${result.timedOut ? ' (таймаут)' : ''}\n${commandTail(result)}`;
   }
 
   /** Ставит все правки в индекс и возвращает список изменений (A/M/D). */
@@ -626,12 +720,23 @@ export async function createRunWorkspace(
     );
   }
   const nodeModules = join(project.root, 'node_modules');
-  if (io.exists(nodeModules)) {
+  const symlinkedNodeModules = io.exists(nodeModules);
+  if (symlinkedNodeModules) {
     io.symlink(nodeModules, join(worktree, 'node_modules'));
   }
   // Скрипты проекта — чтобы исполнитель мог запускать проверочные/фиксящие (форматтер и т.п.);
   // переменные .env/.env.development — чтобы команды сборки/тестов видели нужное окружение.
   const scripts = readProjectScripts(io, worktree);
   const projectEnv = loadProjectEnv(io, worktree, options.envFiles ?? PROJECT_ENV_FILES);
-  return new RunWorkspace(project, worktree, base, io, runner, options.timeoutMs, scripts, projectEnv);
+  return new RunWorkspace(
+    project,
+    worktree,
+    base,
+    io,
+    runner,
+    options.timeoutMs,
+    scripts,
+    projectEnv,
+    symlinkedNodeModules,
+  );
 }

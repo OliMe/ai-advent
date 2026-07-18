@@ -461,7 +461,15 @@ override `undefined`, запрос идёт на модель клиента, р
   `package.json` по имени: проверочные/фиксящие (`test`/`build`/`lint`/`type*`/`format`/`prettier`/`*fix*`),
   а деплой/lifecycle (`deploy`/`publish`/`start`/`install`/`clean`) отсеиваются (`scriptAllowed`) — модель
   своей команды не добавит. `.bin` копии в `PATH`, служебные каталоги `node_modules`/`.git` агенту
-  недоступны (иначе минифицированные бандлы переполняли контекст).
+  недоступны (иначе минифицированные бандлы переполняли контекст). **`run_package_command` (обновление
+  зависимостей):** для задач установки/обновления — `WorkspacePackageToolSet` (`npm`/`yarn`/`pnpm`
+  install/update, `npx npm-check-updates`; `isPackageCommand` — allow-list глаголов + запрет символов
+  оболочки: одна команда, без `&&`/`;`/`|`/подстановок). **Своя node_modules в копии:** перед первой
+  пакетной командой `ensureOwnNodeModules` снимает симлинк на реальный `node_modules` (менеджер собирает
+  свежую в копии) — установка НЕ портит реальный проект; в применение идут только `package.json`/lock
+  (node_modules gitignore-нут, реальный пересоберётся своим `npm install`). Без этого «обновить
+  зависимости» было невозможно: `run_command` умеет лишь `npm run <script>`, а слабая модель, не сумев,
+  сочиняла постороннее (поймано живым `/run` на cq-ch).
 - **verification прогоняет команды проекта** (`StageContext.commandCheck` → `runProjectCommands`): гонит
   обнаруженные `test`/`build`/`lint` (`ProjectContext.commands`, `start` исключён — не завершается) на
   изменениях. Любой ненулевой код/таймаут → `passed=false` + вывод в `issues`, БЕЗ вызова модели
