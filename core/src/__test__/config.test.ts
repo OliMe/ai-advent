@@ -24,6 +24,7 @@ const ENV_KEYS = [
   'LLM_MAX_TOOL_ROUNDS',
   'LLM_STRUCTURED_OUTPUTS',
   'LLM_EXECUTOR_MODEL',
+  'LLM_PROJECT_ENV_FILES',
 ];
 
 describe('loadConfig', () => {
@@ -138,6 +139,21 @@ describe('loadConfig', () => {
 
     process.env.LLM_EXECUTOR_MODEL = '  qwen2.5-coder:7b  '; // обрезаем пробелы
     assert.equal(loadConfig().executorModel, 'qwen2.5-coder:7b');
+  });
+
+  it('projectEnvFiles: непустой LLM_PROJECT_ENV_FILES → список, иначе не задан', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+
+    delete process.env.LLM_PROJECT_ENV_FILES;
+    assert.equal(loadConfig().projectEnvFiles, undefined);
+
+    process.env.LLM_PROJECT_ENV_FILES = ' , '; // только пустые — как незаданный
+    assert.equal(loadConfig().projectEnvFiles, undefined);
+
+    process.env.LLM_PROJECT_ENV_FILES = '.env.dev, .env.local ';
+    assert.deepEqual(loadConfig().projectEnvFiles, ['.env.dev', '.env.local']);
   });
 
   it('откатывается к дефолтам команды агентов при невалидных значениях', () => {

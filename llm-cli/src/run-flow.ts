@@ -195,6 +195,8 @@ export interface RunControllerDeps {
   workspaceIo?: WorkspaceIo;
   /** Потолок времени команды проекта в мс (git/тесты). Не задан — дефолт node-биндинга. */
   commandTimeoutMs?: number;
+  /** Оверрайд имён `.env`-файлов проекта для команд (`LLM_PROJECT_ENV_FILES`); не задан — общий набор. */
+  projectEnvFiles?: string[];
 }
 
 /**
@@ -464,7 +466,7 @@ export class RunController {
         project,
         this.deps.workspaceIo,
         this.deps.commandRunner,
-        { timeoutMs: this.deps.commandTimeoutMs },
+        { timeoutMs: this.deps.commandTimeoutMs, envFiles: this.deps.projectEnvFiles },
       );
       this.workspaceRunId = run.id;
       this.write(

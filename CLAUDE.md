@@ -469,10 +469,13 @@ override `undefined`, запрос идёт на модель клиента, р
   (зелёные тесты — весомый довод). Команды — ТОЛЬКО обнаруженные (allow-list по построению; произвольную
   строку модель запустить не может), поэтому shell в `nodeCommandRunner` допустим; таймаут обязателен.
   **Переменные окружения проекта** (`loadProjectEnv`/`parseDotenv` → `CommandRunOptions.env`): команды
-  запускаются с подмешанными `.env`/`.env.development` копии (dev перекрывает базовый), поверх `process.env`.
-  Без этого сборка падала на отсутствии `BUILD_PUBLIC_BASE` (webpack брал зашифрованный `.env.production` →
-  0 переменных); dev-env — то, что было бы у разработчика при локальном запуске. Тем же каналом идёт env к
-  `run_command` исполнителя.
+  запускаются с подмешанными dev-`.env`-файлами копии, поверх `process.env`. Без этого сборка падала на
+  отсутствии `BUILD_PUBLIC_BASE` (webpack брал зашифрованный `.env.production` → 0 переменных); dev-env —
+  то, что было бы у разработчика при локальном запуске. Набор файлов — **общий, не под один проект**
+  (`PROJECT_ENV_FILES`: `.env`/`.env.development`/`.env.dev`/`.env.local`/`.env.development.local`/
+  `.env.dev.local`, позже в списке — выше приоритет; prod/staging/test НЕ берём — там чужие/зашифрованные
+  значения перекрыли бы верные dev), оверрайд под нестандартное имя — `LLM_PROJECT_ENV_FILES` (через запятую)
+  → `AppConfig.projectEnvFiles` → `createRunWorkspace(envFiles)`. Тем же каналом env идёт к `run_command`.
 - **Применение — ПОСЛЕ подтверждения** (`RunController.drive`): на `completed` (значит confirmCompletion
   одобрен, пользователь видел diff на печати execution) `workspace.apply()` переносит правки в реальный
   проект КОПИРОВАНИЕМ изменённых файлов (A/M — копия, D — удаление; надёжнее `git apply`, не ломается на

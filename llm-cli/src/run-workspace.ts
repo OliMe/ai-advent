@@ -332,8 +332,19 @@ export function readProjectScripts(io: WorkspaceIo, root: string): Record<string
   }
 }
 
-/** Файлы окружения, подмешиваемые в команды проекта (базовый + dev; dev перекрывает базовый). */
-const PROJECT_ENV_FILES = ['.env', '.env.development'];
+/**
+ * Файлы DEV-окружения, подмешиваемые в команды проекта (позже в списке — выше приоритет). Ориентированы
+ * на РАЗРАБОТКУ (частые конвенции dotenv/Vite/CRA); prod/staging/test НЕ берём — там чужие/зашифрованные
+ * значения, которые перекрыли бы верные dev-переменные. Нестандартное имя — через `envFiles`-оверрайд.
+ */
+const PROJECT_ENV_FILES = [
+  '.env',
+  '.env.development',
+  '.env.dev',
+  '.env.local',
+  '.env.development.local',
+  '.env.dev.local',
+];
 
 /** Разбирает содержимое `.env` (построчно `KEY=VALUE`): комментарии/пустые пропускаются, кавычки снимаются. */
 export function parseDotenv(content: string): Record<string, string> {
@@ -362,13 +373,18 @@ export function parseDotenv(content: string): Record<string, string> {
 }
 
 /**
- * Загружает переменные окружения проекта из `.env`/`.env.development` рабочей копии (dev перекрывает
- * базовый) — чтобы команды сборки/тестов видели нужные переменные локального запуска. Нет файлов /
- * нечитаемы → пусто.
+ * Загружает переменные окружения проекта из dev-`.env`-файлов рабочей копии (позже в списке — выше
+ * приоритет) — чтобы команды сборки/тестов видели нужные переменные локального запуска. `files` —
+ * список имён (по умолчанию общий набор `PROJECT_ENV_FILES`; оверрайд для нестандартных имён). Нет
+ * файлов / нечитаемы → пусто.
  */
-export function loadProjectEnv(io: WorkspaceIo, root: string): Record<string, string> {
+export function loadProjectEnv(
+  io: WorkspaceIo,
+  root: string,
+  files: string[] = PROJECT_ENV_FILES,
+): Record<string, string> {
   const merged: Record<string, string> = {};
-  for (const name of PROJECT_ENV_FILES) {
+  for (const name of files) {
     const path = join(root, name);
     if (io.exists(path)) {
       try {
@@ -593,7 +609,7 @@ export async function createRunWorkspace(
   project: ProjectContext,
   io: WorkspaceIo,
   runner: ProjectCommandRunner,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; envFiles?: string[] } = {},
 ): Promise<RunWorkspace> {
   const base = io.makeTempDir('llm-run-');
   const worktree = join(base, 'worktree');
@@ -616,6 +632,6 @@ export async function createRunWorkspace(
   // Скрипты проекта — чтобы исполнитель мог запускать проверочные/фиксящие (форматтер и т.п.);
   // переменные .env/.env.development — чтобы команды сборки/тестов видели нужное окружение.
   const scripts = readProjectScripts(io, worktree);
-  const projectEnv = loadProjectEnv(io, worktree);
+  const projectEnv = loadProjectEnv(io, worktree, options.envFiles ?? PROJECT_ENV_FILES);
   return new RunWorkspace(project, worktree, base, io, runner, options.timeoutMs, scripts, projectEnv);
 }

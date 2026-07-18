@@ -360,6 +360,8 @@ export async function runInteractive(
     projects: () => workspace(),
     commandRunner: nodeCommandRunner,
     workspaceIo: nodeWorkspaceIo,
+    // Оверрайд имён .env-файлов проекта (LLM_PROJECT_ENV_FILES); не задан — общий dev-набор.
+    projectEnvFiles: config.projectEnvFiles,
     // Проекты (День 31): карточки — контекст ВСЕХ агентов этапов (план и результат должны быть про
     // конкретный репозиторий); документация — адресно, только на планировании и проверке (там она
     // меняет результат). Провайдеры ленивые: привязка проекта могла измениться между прогонами.

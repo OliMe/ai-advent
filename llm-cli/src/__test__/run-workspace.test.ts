@@ -305,6 +305,20 @@ describe('loadProjectEnv', () => {
     broken.unreadable.add('/p/.env');
     assert.deepEqual(loadProjectEnv(broken, '/p'), {}); // чтение бросило → пропуск
   });
+
+  it('дефолтный набор покрывает частые dev-конвенции (.env.dev / .local), более специфичный побеждает', () => {
+    const io = new FakeIo({
+      '/p/.env': 'V=base',
+      '/p/.env.dev': 'V=dev',
+      '/p/.env.development.local': 'V=local',
+    });
+    assert.equal(loadProjectEnv(io, '/p').V, 'local'); // .local идёт позже → перекрывает
+  });
+
+  it('оверрайд списка файлов: грузятся только указанные', () => {
+    const io = new FakeIo({ '/p/.env': 'A=1', '/p/custom.env': 'B=2' });
+    assert.deepEqual(loadProjectEnv(io, '/p', ['custom.env']), { B: '2' }); // .env НЕ грузится
+  });
 });
 
 describe('WorkspaceCommandToolSet', () => {
@@ -522,6 +536,22 @@ describe('createRunWorkspace', () => {
     const workspace = await createRunWorkspace(PROJECT, io, runner);
     await workspace.run('npm run build');
     assert.deepEqual(sawEnv, { BUILD_PUBLIC_BASE: '/app' });
+  });
+
+  it('оверрайд envFiles: грузит нестандартный файл окружения', async () => {
+    const io = new FakeIo({ '/tmp/ws/worktree/.env.custom': 'BUILD_PUBLIC_BASE=/custom' });
+    let sawEnv: Record<string, string> | undefined;
+    const runner: ProjectCommandRunner = {
+      run: async (command, options) => {
+        if (command === 'npm run build') {
+          sawEnv = options.env;
+        }
+        return { command, code: 0, stdout: '', stderr: '', timedOut: false };
+      },
+    };
+    const workspace = await createRunWorkspace(PROJECT, io, runner, { envFiles: ['.env.custom'] });
+    await workspace.run('npm run build');
+    assert.deepEqual(sawEnv, { BUILD_PUBLIC_BASE: '/custom' });
   });
 
   it('путь копии с пробелом — экранируется кавычками', async () => {

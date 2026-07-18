@@ -50,6 +50,12 @@ export interface AppConfig {
    * Смена модели за роль стоит переключения в Ollama, если модели не помещаются в память вместе.
    */
   executorModel?: string;
+  /**
+   * Имена `.env`-файлов проекта, подмешиваемых в команды пайплайна (`LLM_PROJECT_ENV_FILES`, через
+   * запятую; позже в списке — выше приоритет). Не задан — общий dev-набор (`.env`/`.env.development`/
+   * `.env.dev`/`.env.local`/…). Для проектов с нестандартным именем dev-файла окружения.
+   */
+  projectEnvFiles?: string[];
 }
 
 const DEFAULT_TEMPERATURE = 0.7;
@@ -161,6 +167,14 @@ export function loadConfig(): AppConfig {
     ...(process.env.LLM_EXECUTOR_MODEL?.trim()
       ? { executorModel: process.env.LLM_EXECUTOR_MODEL.trim() }
       : {}),
+    // Оверрайд имён .env-файлов проекта; задан непустым списком — иначе общий dev-набор по умолчанию.
+    ...(() => {
+      const files = (process.env.LLM_PROJECT_ENV_FILES ?? '')
+        .split(',')
+        .map(name => name.trim())
+        .filter(name => name.length > 0);
+      return files.length > 0 ? { projectEnvFiles: files } : {};
+    })(),
   };
 }
 
