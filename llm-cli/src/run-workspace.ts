@@ -49,6 +49,8 @@ export interface WorkspaceIo {
 
 /** Максимум символов содержимого файла в ответе инструмента (защита контекста). */
 const READ_FILE_LIMIT = 20000;
+/** Общий потолок ответа пакетного чтения read_files (бережёт контекст на многих файлах). */
+const READ_FILES_TOTAL_LIMIT = 60000;
 /** Максимум строк-совпадений grep в ответе. */
 const GREP_MATCH_LIMIT = 100;
 /** Каталоги, не участвующие в чтении/поиске/копировании. */
@@ -133,6 +135,23 @@ export class WorkspaceFileToolSet implements ToolSet {
         },
       },
       {
+        name: 'read_files',
+        description:
+          'Прочитать СРАЗУ НЕСКОЛЬКО файлов проекта за один вызов (эффективнее многих read_file). ' +
+          'Передай массив путей относительно корня — верну содержимое каждого.',
+        parameters: {
+          type: 'object',
+          properties: {
+            paths: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'пути файлов относительно корня проекта',
+            },
+          },
+          required: ['paths'],
+        },
+      },
+      {
         name: 'write_file',
         description: 'Создать или полностью перезаписать файл проекта содержимым.',
         parameters: {
@@ -170,6 +189,9 @@ export class WorkspaceFileToolSet implements ToolSet {
   async call(name: string, args: Record<string, unknown>): Promise<string> {
     if (name === 'read_file') {
       return this.readFile(stringArg(args, 'path'));
+    }
+    if (name === 'read_files') {
+      return this.readFiles(args.paths);
     }
     if (name === 'write_file') {
       return this.writeFile(stringArg(args, 'path'), stringArg(args, 'content'));
@@ -212,6 +234,28 @@ export class WorkspaceFileToolSet implements ToolSet {
     return content.length > READ_FILE_LIMIT
       ? `${content.slice(0, READ_FILE_LIMIT)}\n…(файл усечён)`
       : content;
+  }
+
+  /** Пакетное чтение: содержимое каждого файла с заголовком; общий потолок бережёт контекст. */
+  private readFiles(rawPaths: unknown): string {
+    const paths = Array.isArray(rawPaths)
+      ? rawPaths.filter((path): path is string => typeof path === 'string')
+      : [];
+    if (paths.length === 0) {
+      return 'Ошибка: не указаны пути (paths — массив путей относительно корня).';
+    }
+    const blocks: string[] = [];
+    let total = 0;
+    for (const path of paths) {
+      const block = `=== ${path} ===\n${this.readFile(path)}`;
+      total += block.length;
+      if (total > READ_FILES_TOTAL_LIMIT && blocks.length > 0) {
+        blocks.push('…(остальные файлы не показаны — превышен общий лимит; запроси их отдельно)');
+        break;
+      }
+      blocks.push(block);
+    }
+    return blocks.join('\n\n');
   }
 
   private writeFile(path: string, content: string): string {
@@ -658,6 +702,20 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
       this.timeoutMs,
     );
     return parseNameStatus(status.stdout);
+  }
+
+  /** Список отслеживаемых файлов проекта (git ls-files) — карта раскладки для исполнителя. */
+  async listFiles(): Promise<string[]> {
+    const listed = await gitRun(
+      this.runner,
+      this.worktree,
+      ['-C', this.worktree, 'ls-files'],
+      this.timeoutMs,
+    );
+    return listed.stdout
+      .split('\n')
+      .map(path => path.trim())
+      .filter(path => path !== '');
   }
 
   async changeSummary(): Promise<WorkspaceChangeSummary> {

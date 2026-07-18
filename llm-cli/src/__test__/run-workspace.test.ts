@@ -155,12 +155,32 @@ describe('WorkspaceFileToolSet', () => {
     return { tools: new WorkspaceFileToolSet('/w/worktree', io), io };
   }
 
-  it('specs: четыре инструмента с именами', () => {
+  it('specs: инструменты с именами (включая пакетное read_files)', () => {
     const { tools: set } = tools();
     assert.deepEqual(
       set.specs().map(spec => spec.name),
-      ['read_file', 'write_file', 'list_dir', 'grep'],
+      ['read_file', 'read_files', 'write_file', 'list_dir', 'grep'],
     );
+  });
+
+  it('read_files: пакетное чтение нескольких файлов; пустой список и усечение', async () => {
+    const seed: Record<string, string> = { '/w/worktree/a.ts': 'файл A', '/w/worktree/b.ts': 'файл B' };
+    for (let index = 0; index < 4; index++) {
+      seed[`/w/worktree/big${index}.ts`] = 'y'.repeat(19000); // 4×19k > общий лимит 60k
+    }
+    const { tools: set } = tools(seed);
+    const out = await set.call('read_files', { paths: ['a.ts', 'b.ts', 'нет.ts'] });
+    assert.match(out, /=== a\.ts ===\nфайл A/);
+    assert.match(out, /=== b\.ts ===\nфайл B/);
+    assert.match(out, /=== нет\.ts ===\nФайл не найден/); // отсутствующий — отдельным блоком
+    // paths не массив / пусто → ошибка
+    assert.match(await set.call('read_files', { paths: 'a.ts' }), /не указаны пути/);
+    assert.match(await set.call('read_files', {}), /не указаны пути/);
+    // общий лимит: несколько больших файлов → остаток не показан
+    const capped = await set.call('read_files', {
+      paths: ['big0.ts', 'big1.ts', 'big2.ts', 'big3.ts'],
+    });
+    assert.match(capped, /остальные файлы не показаны/);
   });
 
   it('read_file: содержимое, отсутствие, путь наружу, пустой путь, усечение', async () => {
@@ -470,6 +490,14 @@ describe('RunWorkspace', () => {
     assert.deepEqual(summary.files, ['new.md', 'mod.ts', 'old.txt']); // строка «bad» без пути отброшена
     assert.equal(summary.diff, 'DIFF-ТЕКСТ');
     assert.ok(calls.some(entry => entry.command.includes('add -A') && entry.cwd === '/w/worktree'));
+  });
+
+  it('listFiles: отслеживаемые файлы из git ls-files (пустые строки отброшены)', async () => {
+    const runner = fakeRunner([
+      { match: c => c.includes('ls-files'), result: { stdout: 'src/a.ts\nREADME.md\n\n  \n' } },
+    ]);
+    const files = await workspaceWith(new FakeIo(), runner, 1000).listFiles();
+    assert.deepEqual(files, ['src/a.ts', 'README.md']);
   });
 
   it('apply: A/M копирует, D удаляет; возвращает пути', async () => {

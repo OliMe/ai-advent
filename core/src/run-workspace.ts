@@ -30,6 +30,11 @@ export interface FileWorkspace {
   tools: ToolSet;
   /** Снимает текущие изменения пространства: unified diff + список изменённых файлов. */
   changeSummary(): Promise<WorkspaceChangeSummary>;
+  /**
+   * Список файлов проекта (пути относительно корня) — карта раскладки в контекст исполнителя, чтобы
+   * он не тратил раунды на разведку структуры (list_dir) перед чтением/правкой.
+   */
+  listFiles(): Promise<string[]>;
 }
 
 /**

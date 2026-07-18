@@ -999,7 +999,12 @@ describe('контекст проекта в этапах (День 31)', () => 
 
 describe('работа с файлами и командами (День 34)', () => {
   /** Фейковое файловое пространство: инструменты (для сигнала «переданы») + канный diff/файлы. */
-  function fakeWorkspace(diff: string, files: string[], calls?: string[]): FileWorkspace {
+  function fakeWorkspace(
+    diff: string,
+    files: string[],
+    calls?: string[],
+    projectFiles: string[] = [],
+  ): FileWorkspace {
     return {
       tools: {
         specs: () => [{ name: 'write_file', description: 'создать/изменить файл', parameters: {} }],
@@ -1009,6 +1014,7 @@ describe('работа с файлами и командами (День 34)', (
         },
       },
       changeSummary: async () => ({ diff, files }),
+      listFiles: async () => projectFiles,
     };
   }
 
@@ -1137,6 +1143,35 @@ describe('работа с файлами и командами (День 34)', (
       }),
       err => err instanceof InvariantViolationError,
     );
+  });
+
+  it('runExecution с fileWorkspace: карта файлов проекта уходит в промпт исполнителя', async t => {
+    const run = planned(createRun('Рефактор', { idSuffix: 'map' }));
+    let prompt = '';
+    await runExecution({
+      run,
+      makeConversation: makeConv(t, 'готово', p => (prompt = p)),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      fileWorkspace: fakeWorkspace('', [], undefined, ['src/a.ts', 'src/b.ts', 'README.md']),
+    });
+    assert.match(prompt, /Файлы проекта.*read_files/s); // карта раскладки в промпте
+    assert.match(prompt, /src\/a\.ts/);
+    assert.match(prompt, /src\/b\.ts/);
+  });
+
+  it('runExecution с fileWorkspace: большая карта файлов усечена лимитом', async t => {
+    const run = planned(createRun('Рефактор', { idSuffix: 'map2' }));
+    let prompt = '';
+    const many = Array.from({ length: 450 }, (unused, index) => `src/f${index}.ts`);
+    await runExecution({
+      run,
+      makeConversation: makeConv(t, 'готово', p => (prompt = p)),
+      writeArtifact: () => null,
+      memoryContext: () => '',
+      fileWorkspace: fakeWorkspace('', [], undefined, many),
+    });
+    assert.match(prompt, /показаны первые 400 из 450/);
   });
 
   it('runExecution с fileWorkspace без правок: помечает отсутствие изменений, резюме из ответа', async t => {
