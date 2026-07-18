@@ -10,6 +10,7 @@ import type {
   Stage,
   Task,
   TaskRun,
+  ToolSet,
 } from '../../../core/src/index.ts';
 import {
   RunController,
@@ -196,6 +197,32 @@ describe('makeConversationFactory', () => {
 
     await make('S', undefined, 0).ask('привет');
     assert.equal(captured.temperature, 0); // этап задал свою (напр. проверяющий)
+  });
+
+  it('пробрасывает maxToolRounds из конфига (иначе этап упрётся в дефолт 6)', async t => {
+    let rounds = 0;
+    const tools: ToolSet = {
+      specs: () => [{ name: 't', description: 'd', parameters: {} }],
+      call: async () => 'ok',
+    };
+    const make = makeConversationFactory(
+      clientWith(t, async () => {
+        rounds++;
+        return {
+          content: '',
+          toolCalls: [{ id: `c${rounds}`, type: 'function', function: { name: 't', arguments: '{}' } }],
+        };
+      }),
+      makeConfig({ maxToolRounds: 3 }),
+      true,
+      0.3,
+    );
+    // Инструмент зовётся бесконечно → цикл упрётся в потолок из конфига (3), а не в дефолт (6).
+    await assert.rejects(
+      make('S', undefined, undefined, tools).ask('го'),
+      /Превышен лимит раундов вызова инструментов \(3\)/,
+    );
+    assert.equal(rounds, 3);
   });
 });
 

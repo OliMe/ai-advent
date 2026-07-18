@@ -119,6 +119,10 @@ export function makeConversationFactory(
           : { ...limits, maxTokens: limits?.maxTokens ?? config.stageMaxTokens },
       onUsage,
       tools,
+      // Тот же потолок раундов инструментов, что и в чате (LLM_MAX_TOOL_ROUNDS): иначе этапы
+      // упираются в жёсткий дефолт Conversation (6), а планировщик, обходящий код грепами, его
+      // легко превышает. Поймано живым /run на entry-forms.
+      maxToolRounds: config.maxToolRounds,
       onToolCall,
     });
 }
