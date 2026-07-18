@@ -12,7 +12,7 @@ import type {
   ToolSet,
   Usage,
 } from '../../core/src/index.ts';
-import { createRunWorkspace } from './run-workspace.ts';
+import { createRunWorkspace, pruneOrphanWorktrees } from './run-workspace.ts';
 import type { RunWorkspace, WorkspaceIo } from './run-workspace.ts';
 import {
   formatStageResult,
@@ -222,6 +222,32 @@ export class RunController {
   /** Идёт ли прогон прямо сейчас (для решения Ctrl+C: пауза vs выход). */
   isRunning(): boolean {
     return this.pause !== null;
+  }
+
+  /**
+   * Подчищает осиротевшие рабочие копии (worktree брошенных прогонов) во всех привязанных проектах —
+   * вызывается на старте. Best-effort: сбой очистки не мешает запуску. Копии от ДРУГОЙ активной сессии
+   * на том же репозитории тоже снимутся (редкий случай).
+   */
+  async cleanupOrphanWorktrees(): Promise<void> {
+    if (this.deps.commandRunner === undefined || this.deps.workspaceIo === undefined) {
+      return;
+    }
+    for (const project of this.deps.projects?.() ?? []) {
+      try {
+        const removed = await pruneOrphanWorktrees(
+          project.root,
+          this.deps.workspaceIo,
+          this.deps.commandRunner,
+          this.deps.commandTimeoutMs,
+        );
+        if (removed.length > 0) {
+          this.write(`🧹 Убрано осиротевших рабочих копий (${project.name}): ${removed.length}`);
+        }
+      } catch {
+        // best-effort — сбой очистки не мешает старту
+      }
+    }
   }
 
   /** Просит поставить текущий прогон на паузу (сработает на границе этапа). */

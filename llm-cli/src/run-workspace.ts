@@ -1,4 +1,4 @@
-import { join, resolve, relative } from 'node:path';
+import { join, resolve, relative, dirname } from 'node:path';
 import type {
   ToolSet,
   ToolSpec,
@@ -694,6 +694,48 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
       // очистка временного каталога не критична — оставляем как есть
     }
   }
+}
+
+/** Пути рабочих деревьев из `git worktree list --porcelain` (строки `worktree <path>`). */
+function parseWorktreePaths(porcelain: string): string[] {
+  const prefix = 'worktree ';
+  return porcelain
+    .split('\n')
+    .filter(line => line.startsWith(prefix))
+    .map(line => line.slice(prefix.length).trim());
+}
+
+/** Наша ли это временная рабочая копия (каталог `llm-run-*`) — только такие подчищаем. */
+const ORPHAN_WORKTREE_PATH = /[/\\]llm-run-/;
+
+/**
+ * Подчищает осиротевшие рабочие копии прогонов (worktree `llm-run-*`) в проекте: снимает их
+ * регистрацию (`git worktree remove --force`) и удаляет временный каталог, плюс `git worktree prune`
+ * для устаревших записей. Возвращает снятые пути. ВНИМАНИЕ: убирает ВСЕ наши `llm-run-*` — если рядом
+ * работает ДРУГАЯ сессия с активным прогоном на этом же репозитории, её копия тоже снимется (редко).
+ */
+export async function pruneOrphanWorktrees(
+  root: string,
+  io: WorkspaceIo,
+  runner: ProjectCommandRunner,
+  timeoutMs: number | undefined,
+): Promise<string[]> {
+  const listed = await gitRun(
+    runner,
+    root,
+    ['-C', root, 'worktree', 'list', '--porcelain'],
+    timeoutMs,
+  );
+  const removed: string[] = [];
+  for (const path of parseWorktreePaths(listed.stdout)) {
+    if (ORPHAN_WORKTREE_PATH.test(path)) {
+      await gitRun(runner, root, ['-C', root, 'worktree', 'remove', '--force', path], timeoutMs);
+      io.removeDir(dirname(path)); // временный каталог-обёртка llm-run-*
+      removed.push(path);
+    }
+  }
+  await gitRun(runner, root, ['-C', root, 'worktree', 'prune'], timeoutMs);
+  return removed;
 }
 
 /**

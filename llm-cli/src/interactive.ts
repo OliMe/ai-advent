@@ -1126,6 +1126,8 @@ export async function runInteractive(
       note(`📁 Проект (по текущему каталогу): ${detected[0].name} — ${detected[0].root}`);
     }
   }
+  // Подчищаем осиротевшие рабочие копии брошенных прогонов (worktree `llm-run-*`) — best-effort.
+  await runController.cleanupOrphanWorktrees();
 
   try {
     while (true) {

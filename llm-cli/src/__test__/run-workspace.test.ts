@@ -6,6 +6,7 @@ import {
   WorkspaceCommandToolSet,
   WorkspacePackageToolSet,
   createRunWorkspace,
+  pruneOrphanWorktrees,
   resolveInside,
   readProjectScripts,
   parseDotenv,
@@ -610,6 +611,59 @@ describe('RunWorkspace', () => {
       throw new Error('busy');
     };
     await workspaceWith(io, fakeRunner([]), 1000).dispose(); // не должно бросить
+  });
+});
+
+describe('pruneOrphanWorktrees', () => {
+  it('снимает только наши llm-run-* копии (главный репозиторий и чужие worktree не трогает) + prune', async () => {
+    const calls: string[] = [];
+    const runner: ProjectCommandRunner = {
+      run: async command => {
+        calls.push(command);
+        const stdout = command.includes('worktree list')
+          ? [
+              'worktree /proj', // главный репозиторий
+              'HEAD abc123',
+              '',
+              'worktree /private/tmp/llm-run-AAA/worktree', // наша осиротевшая копия
+              'detached',
+              '',
+              'worktree /Users/vizgin/other/feature', // чужой worktree — не трогаем
+              'branch refs/heads/feature',
+            ].join('\n')
+          : '';
+        return { command, code: 0, stdout, stderr: '', timedOut: false };
+      },
+    };
+    const io = new FakeIo();
+    const removed = await pruneOrphanWorktrees('/proj', io, runner, 1000);
+
+    assert.deepEqual(removed, ['/private/tmp/llm-run-AAA/worktree']);
+    assert.ok(calls.some(c => c.includes('worktree remove --force') && c.includes('llm-run-AAA')));
+    assert.ok(!calls.some(c => c.includes('remove') && c.includes('other/feature'))); // чужой цел
+    assert.ok(!calls.some(c => c.includes('remove') && c === 'git -C /proj worktree remove --force /proj'));
+    assert.deepEqual(io.removedDirs, ['/private/tmp/llm-run-AAA']); // удалён каталог-обёртка
+    assert.ok(calls.some(c => c.includes('worktree prune'))); // финальный prune
+  });
+
+  it('нет наших копий → только prune, ничего не снято', async () => {
+    const calls: string[] = [];
+    const runner: ProjectCommandRunner = {
+      run: async command => {
+        calls.push(command);
+        return {
+          command,
+          code: 0,
+          stdout: command.includes('worktree list') ? 'worktree /proj\nHEAD abc\n' : '',
+          stderr: '',
+          timedOut: false,
+        };
+      },
+    };
+    const removed = await pruneOrphanWorktrees('/proj', new FakeIo(), runner, undefined);
+    assert.deepEqual(removed, []);
+    assert.ok(!calls.some(c => c.includes('worktree remove')));
+    assert.ok(calls.some(c => c.includes('worktree prune')));
   });
 });
 
