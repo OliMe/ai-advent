@@ -10,6 +10,8 @@ import {
   statSync,
   readdirSync,
   rmSync,
+  unlinkSync,
+  lstatSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -34,6 +36,17 @@ export const nodeWorkspaceIo: WorkspaceIo = {
   deleteFile: path => {
     if (existsSync(path)) {
       rmSync(path);
+    }
+  },
+  // unlinkSync снимает саму ссылку и НИКОГДА не следует по ней (rmSync на симлинке-каталоге падает
+  // EISDIR, а с recursive снёс бы цель — реальный node_modules). lstat не следует по ссылке.
+  removeSymlink: path => {
+    try {
+      if (lstatSync(path).isSymbolicLink()) {
+        unlinkSync(path);
+      }
+    } catch {
+      // ссылки нет — нечего снимать
     }
   },
   copyFile: (source, destination) => {

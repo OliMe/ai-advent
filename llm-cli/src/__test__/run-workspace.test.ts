@@ -26,6 +26,7 @@ class FakeIo implements WorkspaceIo {
   symlinks: [string, string][] = [];
   removedDirs: string[] = [];
   deleted: string[] = [];
+  unlinked: string[] = [];
   tempPath: string;
 
   constructor(seed: Record<string, string> = {}, tempPath = '/tmp/ws') {
@@ -75,6 +76,9 @@ class FakeIo implements WorkspaceIo {
   deleteFile(path: string): void {
     this.deleted.push(path);
     this.files.delete(path);
+  }
+  removeSymlink(path: string): void {
+    this.unlinked.push(path);
   }
   copyFile(source: string, destination: string): void {
     const content = this.files.get(source);
@@ -492,7 +496,7 @@ describe('RunWorkspace', () => {
     const out = await workspace.runPackageCommand('npx npm-check-updates -u');
     await workspace.runPackageCommand('npm install'); // второй раз симлинк не снимаем повторно
     assert.match(out, /код 0/);
-    assert.deepEqual(io.deleted, ['/w/worktree/node_modules']); // ровно один раз
+    assert.deepEqual(io.unlinked, ['/w/worktree/node_modules']); // ровно один раз
     assert.deepEqual(calls, ['npx npm-check-updates -u', 'npm install']);
   });
 
@@ -510,7 +514,7 @@ describe('RunWorkspace', () => {
     const io = new FakeIo();
     const workspace = new RunWorkspace(PROJECT, '/w/worktree', '/w', io, fakeRunner([]), 1000, {}, {}, false);
     await workspace.runPackageCommand('npm install');
-    assert.deepEqual(io.deleted, []); // нечего снимать
+    assert.deepEqual(io.unlinked, []); // нечего снимать
   });
 
   it('runPackageCommand: недопустимая команда → отказ, без запуска и без снятия симлинка', async () => {
@@ -526,7 +530,7 @@ describe('RunWorkspace', () => {
     assert.match(await workspace.runPackageCommand('rm -rf node_modules'), /недоступна/);
     assert.match(await workspace.runPackageCommand(''), /недоступна/); // пустая
     assert.deepEqual(calls, []); // не запускалось
-    assert.deepEqual(io.deleted, []); // симлинк не снят
+    assert.deepEqual(io.unlinked, []); // симлинк не снят
   });
 
   it('tools исполнителя включают run_package_command и он работает через композит', async () => {

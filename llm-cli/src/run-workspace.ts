@@ -35,6 +35,8 @@ export interface WorkspaceIo {
   listDir(path: string): string[];
   /** Удаляет файл (если есть). */
   deleteFile(path: string): void;
+  /** Снимает СИМЛИНК (удаляет ссылку, не её цель) — для отвязки node_modules копии от реального. */
+  removeSymlink(path: string): void;
   /** Копирует файл, создавая родительские каталоги приёмника. */
   copyFile(source: string, destination: string): void;
   /** Создаёт симлинк-каталог (для проброса node_modules в копию). */
@@ -613,7 +615,7 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
    */
   private ensureOwnNodeModules(): void {
     if (this.symlinkedNodeModules && !this.nodeModulesMaterialized) {
-      this.io.deleteFile(join(this.worktree, 'node_modules')); // удаляет симлинк, не трогая его цель
+      this.io.removeSymlink(join(this.worktree, 'node_modules')); // снимает ссылку, не трогая её цель
       this.nodeModulesMaterialized = true;
     }
   }

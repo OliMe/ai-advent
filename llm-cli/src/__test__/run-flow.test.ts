@@ -1058,6 +1058,7 @@ describe('RunController: рабочая копия проекта (День 34)'
       !this.files.has(path) && [...this.files.keys()].some(key => key.startsWith(`${path}/`));
     listDir = (): string[] => [];
     deleteFile = (path: string): void => void this.files.delete(path);
+    removeSymlink = (path: string): void => void this.files.delete(path);
     copyFile = (source: string, destination: string): void =>
       void this.files.set(destination, this.files.get(source) ?? '');
     symlink = (target: string, linkPath: string): void => void this.symlinks.push([target, linkPath]);
