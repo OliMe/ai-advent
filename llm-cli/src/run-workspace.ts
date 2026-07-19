@@ -840,9 +840,28 @@ export async function pruneOrphanWorktrees(
 }
 
 /**
- * Создаёт рабочее пространство прогона: git-worktree проекта от HEAD во временном каталоге. Если у
- * проекта есть node_modules — пробрасывает их симлинком, чтобы команды проекта (напр. `npm test`)
- * видели зависимости в копии. Сбой git worktree → чистим временный каталог и бросаем.
+ * Базовый коммит рабочей копии — образ РАБОЧЕГО ДЕРЕВА проекта (с незакоммиченными правками), а не
+ * просто HEAD. `git stash create` даёт dangling-коммит текущего состояния трекнутых файлов, НЕ трогая
+ * ни рабочее дерево, ни список stash. Дерево чистое (пусто) или ошибка → откат к `HEAD`. Так пайплайн
+ * видит АКТУАЛЬНЫЕ правки (напр. уже поднятую, но не закоммиченную версию зависимости — иначе он бы
+ * работал от закоммиченного состояния и «не видел, что чинить»), а diff/apply считаются ОТНОСИТЕЛЬНО
+ * этого образа — в изменения попадает только то, что внёс исполнитель, а не весь незакоммиченный фон.
+ * Ограничение: untracked-файлы `stash create` не захватывает — они в копию не попадают.
+ */
+async function workingTreeBaseCommit(
+  runner: ProjectCommandRunner,
+  root: string,
+  timeoutMs: number | undefined,
+): Promise<string> {
+  const created = await gitRun(runner, root, ['-C', root, 'stash', 'create'], timeoutMs);
+  return created.code === 0 && created.stdout.trim() !== '' ? created.stdout.trim() : 'HEAD';
+}
+
+/**
+ * Создаёт рабочее пространство прогона: git-worktree проекта во временном каталоге. База копии —
+ * образ рабочего дерева (см. `workingTreeBaseCommit`), чтобы копия отражала актуальные незакоммиченные
+ * правки. Если у проекта есть node_modules — пробрасывает их симлинком, чтобы команды проекта (напр.
+ * `npm test`) видели зависимости в копии. Сбой git worktree → чистим временный каталог и бросаем.
  */
 export async function createRunWorkspace(
   project: ProjectContext,
@@ -852,10 +871,11 @@ export async function createRunWorkspace(
 ): Promise<RunWorkspace> {
   const base = io.makeTempDir('llm-run-');
   const worktree = join(base, 'worktree');
+  const baseCommit = await workingTreeBaseCommit(runner, project.root, options.timeoutMs);
   const added = await gitRun(
     runner,
     project.root,
-    ['-C', project.root, 'worktree', 'add', '--detach', worktree, 'HEAD'],
+    ['-C', project.root, 'worktree', 'add', '--detach', worktree, baseCommit],
     options.timeoutMs,
   );
   if (added.code !== 0) {

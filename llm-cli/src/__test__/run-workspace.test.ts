@@ -728,8 +728,39 @@ describe('createRunWorkspace', () => {
     const runner = fakeRunner([{ match: c => c.includes('worktree add') }], calls);
     const workspace = await createRunWorkspace(PROJECT, io, runner, { timeoutMs: 1000 });
     assert.ok(workspace instanceof RunWorkspace);
-    assert.ok(calls[0].command.includes('worktree add --detach /tmp/ws/worktree HEAD'));
+    const add = calls.find(call => call.command.includes('worktree add'))!;
+    assert.ok(add.command.includes('worktree add --detach /tmp/ws/worktree HEAD'));
     assert.deepEqual(io.symlinks, [['/proj/node_modules', '/tmp/ws/worktree/node_modules']]);
+  });
+
+  it('база копии — образ рабочего дерева (git stash create), если он есть', async () => {
+    const io = new FakeIo();
+    const calls: { command: string; cwd: string }[] = [];
+    const runner = fakeRunner(
+      [
+        { match: c => c.includes('stash create'), result: { stdout: 'abc123def\n' } },
+        { match: c => c.includes('worktree add') },
+      ],
+      calls,
+    );
+    await createRunWorkspace(PROJECT, io, runner);
+    const add = calls.find(call => call.command.includes('worktree add'))!;
+    assert.ok(add.command.includes('worktree add --detach /tmp/ws/worktree abc123def'));
+  });
+
+  it('сбой git stash create → база копии HEAD', async () => {
+    const io = new FakeIo();
+    const calls: { command: string; cwd: string }[] = [];
+    const runner = fakeRunner(
+      [
+        { match: c => c.includes('stash create'), result: { code: 1 } },
+        { match: c => c.includes('worktree add') },
+      ],
+      calls,
+    );
+    await createRunWorkspace(PROJECT, io, runner);
+    const add = calls.find(call => call.command.includes('worktree add'))!;
+    assert.ok(add.command.includes('worktree add --detach /tmp/ws/worktree HEAD'));
   });
 
   it('без node_modules — симлинк не создаётся (timeoutMs не задан)', async () => {
@@ -794,7 +825,8 @@ describe('createRunWorkspace', () => {
     const calls: { command: string; cwd: string }[] = [];
     const runner = fakeRunner([{ match: c => c.includes('worktree add') }], calls);
     await createRunWorkspace(PROJECT, io, runner);
-    assert.match(calls[0].command, /"\/tmp\/ws dir\/worktree"/);
+    const add = calls.find(call => call.command.includes('worktree add'))!;
+    assert.match(add.command, /"\/tmp\/ws dir\/worktree"/);
   });
 
   it('сбой git worktree → чистит временный каталог и бросает (stderr)', async () => {
