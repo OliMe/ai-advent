@@ -142,7 +142,10 @@ export class Conversation {
     }));
     const maxRounds = this.config.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     for (let round = 0; round < maxRounds; round++) {
-      const result = await this.client.completeWithUsage(this.windowed(), {
+      // Историю tool-цикла НЕ обрезаем окном: обрезка по бюджету режет user-сообщение (задачу/план)
+      // и оставляет окно, начинающееся с assistant-tool_calls без user, — строгие провайдеры (GLM/z.ai)
+      // бракуют это «messages parameter is illegal». Так же поступает проверенный на GLM completeWithTools.
+      const result = await this.client.completeWithUsage(this.messages, {
         signal: AbortSignal.timeout(this.config.requestTimeoutMs),
         disableThinking: this.config.disableThinking,
         temperature: this.config.temperature,
