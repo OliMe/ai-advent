@@ -172,6 +172,38 @@ describe('runRoleExperts', () => {
     assert.deepEqual(systems.sort(), ['архитектор', 'безопасность']);
   });
 
+  it('пробрасывает инструменты каждой роли (эксперты читают проект сами)', async t => {
+    const seenTools: unknown[] = [];
+    const tools = {
+      specs: () => [],
+      call: async () => '',
+    };
+    const makeConversation = (
+      system: string,
+      _limits?: unknown,
+      temperature?: number,
+      passedTools?: unknown,
+    ) => {
+      seenTools.push(passedTools);
+      const client = clientWith(t, async () => ({ content: 'ок', usage: undefined }));
+      return new Conversation(client, {
+        systemPrompt: system,
+        temperature: temperature ?? 0.7,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+      });
+    };
+    await runRoleExperts({
+      roles,
+      makeConversation,
+      buildSystem: role => role.name,
+      buildPrompt: () => 'задание',
+      concurrency: 2,
+      tools,
+    });
+    assert.deepEqual(seenTools, [tools, tools]); // обе роли получили инструменты
+  });
+
   it('сбой роли пропускается с уведомлением, остальные идут', async t => {
     const failures: string[] = [];
     const contributions = await runRoleExperts({

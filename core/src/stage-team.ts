@@ -1,13 +1,15 @@
 import type { Conversation } from './conversation.ts';
 import type { GenerationLimits } from './types.ts';
+import type { ToolSet } from './tool-set.ts';
 import type { AgentContribution } from './task-run.ts';
 import { parseJsonObject } from './json.ts';
 
-/** Фабрика диалога агента (как в StageContext): системный промпт, ограничения, температура. */
+/** Фабрика диалога агента (как в StageContext): системный промпт, ограничения, температура, опц. инструменты. */
 type ConversationFactory = (
   systemPrompt: string,
   limits?: GenerationLimits,
   temperature?: number,
+  tools?: ToolSet,
 ) => Conversation;
 
 /** Роль агента в команде этапа: имя, фокус (что привносит) и опц. температура. */
@@ -149,6 +151,12 @@ export interface RoleExpertsOptions {
   buildPrompt: (role: AgentRole) => string;
   /** Максимум одновременных запросов. */
   concurrency: number;
+  /**
+   * Инструменты (function-calling) для роль-экспертов — чтобы они РЕАЛЬНО читали файлы/структуру
+   * проекта (read_file/git_grep/...), а не только просили «мне нужно посмотреть package.json».
+   * Не заданы — эксперты работают без инструментов (как прежде).
+   */
+  tools?: ToolSet;
   /** Уведомление о сбое отдельной роли (её вклад пропускается). */
   onError?: (role: AgentRole, error: unknown) => void;
 }
@@ -167,6 +175,7 @@ export async function runRoleExperts(options: RoleExpertsOptions): Promise<Agent
           options.buildSystem(role),
           undefined,
           role.temperature,
+          options.tools,
         );
         const result = await conversation.ask(options.buildPrompt(role));
         return { role: role.name, text: result.content };
