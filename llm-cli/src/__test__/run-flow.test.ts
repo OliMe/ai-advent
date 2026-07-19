@@ -317,9 +317,10 @@ describe('RunController', () => {
     assert.match(out.text(), /завершена и подтверждена/);
   });
 
-  it('аналитик требований получает инструменты чтения проекта', async t => {
+  it('аналитик требований получает инструменты чтения проекта и малый потолок раундов', async t => {
     const out = makeCollector();
     let clarifierTools: ToolSet | undefined;
+    let clarifierRounds: number | undefined;
     let sawClarifier = false;
     const tools: ToolSet = {
       specs: () => [
@@ -327,11 +328,19 @@ describe('RunController', () => {
       ],
       call: async () => '',
     };
-    const make: ConversationFactory = (systemPrompt, limits, temperature, passedTools) => {
+    const make: ConversationFactory = (
+      systemPrompt,
+      limits,
+      temperature,
+      passedTools,
+      _model,
+      maxToolRounds,
+    ) => {
       const isClarifier = systemPrompt.includes('аналитик требований');
       if (isClarifier) {
         sawClarifier = true;
         clarifierTools = passedTools;
+        clarifierRounds = maxToolRounds;
       }
       const stage = stageOf(systemPrompt);
       const client = clientWith(t, async () => ({
@@ -358,6 +367,7 @@ describe('RunController', () => {
     await controller.start('Задача');
     assert.ok(sawClarifier);
     assert.equal(clarifierTools, tools); // инструменты чтения проброшены аналитику
+    assert.equal(clarifierRounds, 6); // малый потолок раундов (интерактивный хук не должен спиннить)
   });
 
   it('нет вопросов аналитика → опрос пропускается', async t => {

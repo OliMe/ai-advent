@@ -33,10 +33,18 @@ export type ConversationFactory = (
   temperature?: number,
   tools?: ToolSet,
   model?: string,
+  maxToolRounds?: number,
 ) => Conversation;
 
 /** Максимум вопросов аналитика за один сбор требований (страховка от зацикливания). */
 const MAX_CLARIFIER_QUESTIONS = 20;
+
+/**
+ * Потолок раундов инструментов для аналитика требований. Он ИНТЕРАКТИВЕН (пользователь ждёт ответа),
+ * поэтому 20 раундов чтения (общий дефолт) для него вредны: агентный цикл долго перечитывает файлы
+ * (историю `runWithTools` не обрезает), и это выглядит зависанием. Несколько чтений + вопрос — достаточно.
+ */
+const CLARIFIER_MAX_TOOL_ROUNDS = 6;
 
 /**
  * Низко-умеренная температура аналитика: уточняющие вопросы и подсказки-дефолты стабильнее и по
@@ -114,7 +122,7 @@ export function makeConversationFactory(
   onUsage?: (usage: Usage) => void,
   onToolCall?: (name: string, args: Record<string, unknown>) => void,
 ): ConversationFactory {
-  return (systemPrompt, limits, temperatureOverride, tools, model) =>
+  return (systemPrompt, limits, temperatureOverride, tools, model, maxToolRounds) =>
     new Conversation(client, {
       systemPrompt,
       // Этап может задать свою температуру (напр. проверяющий — низкую); иначе общая.
@@ -131,10 +139,10 @@ export function makeConversationFactory(
           : { ...limits, maxTokens: limits?.maxTokens ?? config.stageMaxTokens },
       onUsage,
       tools,
-      // Тот же потолок раундов инструментов, что и в чате (LLM_MAX_TOOL_ROUNDS): иначе этапы
-      // упираются в жёсткий дефолт Conversation (6), а планировщик, обходящий код грепами, его
-      // легко превышает. Поймано живым /run на entry-forms.
-      maxToolRounds: config.maxToolRounds,
+      // Потолок раундов инструментов: обычно из конфига (LLM_MAX_TOOL_ROUNDS) — иначе этапы упираются
+      // в жёсткий дефолт Conversation (6), а планировщик, обходящий код грепами, его легко превышает
+      // (поймано живым /run на entry-forms). Явный override (напр. у аналитика) имеет приоритет.
+      maxToolRounds: maxToolRounds ?? config.maxToolRounds,
       onToolCall,
     });
 }
@@ -341,6 +349,9 @@ export class RunController {
       // Инструменты чтения (git/rag) — чтобы аналитик изучал проект САМ и не переспрашивал у
       // пользователя то, что читается из репозитория (версии зависимостей, фреймворк, структуру).
       this.deps.tools,
+      undefined, // модель — дефолтная клиента
+      // Малый потолок раундов: аналитик интерактивен, длинный агентный цикл выглядит зависанием.
+      CLARIFIER_MAX_TOOL_ROUNDS,
     );
     const context = this.deps.taskBridge.memoryContext();
     // Карточка проекта — чтобы аналитик знал привязанный репозиторий и НЕ спрашивал про корень/
