@@ -317,6 +317,49 @@ describe('RunController', () => {
     assert.match(out.text(), /завершена и подтверждена/);
   });
 
+  it('аналитик требований получает инструменты чтения проекта', async t => {
+    const out = makeCollector();
+    let clarifierTools: ToolSet | undefined;
+    let sawClarifier = false;
+    const tools: ToolSet = {
+      specs: () => [
+        { name: 'read_file', description: 'читать', parameters: { type: 'object', properties: {} } },
+      ],
+      call: async () => '',
+    };
+    const make: ConversationFactory = (systemPrompt, limits, temperature, passedTools) => {
+      const isClarifier = systemPrompt.includes('аналитик требований');
+      if (isClarifier) {
+        sawClarifier = true;
+        clarifierTools = passedTools;
+      }
+      const stage = stageOf(systemPrompt);
+      const client = clientWith(t, async () => ({
+        content: isClarifier ? '{"done":true}' : content()[stage](),
+        usage: undefined,
+      }));
+      return new Conversation(client, {
+        systemPrompt,
+        temperature: temperature ?? 0.5,
+        contextTokens: 8192,
+        requestTimeoutMs: 5000,
+        limits,
+        tools: passedTools,
+      });
+    };
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: make,
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+      tools,
+    });
+    await controller.start('Задача');
+    assert.ok(sawClarifier);
+    assert.equal(clarifierTools, tools); // инструменты чтения проброшены аналитику
+  });
+
   it('нет вопросов аналитика → опрос пропускается', async t => {
     const out = makeCollector();
     const { details } = fakeBridge();
