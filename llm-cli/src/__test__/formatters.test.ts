@@ -11,6 +11,7 @@ import {
   helpText,
   formatSessionList,
   formatStageResult,
+  truncateForConsole,
   formatRunStatus,
   formatRunList,
   formatRunContext,
@@ -139,6 +140,26 @@ describe('helpText / formatSessionList / newSession', () => {
     assert.equal(session.model, 'glm');
     assert.equal(session.label, 'main');
     assert.deepEqual(session.messages, [{ role: 'system', content: 'СИС' }]);
+  });
+});
+
+describe('truncateForConsole', () => {
+  it('короткий вывод не трогает (граница ровно по потолку)', () => {
+    const short = Array.from({ length: 500 }, (_, index) => `строка ${index}`).join('\n');
+    assert.equal(truncateForConsole(short), short); // 500 строк — ровно потолок, без обрезки
+  });
+
+  it('длинный вывод обрезает с пометкой; первые строки на месте, хвост скрыт', () => {
+    const long = Array.from({ length: 600 }, (_, index) => `L${index}`).join('\n');
+    const out = truncateForConsole(long);
+    assert.match(out, /^L0\n/); // первая строка сохранена
+    assert.match(out, /L499\n/); // 500-я строка ещё показана
+    assert.doesNotMatch(out, /L500|L599/); // хвост скрыт
+    assert.match(out, /обрезан: показаны первые 500 из 600 строк, скрыто 100/);
+  });
+
+  it('кастомный потолок', () => {
+    assert.match(truncateForConsole('a\nb\nc', 2), /обрезан: показаны первые 2 из 3/);
   });
 });
 

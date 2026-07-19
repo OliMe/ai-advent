@@ -16,6 +16,7 @@ import { createRunWorkspace, pruneOrphanWorktrees } from './run-workspace.ts';
 import type { RunWorkspace, WorkspaceIo } from './run-workspace.ts';
 import {
   formatStageResult,
+  truncateForConsole,
   formatRunList,
   formatRunStatus,
   formatTeam,
@@ -564,9 +565,10 @@ export class RunController {
             this.gatherRequirements(run.title, issues, cycle, signal),
           onStageStart: stage => this.write(`▸ ${stageLabel(stage)}…`),
           onArtifact: (stage, artifacts) => {
-            // Полный читаемый результат этапа — в консоль и в транскрипт сессии.
+            // Полный результат — в транскрипт сессии (контекст/история); в КОНСОЛЬ — обрезанный:
+            // длинные diff-ы (>500 строк) листать глазами бесполезно, данные при этом не теряются.
             const result = formatStageResult(stage, artifacts);
-            this.write(result);
+            this.write(truncateForConsole(result));
             this.record(`[${stageLabel(stage)}]\n${result}`);
           },
           onRetry: (attempt, reason) =>

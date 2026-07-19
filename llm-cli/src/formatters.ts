@@ -16,6 +16,27 @@ import type {
 /** Бюджет (в токенах) на блок деталей задачи в контексте агентов пайплайна. */
 export const RUN_CONTEXT_DETAIL_BUDGET_TOKENS = 1500;
 
+/** Потолок строк вывода этапа В КОНСОЛЬ: длинные diff-ы глазами всё равно не читают. */
+export const CONSOLE_OUTPUT_MAX_LINES = 500;
+
+/**
+ * Обрезает многострочный вывод для КОНСОЛИ: если строк больше потолка, оставляет первые и добавляет
+ * пометку, сколько скрыто и где искать полный текст. Данные не теряются — в транскрипт/артефакты идёт
+ * полная версия, режется только визуальный вывод (длинные diff-ы бесполезно листать глазами).
+ */
+export function truncateForConsole(text: string, maxLines = CONSOLE_OUTPUT_MAX_LINES): string {
+  const lines = text.split('\n');
+  if (lines.length <= maxLines) {
+    return text;
+  }
+  const hidden = lines.length - maxLines;
+  return (
+    `${lines.slice(0, maxLines).join('\n')}\n` +
+    `… (вывод обрезан: показаны первые ${maxLines} из ${lines.length} строк, скрыто ${hidden}; ` +
+    'полный результат — в транскрипте сессии и файлах-артефактах прогона)'
+  );
+}
+
 /** Сообщение, когда сессионные команды вызваны при отключённом хранилище. */
 export const EPHEMERAL_NOTICE = 'Хранилище сессий отключено (--ephemeral).\n\n';
 

@@ -541,6 +541,26 @@ describe('RunController', () => {
     assert.ok(store.saved.some(run => run.taskId !== undefined)); // прогон связан с задачей
   });
 
+  it('длинный diff обрезается в консоли, но целиком идёт в транскрипт', async t => {
+    const out = makeCollector();
+    const recorded: Array<{ role: string; content: string }> = [];
+    const bigDiff = Array.from({ length: 600 }, (_, index) => `DIFFLINE${index}`).join('\n');
+    const controller = new RunController({
+      store: fakeStore(),
+      makeConversation: factory(t, content({ execution: () => bigDiff })),
+      output: out.stream,
+      ask: answers(['да']),
+      taskBridge: fakeBridge().bridge,
+      recordToSession: (role, content) => recorded.push({ role, content }),
+    });
+    await controller.start('Задача');
+    const consoleText = out.text();
+    assert.match(consoleText, /обрезан: показаны первые 500/); // консоль обрезана
+    assert.doesNotMatch(consoleText, /DIFFLINE599/); // хвоста diff в консоли нет
+    const execRecord = recorded.find(entry => /\[выполнение\]/.test(entry.content))!;
+    assert.match(execRecord.content, /DIFFLINE599/); // транскрипт — полный diff
+  });
+
   it('пишет результат каждого этапа в транскрипт сессии', async t => {
     const out = makeCollector();
     const recorded: Array<{ role: string; content: string }> = [];
