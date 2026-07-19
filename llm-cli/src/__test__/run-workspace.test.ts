@@ -159,7 +159,7 @@ describe('WorkspaceFileToolSet', () => {
     const { tools: set } = tools();
     assert.deepEqual(
       set.specs().map(spec => spec.name),
-      ['read_file', 'read_files', 'write_file', 'list_dir', 'grep'],
+      ['read_file', 'read_files', 'write_file', 'delete_file', 'list_dir', 'grep'],
     );
   });
 
@@ -200,6 +200,28 @@ describe('WorkspaceFileToolSet', () => {
     assert.match(await set.call('write_file', { path: 'docs/a.md', content: 'текст' }), /записан/);
     assert.equal(io.files.get('/w/worktree/docs/a.md'), 'текст');
     assert.match(await set.call('write_file', { path: '../evil', content: 'x' }), /вне проекта/);
+  });
+
+  it('delete_file: удаляет файл, отвергает отсутствующий/каталог/путь наружу', async () => {
+    const { tools: set, io } = tools({
+      '/w/worktree/package-lock.json': '{}',
+      '/w/worktree/src/a.ts': 'a',
+    });
+    assert.match(await set.call('delete_file', { path: 'package-lock.json' }), /удалён/);
+    assert.equal(io.deleted.includes('/w/worktree/package-lock.json'), true);
+    assert.equal(io.files.has('/w/worktree/package-lock.json'), false);
+    assert.match(await set.call('delete_file', { path: 'нет.txt' }), /не найден/);
+    assert.match(await set.call('delete_file', { path: 'src' }), /это каталог|каталог, не файл/i);
+    assert.match(await set.call('delete_file', { path: '../evil' }), /вне проекта/);
+  });
+
+  it('delete_file: служебный каталог недоступен', async () => {
+    const { tools: set, io } = tools({ '/w/worktree/node_modules/dep/index.js': 'бандл' });
+    assert.match(
+      await set.call('delete_file', { path: 'node_modules/dep/index.js' }),
+      /служебный каталог/,
+    );
+    assert.equal(io.files.has('/w/worktree/node_modules/dep/index.js'), true); // не удалён
   });
 
   it('list_dir: имена (без служебных), корень по умолчанию, не-каталог, пусто', async () => {

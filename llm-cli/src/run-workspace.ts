@@ -164,6 +164,18 @@ export class WorkspaceFileToolSet implements ToolSet {
         },
       },
       {
+        name: 'delete_file',
+        description:
+          'Удалить файл проекта по пути относительно корня (напр. устаревший файл или регенерируемый lock-файл). Удаление применится к проекту после подтверждения.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'путь относительно корня проекта' },
+          },
+          required: ['path'],
+        },
+      },
+      {
         name: 'list_dir',
         description: 'Список файлов и подкаталогов каталога проекта.',
         parameters: {
@@ -195,6 +207,9 @@ export class WorkspaceFileToolSet implements ToolSet {
     }
     if (name === 'write_file') {
       return this.writeFile(stringArg(args, 'path'), stringArg(args, 'content'));
+    }
+    if (name === 'delete_file') {
+      return this.deleteFile(stringArg(args, 'path'));
     }
     if (name === 'list_dir') {
       return this.listDir(stringArg(args, 'path') || '.');
@@ -265,6 +280,26 @@ export class WorkspaceFileToolSet implements ToolSet {
     }
     this.io.writeFile(target.path, content);
     return `Файл записан: ${path}`;
+  }
+
+  /**
+   * Удаляет файл проекта. Каталоги не удаляем (только файл) — так исключены рекурсивное удаление и
+   * стирание корня; сама правка идёт в изолированную копию, к реальному проекту применится после
+   * подтверждения (git видит удаление, `apply` удалит файл в проекте).
+   */
+  private deleteFile(path: string): string {
+    const target = this.inside(path);
+    if ('error' in target) {
+      return target.error;
+    }
+    if (!this.io.exists(target.path)) {
+      return `Файл не найден: ${path}`;
+    }
+    if (this.io.isDirectory(target.path)) {
+      return `Это каталог, не файл (удаление каталогов недоступно): ${path}`;
+    }
+    this.io.deleteFile(target.path);
+    return `Файл удалён: ${path}`;
   }
 
   private listDir(path: string): string {
