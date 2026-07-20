@@ -56,6 +56,15 @@ export interface AppConfig {
    * `.env.dev`/`.env.local`/…). Для проектов с нестандартным именем dev-файла окружения.
    */
   projectEnvFiles?: string[];
+  /**
+   * Имена MCP-серверов, инструменты которых доступны ЭТАПАМ ПАЙПЛАЙНА (планирование, сбор требований)
+   * — `LLM_PIPELINE_MCP_SERVERS`, через запятую. Задан → этапы получают ТОЛЬКО инструменты этих
+   * серверов (напр. `git,rag`): меньше схем в каждом раунде (экономия токенов) и нет ухода в
+   * посторонние сервера (scheduler/places) — overreach. Не задан → этапы видят ВСЕ подключённые
+   * инструменты (прежнее поведение). Гранулярность — сервер: добавить сервер в пайплайн = дописать его
+   * имя в env, БЕЗ правки кода. Чат всегда видит все инструменты (скоуп только у пайплайна).
+   */
+  pipelineMcpServers?: string[];
 }
 
 const DEFAULT_TEMPERATURE = 0.7;
@@ -174,6 +183,14 @@ export function loadConfig(): AppConfig {
         .map(name => name.trim())
         .filter(name => name.length > 0);
       return files.length > 0 ? { projectEnvFiles: files } : {};
+    })(),
+    // Скоуп инструментов пайплайна по именам MCP-серверов; задан непустым списком — иначе все инструменты.
+    ...(() => {
+      const servers = (process.env.LLM_PIPELINE_MCP_SERVERS ?? '')
+        .split(',')
+        .map(name => name.trim())
+        .filter(name => name.length > 0);
+      return servers.length > 0 ? { pipelineMcpServers: servers } : {};
     })(),
   };
 }

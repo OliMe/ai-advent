@@ -25,6 +25,7 @@ const ENV_KEYS = [
   'LLM_STRUCTURED_OUTPUTS',
   'LLM_EXECUTOR_MODEL',
   'LLM_PROJECT_ENV_FILES',
+  'LLM_PIPELINE_MCP_SERVERS',
 ];
 
 describe('loadConfig', () => {
@@ -154,6 +155,21 @@ describe('loadConfig', () => {
 
     process.env.LLM_PROJECT_ENV_FILES = '.env.dev, .env.local ';
     assert.deepEqual(loadConfig().projectEnvFiles, ['.env.dev', '.env.local']);
+  });
+
+  it('pipelineMcpServers: непустой LLM_PIPELINE_MCP_SERVERS → список, иначе не задан', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+
+    delete process.env.LLM_PIPELINE_MCP_SERVERS;
+    assert.equal(loadConfig().pipelineMcpServers, undefined);
+
+    process.env.LLM_PIPELINE_MCP_SERVERS = ' , '; // только пустые — как незаданный
+    assert.equal(loadConfig().pipelineMcpServers, undefined);
+
+    process.env.LLM_PIPELINE_MCP_SERVERS = 'git, rag ';
+    assert.deepEqual(loadConfig().pipelineMcpServers, ['git', 'rag']);
   });
 
   it('откатывается к дефолтам команды агентов при невалидных значениях', () => {

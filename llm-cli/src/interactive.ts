@@ -70,6 +70,7 @@ import {
   isRecognizeTool,
 } from './recognize-local.ts';
 import { CompositeToolSet } from './composite-tool-set.ts';
+import { scopePipelineTools } from './filtered-tool-set.ts';
 import { LocationToolSet } from './location.ts';
 import { currentTimeContext } from './current-time.ts';
 import { TOOL_HONESTY_DIRECTIVE, claimsSchedulerActionWithoutCall } from './tool-honesty.ts';
@@ -190,6 +191,11 @@ export async function runInteractive(
           new LocalImageRecognizingToolSet(mcp.toolSet),
           new LocationToolSet(),
         ]);
+  // Скоуп инструментов для ЭТАПОВ ПАЙПЛАЙНА (планирование/сбор требований): если задан
+  // LLM_PIPELINE_MCP_SERVERS — только инструменты этих серверов (напр. git,rag), меньше схем в каждом
+  // раунде (экономия токенов) и нет ухода в посторонние сервера. Не задан — все инструменты, как чат.
+  // Гранулярность — сервер: добавить сервер в пайплайн = дописать имя в env, без правки кода.
+  const pipelineTools = scopePipelineTools(chatTools, config.pipelineMcpServers);
   // Перехват Ctrl+V: картинка из буфера → временный файл → плейсхолдер [Image #N] в строку.
   // Контроллер на отправке меняет плейсхолдеры на пути к файлам (их распознаёт агент).
   const paste =
@@ -348,8 +354,9 @@ export async function runInteractive(
       saveSession: session => store?.save(session),
     }),
     invariants: () => memoryManager.invariantsList(),
-    // Инструменты MCP — планировщику и исполнителю (с поддержкой локальных путей).
-    tools: chatTools ?? undefined,
+    // Инструменты MCP — планировщику/аналитику (с поддержкой локальных путей); скоуп по
+    // LLM_PIPELINE_MCP_SERVERS (если задан). Чат по-прежнему видит все (chatTools ниже).
+    tools: pipelineTools,
     // Constrained decoding этапов — только по явному тумблеру (ломает z.ai/GLM).
     structuredOutputs: config.structuredOutputs,
     // Модель роли выполнения (LLM_EXECUTOR_MODEL); не задана — общая модель.
