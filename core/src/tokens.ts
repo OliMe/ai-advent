@@ -105,47 +105,6 @@ export function historyBudgetTokens(contextTokens: number, maxTokens?: number): 
   return Math.max(contextTokens - responseReserve, MIN_HISTORY_BUDGET_TOKENS);
 }
 
-/** Порог символов tool-результата, ниже которого offload не делаем (плейсхолдер был бы не короче). */
-const OFFLOAD_MIN_CHARS = 200;
-/** Сколько последних tool-результатов держать инлайн (свежие нужны модели, чтобы действовать по ним). */
-export const DEFAULT_KEEP_RECENT_TOOL_RESULTS = 4;
-
-/** Плейсхолдер вытесненного результата инструмента (структура сообщения при этом сохраняется). */
-function offloadedPlaceholder(originalLength: number): string {
-  return (
-    `[прежний результат инструмента вытеснен для экономии контекста; было ~${originalLength} симв. — ` +
-    'при необходимости вызови инструмент снова]'
-  );
-}
-
-/**
- * Безопасная компакция истории агентного цикла (offload-приём вместо обрезки окном): если история
- * превышает бюджет, заменяет СОДЕРЖИМОЕ старых объёмных `tool`-сообщений коротким плейсхолдером,
- * СОХРАНЯЯ сами сообщения (роль, `tool_call_id`, порядок) — структура `assistant(tool_calls)→tool`
- * не рвётся, поэтому строгие провайдеры (GLM/z.ai) не бракуют запрос «messages illegal» (из-за этого
- * историю tool-цикла нельзя обрезать окном). Последние `keepRecent` результатов и всё прочее (system,
- * user-якорь с задачей/планом, assistant) не трогаются; результаты короче порога — тоже. Под бюджетом
- * массив возвращается как есть (короткие циклы — без изменений, регресс-безопасно).
- */
-export function offloadOldToolResults(
-  messages: ChatMessage[],
-  budgetTokens: number,
-  keepRecent = DEFAULT_KEEP_RECENT_TOOL_RESULTS,
-): ChatMessage[] {
-  if (historyTokens(messages) <= budgetTokens) {
-    return messages;
-  }
-  const toolIndices = messages
-    .map((message, index) => (message.role === 'tool' ? index : -1))
-    .filter(index => index >= 0);
-  const evictable = new Set(toolIndices.slice(0, Math.max(0, toolIndices.length - keepRecent)));
-  return messages.map((message, index) =>
-    evictable.has(index) && message.content.length > OFFLOAD_MIN_CHARS
-      ? { ...message, content: offloadedPlaceholder(message.content.length) }
-      : message,
-  );
-}
-
 /**
  * Скользящее окно истории по токенам: всегда сохраняет системные сообщения и
  * оставляет самые свежие реплики, пока укладывается в бюджет. Самое последнее

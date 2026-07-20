@@ -42,8 +42,6 @@ export {
   formatSessionTotals,
   historyBudgetTokens,
   trimHistoryToBudget,
-  offloadOldToolResults,
-  DEFAULT_KEEP_RECENT_TOOL_RESULTS,
 } from './tokens.ts';
 export { createMemoryStrategy } from './memory-strategy.ts';
 export type { MemoryKind, MemoryStrategy } from './memory-strategy.ts';

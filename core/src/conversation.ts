@@ -1,7 +1,7 @@
 import type { ChatCompletionClient, CompletionResult } from './chat-completion-client.ts';
 import type { ChatMessage, GenerationLimits, ToolCall, Usage } from './types.ts';
 import type { ToolSet } from './tool-set.ts';
-import { historyBudgetTokens, offloadOldToolResults, trimHistoryToBudget } from './tokens.ts';
+import { historyBudgetTokens, trimHistoryToBudget } from './tokens.ts';
 
 /** Максимум раундов «модель ↔ инструменты» за один `ask` (защита от зацикливания). */
 const DEFAULT_MAX_TOOL_ROUNDS = 6;
@@ -142,15 +142,10 @@ export class Conversation {
     }));
     const maxRounds = this.config.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     for (let round = 0; round < maxRounds; round++) {
-      // Историю tool-цикла НЕ обрезаем окном (обрезка режет user-якорь с задачей/планом → строгие
-      // провайдеры GLM/z.ai бракуют «messages parameter is illegal»), но при выходе за бюджет ВЫТЕСНЯЕМ
-      // СОДЕРЖИМОЕ старых объёмных tool-результатов плейсхолдером — структура сообщений цела (GLM-safe),
-      // а накопленные чтения файлов/вывод команд не пересылаются каждый раунд (экономия токенов).
-      const sent = offloadOldToolResults(
-        this.messages,
-        historyBudgetTokens(this.config.contextTokens, this.config.limits?.maxTokens),
-      );
-      const result = await this.client.completeWithUsage(sent, {
+      // Историю tool-цикла НЕ обрезаем окном: обрезка по бюджету режет user-сообщение (задачу/план)
+      // и оставляет окно, начинающееся с assistant-tool_calls без user, — строгие провайдеры (GLM/z.ai)
+      // бракуют это «messages parameter is illegal». Так же поступает проверенный на GLM completeWithTools.
+      const result = await this.client.completeWithUsage(this.messages, {
         signal: AbortSignal.timeout(this.config.requestTimeoutMs),
         disableThinking: this.config.disableThinking,
         temperature: this.config.temperature,

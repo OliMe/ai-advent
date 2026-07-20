@@ -8,7 +8,6 @@ import {
   formatSessionTotals,
   historyBudgetTokens,
   trimHistoryToBudget,
-  offloadOldToolResults,
 } from '../index.ts';
 import { makeConfig } from './helpers.ts';
 import type { ChatMessage, Usage } from '../index.ts';
@@ -190,72 +189,5 @@ describe('trimHistoryToBudget', () => {
     const result = trimHistoryToBudget(history, 10_000); // всё влезает
 
     assert.deepEqual(result, history); // группа не тронута
-  });
-});
-
-describe('offloadOldToolResults', () => {
-  const sys: ChatMessage = { role: 'system', content: 'сис' };
-  const user: ChatMessage = { role: 'user', content: 'задача и план' };
-  const call = (id: string): ChatMessage => ({
-    role: 'assistant',
-    content: '',
-    tool_calls: [{ id, type: 'function', function: { name: 'read_file', arguments: '{}' } }],
-  });
-  const tool = (id: string, length: number): ChatMessage => ({
-    role: 'tool',
-    tool_call_id: id,
-    content: 'x'.repeat(length),
-  });
-
-  it('под бюджетом → возвращает тот же массив без изменений', () => {
-    const history = [sys, user, call('c1'), tool('c1', 900)];
-    assert.equal(offloadOldToolResults(history, 100_000, 1), history); // та же ссылка
-  });
-
-  it('над бюджетом → старые объёмные tool-результаты заменены плейсхолдером, свежие целы', () => {
-    const history = [
-      sys,
-      user,
-      call('c1'),
-      tool('c1', 900),
-      call('c2'),
-      tool('c2', 900),
-      call('c3'),
-      tool('c3', 900),
-    ];
-    const result = offloadOldToolResults(history, 100, 1); // держим инлайн последний 1 результат
-    assert.notEqual(result, history); // новый массив
-    assert.equal(result.length, history.length); // длина/порядок сохранены
-    assert.match(result[3].content, /вытеснен для экономии контекста/); // c1 (старый) вытеснен
-    assert.match(result[3].content, /было ~900 симв/); // плейсхолдер несёт исходный размер
-    assert.equal(result[3].tool_call_id, 'c1'); // tool_call_id сохранён (структура цела)
-    assert.match(result[5].content, /вытеснен/); // c2 (старый) вытеснен
-    assert.equal(result[7].content, 'x'.repeat(900)); // c3 (свежий) НЕ тронут
-    assert.equal(result[0], sys); // system нетронут (та же ссылка)
-    assert.equal(result[1], user); // user-якорь нетронут
-    assert.equal(result[2], history[2]); // assistant нетронут
-  });
-
-  it('короткий старый tool-результат не вытесняется (плейсхолдер был бы не короче)', () => {
-    const history = [
-      sys,
-      user,
-      call('c1'),
-      tool('c1', 50), // короткий старый — ниже порога
-      call('c2'),
-      tool('c2', 900),
-      call('c3'),
-      tool('c3', 900),
-    ];
-    const result = offloadOldToolResults(history, 100, 1);
-    assert.equal(result[3].content, 'x'.repeat(50)); // короткий c1 не тронут
-    assert.match(result[5].content, /вытеснен/); // длинный c2 вытеснен
-  });
-
-  it('tool-результатов не больше keepRecent → ничего не вытесняется', () => {
-    const history = [sys, user, call('c1'), tool('c1', 5000)];
-    const result = offloadOldToolResults(history, 100, 4); // keepRecent > числа tool-сообщений
-    assert.notEqual(result, history); // прошли порог бюджета → копия
-    assert.equal(result[3].content, 'x'.repeat(5000)); // единственный (свежий) результат цел
   });
 });
