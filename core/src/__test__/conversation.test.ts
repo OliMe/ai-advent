@@ -253,6 +253,70 @@ describe('Conversation — агентный цикл (инструменты)', 
     );
   });
 
+  it('дедуп: повторный идентичный КРУПНЫЙ результат заменяется стубом', async t => {
+    const big = 'x'.repeat(500); // > порога дедупа
+    const tools: ToolSet = {
+      specs: () => [{ name: 'read', description: 'r', parameters: { type: 'object' } }],
+      call: async () => big,
+    };
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round <= 2
+        ? { content: '', toolCalls: [toolCall('read', '{"p":"a"}')], usage: undefined }
+        : { content: 'готово', usage: undefined };
+    });
+    const conversation = new Conversation(client, { ...config, tools });
+    await conversation.ask('читай дважды');
+    const toolMessages = conversation.messages.filter(m => m.role === 'tool');
+    assert.equal(toolMessages[0].content, big); // первый — полный
+    assert.match(toolMessages[1].content, /повторно не привожу/); // второй — стуб
+  });
+
+  it('дедуп: мелкий результат не трогается даже при повторе', async t => {
+    const tools: ToolSet = {
+      specs: () => [{ name: 'read', description: 'r', parameters: { type: 'object' } }],
+      call: async () => 'ok', // < порога
+    };
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round <= 2
+        ? { content: '', toolCalls: [toolCall('read', '{}')], usage: undefined }
+        : { content: 'done', usage: undefined };
+    });
+    const conversation = new Conversation(client, { ...config, tools });
+    await conversation.ask('x');
+    const toolMessages = conversation.messages.filter(m => m.role === 'tool');
+    assert.deepEqual(
+      toolMessages.map(m => m.content),
+      ['ok', 'ok'],
+    ); // оба целиком
+  });
+
+  it('дедуп: разные крупные результаты сохраняются целиком', async t => {
+    const outputs = ['a'.repeat(500), 'b'.repeat(500)];
+    let callIndex = 0;
+    const tools: ToolSet = {
+      specs: () => [{ name: 'read', description: 'r', parameters: { type: 'object' } }],
+      call: async () => outputs[callIndex++],
+    };
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round <= 2
+        ? { content: '', toolCalls: [toolCall('read', '{}')], usage: undefined }
+        : { content: 'fin', usage: undefined };
+    });
+    const conversation = new Conversation(client, { ...config, tools });
+    await conversation.ask('y');
+    const toolMessages = conversation.messages.filter(m => m.role === 'tool');
+    assert.deepEqual(
+      toolMessages.map(m => m.content),
+      outputs,
+    ); // разные — оба целиком
+  });
+
   it('превышение лимита раундов инструментов → ошибка и откат хода', async t => {
     const tools: ToolSet = {
       specs: () => [{ name: 'loop', description: 'x', parameters: {} }],

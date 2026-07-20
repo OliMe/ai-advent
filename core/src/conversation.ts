@@ -6,6 +6,17 @@ import { historyBudgetTokens, trimHistoryToBudget } from './tokens.ts';
 /** Максимум раундов «модель ↔ инструменты» за один `ask` (защита от зацикливания). */
 const DEFAULT_MAX_TOOL_ROUNDS = 6;
 
+/** Ниже этого размера результат инструмента не дедуплицируем (стуб был бы не короче, экономии нет). */
+const TOOL_RESULT_DEDUP_MIN_CHARS = 400;
+
+/**
+ * Стуб вместо ПОВТОРНО идентичного результата инструмента (экономия токенов, приём read-dedup из
+ * Claude Code). Первый полный результат остаётся выше в истории — модель им пользуется; формулировка
+ * НЕ подталкивает вызывать инструмент снова (в отличие от вытеснения, из-за которого шёл цикл перечтения).
+ */
+const TOOL_RESULT_DEDUP_STUB =
+  '[идентично результату предыдущего вызова этого инструмента выше — повторно не привожу ради экономии контекста]';
+
 /**
  * Параметры одного диалога (агента), независимые от глобального конфига: каждый
  * агент задаёт их сам. Модель/провайдер — свойство переданного клиента.
@@ -54,6 +65,8 @@ export class Conversation {
   /** Полный транскрипт диалога (для инспекции/персистентности). */
   readonly messages: ChatMessage[];
   private readonly accumulated: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  /** Уже виденные результаты инструментов (для дедупа повторно идентичных — экономия токенов). */
+  private readonly seenToolResults = new Set<string>();
 
   constructor(client: ChatCompletionClient, config: ConversationConfig) {
     this.client = client;
@@ -162,10 +175,27 @@ export class Conversation {
       this.messages.push({ role: 'assistant', content: result.content, tool_calls: toolCalls });
       for (const call of toolCalls) {
         const output = await this.runToolCall(call);
-        this.messages.push({ role: 'tool', tool_call_id: call.id, content: output });
+        this.messages.push({ role: 'tool', tool_call_id: call.id, content: this.dedupToolResult(output) });
       }
     }
     throw new Error(`Превышен лимит раундов вызова инструментов (${maxRounds}).`);
+  }
+
+  /**
+   * Дедуп результата инструмента: если объёмный вывод БАЙТ-В-БАЙТ совпал с уже виденным в этом
+   * диалоге — заменяем стубом (полный результат уже выше в истории). Инструмент при этом всегда
+   * исполнялся, поэтому изменившийся файл даёт другой вывод и НЕ дедуплицируется (свежий контент
+   * сохраняется). Мелкие результаты не трогаем.
+   */
+  private dedupToolResult(output: string): string {
+    if (output.length < TOOL_RESULT_DEDUP_MIN_CHARS) {
+      return output;
+    }
+    if (this.seenToolResults.has(output)) {
+      return TOOL_RESULT_DEDUP_STUB;
+    }
+    this.seenToolResults.add(output);
+    return output;
   }
 
   /** Исполняет один вызов инструмента; ошибку отдаёт текстом, чтобы модель могла её учесть. */
