@@ -114,6 +114,29 @@ describe('runPipeline', () => {
     assert.ok(store.saved.length >= 4);
   });
 
+  it('retrieveProjectDocs: грундинг ищется ОДИН раз за прогон (дедуп планирование↔проверка)', async t => {
+    const run = createRun('Задача', { idSuffix: 'docs' });
+    const queries: string[] = [];
+    const result = await runPipeline(run, {
+      store: fakeStore(),
+      makeConversation: makeConversation(t, content()),
+      signal: idle,
+      retrieveProjectDocs: async query => {
+        queries.push(query);
+        return ['док-фрагмент'];
+      },
+      hooks: {
+        confirmCompletion: async () => ({ approved: true }),
+        onStageStart: () => {},
+        onArtifact: () => {},
+        onRetry: () => {},
+      },
+    });
+
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(queries, ['Задача']); // планирование искало, проверка взяла из кэша прогона
+  });
+
   it('teamConfig: оркестратор вызывается, решение команды сообщается хуком', async t => {
     const run = createRun('Задача', { idSuffix: 'tc' });
     const teams: Array<[Stage, number]> = [];

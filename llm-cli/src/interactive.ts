@@ -96,6 +96,7 @@ import {
   groundedFocus,
   buildGroundedQuery,
   forcedRagSearch,
+  makePipelineDocsRetriever,
 } from './grounded.ts';
 import type { VoiceInput } from './voice-input.ts';
 import {
@@ -373,19 +374,18 @@ export async function runInteractive(
     // конкретный репозиторий); документация — адресно, только на планировании и проверке (там она
     // меняет результат). Провайдеры ленивые: привязка проекта могла измениться между прогонами.
     projectContext: () => formatWorkspace(workspace()),
-    retrieveProjectDocs:
-      chatTools === null
-        ? undefined
-        : query =>
-            forcedRagSearch(
-              chatTools,
-              workspaceDocSources(workspace()),
-              query,
-              (name, args, result) => {
-                reportToolCall(name, args);
-                reportToolResult(name, result);
-              },
-            ),
+    // Грундинг этапов доками (RAG): тумблер LLM_PIPELINE_GROUND_DOCS + порог уверенности (слабые/
+    // тангенциальные доки не вставляются — экономия токенов, меньше шума). Выключено → undefined.
+    retrieveProjectDocs: makePipelineDocsRetriever({
+      enabled: config.groundPipelineDocs,
+      tools: chatTools,
+      docSources: () => workspaceDocSources(workspace()),
+      minConfidence: config.groundPipelineDocsMinConfidence,
+      onSearch: (name, args, result) => {
+        reportToolCall(name, args);
+        reportToolResult(name, result);
+      },
+    }),
     // Команда агентов на этап: потолок ролей и конкурентность веера из конфига.
     teamConfig: {
       maxAgents: config.maxStageAgents,

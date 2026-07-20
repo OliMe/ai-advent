@@ -65,6 +65,18 @@ export interface AppConfig {
    * имя в env, БЕЗ правки кода. Чат всегда видит все инструменты (скоуп только у пайплайна).
    */
   pipelineMcpServers?: string[];
+  /**
+   * Грундить ли этапы (планирование/проверка) документацией проекта через RAG (`LLM_PIPELINE_GROUND_DOCS`,
+   * дефолт вкл). Поиск принудительный по заголовку задачи — на doc-бедном проекте часто малополезен и
+   * лишь тратит токены. Выкл (`=0`) → грундинг не идёт вовсе (ни поиска, ни вставки).
+   */
+  groundPipelineDocs: boolean;
+  /**
+   * Порог уверенности RAG, ниже которого найденные доки НЕ вставляются в промпт этапа
+   * (`LLM_PIPELINE_GROUND_DOCS_MIN_CONFIDENCE`, дефолт 0.7). Отсекает тангенциальные результаты (напр.
+   * «уверенность 0.62» на нерелевантной задаче) — грундим только когда доки реально по теме.
+   */
+  groundPipelineDocsMinConfidence: number;
 }
 
 const DEFAULT_TEMPERATURE = 0.7;
@@ -78,6 +90,7 @@ const DEFAULT_USD_RUB = 90;
 const DEFAULT_MAX_STAGE_AGENTS = 4;
 const DEFAULT_STAGE_AGENT_CONCURRENCY = 2;
 const DEFAULT_MAX_TOOL_ROUNDS = 20;
+const DEFAULT_GROUND_DOCS_MIN_CONFIDENCE = 0.7;
 
 /** Конечное неотрицательное число из env или значение по умолчанию. */
 function nonNegativeNumber(raw: string | undefined, fallback: number): number {
@@ -192,6 +205,13 @@ export function loadConfig(): AppConfig {
         .filter(name => name.length > 0);
       return servers.length > 0 ? { pipelineMcpServers: servers } : {};
     })(),
+    // Грундинг этапов доками через RAG: вкл по умолчанию, выкл только явным '0'.
+    groundPipelineDocs: process.env.LLM_PIPELINE_GROUND_DOCS !== '0',
+    // Порог уверенности для вставки найденных доков (дефолт 0.7).
+    groundPipelineDocsMinConfidence: nonNegativeNumber(
+      process.env.LLM_PIPELINE_GROUND_DOCS_MIN_CONFIDENCE,
+      DEFAULT_GROUND_DOCS_MIN_CONFIDENCE,
+    ),
   };
 }
 

@@ -148,6 +148,21 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
     hooks.onStageRepair?.(stageBeforeRepair, run.stage);
   }
 
+  // Дедуп грундинга: планирование и проверка ищут доки по ОДНОМУ запросу (заголовку задачи) — за один
+  // прогон мемоизируем результат по запросу, чтобы не искать дважды (ctx живёт весь прогон).
+  const docsCache = new Map<string, Promise<string[]>>();
+  const retrieveProjectDocs = deps.retrieveProjectDocs
+    ? (query: string): Promise<string[]> => {
+        const cached = docsCache.get(query);
+        if (cached !== undefined) {
+          return cached;
+        }
+        const pending = deps.retrieveProjectDocs!(query);
+        docsCache.set(query, pending);
+        return pending;
+      }
+    : undefined;
+
   const ctx: StageContext = {
     run,
     makeConversation: deps.makeConversation,
@@ -160,7 +175,7 @@ export async function runPipeline(run: TaskRun, deps: PipelineDeps): Promise<Tas
     structuredOutputs: deps.structuredOutputs,
     executorModel: deps.executorModel,
     projectContext: deps.projectContext,
-    retrieveProjectDocs: deps.retrieveProjectDocs,
+    retrieveProjectDocs,
     fileWorkspace: deps.fileWorkspace,
     commandCheck: deps.commandCheck,
     // Защищённая генерация решающих этапов: контролёр сверяет результат с инвариантами.

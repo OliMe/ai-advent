@@ -1,6 +1,6 @@
 import type { ChatMessage, Task, ToolSet } from '../../core/src/index.ts';
 import { isSearchDocsTool } from './rag-directive.ts';
-import { normalizeForMatch } from '../../grounding/src/index.ts';
+import { normalizeForMatch, parseSearchResult } from '../../grounding/src/index.ts';
 
 /** Явно разговорные реплики (не вопросы к документам) — на них grounded-поиск не запускается. */
 const FILLERS = new Set([
@@ -213,4 +213,39 @@ export async function forcedRagSearch(
     results.push(result);
   }
   return results;
+}
+
+/**
+ * Отсекает результаты RAG-грундинга со СЛАБОЙ уверенностью: доки грундят этап, только если найдены
+ * по теме (уверенность ≥ порога и не помечены слабыми). Тангенциальные результаты (напр. «уверенность
+ * 0.62» на нерелевантной задаче) не вставляются — лишь тратили бы токены и шумели.
+ */
+export function filterConfidentDocs(results: string[], minConfidence: number): string[] {
+  return results.filter(result => {
+    const parsed = parseSearchResult(result);
+    return !parsed.lowConfidence && parsed.confidence !== null && parsed.confidence >= minConfidence;
+  });
+}
+
+/**
+ * Строит ретривер доков для этапов пайплайна (`StageContext.retrieveProjectDocs`) с тумблером и порогом
+ * уверенности. Выключено или нет инструментов → `undefined` (грундинг не идёт вовсе). Иначе — форс-поиск
+ * по источникам с отсевом слабых результатов. Вынесено сюда, чтобы решение покрывалось юнит-тестами,
+ * а место вызова в `interactive.ts` осталось без ветвлений.
+ */
+export function makePipelineDocsRetriever(options: {
+  enabled: boolean;
+  tools: ToolSet | null;
+  docSources: () => string[];
+  minConfidence: number;
+  onSearch?: (name: string, args: Record<string, unknown>, result: string) => void;
+}): ((query: string) => Promise<string[]>) | undefined {
+  const { tools } = options;
+  if (!options.enabled || tools === null) {
+    return undefined;
+  }
+  return async query => {
+    const results = await forcedRagSearch(tools, options.docSources(), query, options.onSearch);
+    return filterConfidentDocs(results, options.minConfidence);
+  };
 }

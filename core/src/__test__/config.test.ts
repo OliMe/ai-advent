@@ -26,6 +26,8 @@ const ENV_KEYS = [
   'LLM_EXECUTOR_MODEL',
   'LLM_PROJECT_ENV_FILES',
   'LLM_PIPELINE_MCP_SERVERS',
+  'LLM_PIPELINE_GROUND_DOCS',
+  'LLM_PIPELINE_GROUND_DOCS_MIN_CONFIDENCE',
 ];
 
 describe('loadConfig', () => {
@@ -170,6 +172,25 @@ describe('loadConfig', () => {
 
     process.env.LLM_PIPELINE_MCP_SERVERS = 'git, rag ';
     assert.deepEqual(loadConfig().pipelineMcpServers, ['git', 'rag']);
+  });
+
+  it('groundPipelineDocs: дефолт вкл, только "0" выключает; порог уверенности из env/дефолт', () => {
+    process.env.LLM_API_KEY = 'k';
+    process.env.LLM_BASE_URL = 'https://api.test/v1';
+    process.env.LLM_MODEL = 'm';
+
+    delete process.env.LLM_PIPELINE_GROUND_DOCS;
+    assert.equal(loadConfig().groundPipelineDocs, true); // по умолчанию вкл
+    assert.equal(loadConfig().groundPipelineDocsMinConfidence, 0.7); // дефолтный порог
+
+    process.env.LLM_PIPELINE_GROUND_DOCS = '0';
+    assert.equal(loadConfig().groundPipelineDocs, false); // явное выключение
+
+    process.env.LLM_PIPELINE_GROUND_DOCS = '1';
+    assert.equal(loadConfig().groundPipelineDocs, true); // любое не-"0" — вкл
+
+    process.env.LLM_PIPELINE_GROUND_DOCS_MIN_CONFIDENCE = '0.85';
+    assert.equal(loadConfig().groundPipelineDocsMinConfidence, 0.85);
   });
 
   it('откатывается к дефолтам команды агентов при невалидных значениях', () => {

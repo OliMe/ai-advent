@@ -531,7 +531,7 @@ describe('проект в пайплайне (/run)', () => {
       tools: () => [{ name: 'search_docs', description: 'поиск', parameters: { type: 'object' } }],
       call: async (_tool: string, args: Record<string, unknown>) => {
         searched.push(String(args.query));
-        return '[1] README.md#1 · docs › README › Обзор (0.9)\nПроект собирается через npm test.';
+        return 'кандидатов 3 · уверенность 0.9\n[1] README.md#1 · docs › README › Обзор (0.9)\nПроект собирается через npm test.';
       },
       close: async () => {},
     });
@@ -553,9 +553,10 @@ describe('проект в пайплайне (/run)', () => {
     );
     await finished;
 
-    // Поиск по докам проекта — ровно на тех этапах, где он решает (планирование и проверка),
-    // по КАЖДОМУ источнику документации проекта (README.md + docs) → 2 этапа × 2 источника.
-    assert.equal(searched.length, 4);
+    // Поиск по докам проекта дедуплицируется: планирование и проверка идут по ОДНОМУ запросу
+    // (заголовку задачи), поэтому ищем ОДИН раз по каждому источнику (README.md + docs) = 2 вызова,
+    // а проверка переиспользует результат из кэша прогона (было бы 4 без дедупа).
+    assert.equal(searched.length, 2);
     assert.ok(searched.every(query => query === 'Добавить функцию суммы'));
     // Карточка проекта — в контексте агентов этапов (имя временного проекта в промптах).
     const projectName = projectRoot.split('/').at(-1) as string;

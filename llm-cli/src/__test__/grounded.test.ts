@@ -12,6 +12,8 @@ import {
   groundedFocus,
   buildGroundedQuery,
   forcedRagSearch,
+  filterConfidentDocs,
+  makePipelineDocsRetriever,
 } from '../index.ts';
 import type { ChatMessage, Task, ToolSet, ToolSpec } from '../../../core/src/index.ts';
 
@@ -187,5 +189,60 @@ describe('forcedRagSearch', () => {
     const results = await forcedRagSearch(makeToolSet(['echo'], calls), ['/a'], 'q');
     assert.deepEqual(results, []);
     assert.deepEqual(calls, []);
+  });
+});
+
+describe('filterConfidentDocs', () => {
+  it('оставляет уверенные, отсекает слабые/тангенциальные/без уверенности', () => {
+    const strong = 'уверенность 0.9\n[1] README › Обзор (0.9)\nтекст';
+    const tangential = 'уверенность 0.62\n[1] README › toolkit (0.0)\nтекст'; // ниже порога 0.7
+    const low = 'уверенность 0.55 (низкая)\n[1] ...'; // помечен слабым
+    const noConfidence = '[1] README › Обзор (0.9)\nтекст'; // нет метрики уверенности
+    const kept = filterConfidentDocs([strong, tangential, low, noConfidence], 0.7);
+    assert.deepEqual(kept, [strong]);
+  });
+});
+
+describe('makePipelineDocsRetriever', () => {
+  const spec = (name: string): ToolSpec => ({ name, description: '', parameters: {} });
+  const ragTools = (out: string): ToolSet =>
+    ({ specs: () => [spec('rag__search_docs')], call: async () => out }) as unknown as ToolSet;
+
+  it('выключено → undefined', () => {
+    const retriever = makePipelineDocsRetriever({
+      enabled: false,
+      tools: ragTools('уверенность 0.9\nтекст'),
+      docSources: () => ['/a'],
+      minConfidence: 0.7,
+    });
+    assert.equal(retriever, undefined);
+  });
+
+  it('нет инструментов (tools=null) → undefined', () => {
+    const retriever = makePipelineDocsRetriever({
+      enabled: true,
+      tools: null,
+      docSources: () => ['/a'],
+      minConfidence: 0.7,
+    });
+    assert.equal(retriever, undefined);
+  });
+
+  it('включено → ищет и отсекает слабые по порогу', async () => {
+    const confident = makePipelineDocsRetriever({
+      enabled: true,
+      tools: ragTools('уверенность 0.9\n[1] README › Обзор (0.9)\nтекст'),
+      docSources: () => ['/a'],
+      minConfidence: 0.7,
+    })!;
+    assert.equal((await confident('запрос')).length, 1); // уверенный результат прошёл
+
+    const weak = makePipelineDocsRetriever({
+      enabled: true,
+      tools: ragTools('уверенность 0.5\n[1] ...'),
+      docSources: () => ['/a'],
+      minConfidence: 0.7,
+    })!;
+    assert.deepEqual(await weak('запрос'), []); // слабый отсеян
   });
 });
