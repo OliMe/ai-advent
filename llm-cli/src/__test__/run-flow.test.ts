@@ -317,7 +317,7 @@ describe('RunController', () => {
     assert.match(out.text(), /завершена и подтверждена/);
   });
 
-  it('аналитик требований получает инструменты чтения проекта и малый потолок раундов', async t => {
+  it('аналитик требований получает инструменты чтения проекта и потолок раундов', async t => {
     const out = makeCollector();
     let clarifierTools: ToolSet | undefined;
     let clarifierRounds: number | undefined;
@@ -367,7 +367,7 @@ describe('RunController', () => {
     await controller.start('Задача');
     assert.ok(sawClarifier);
     assert.equal(clarifierTools, tools); // инструменты чтения проброшены аналитику
-    assert.equal(clarifierRounds, 6); // малый потолок раундов (интерактивный хук не должен спиннить)
+    assert.equal(clarifierRounds, 20); // потолок раундов инструментов аналитика
   });
 
   it('нет вопросов аналитика → опрос пропускается', async t => {
