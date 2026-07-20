@@ -194,6 +194,26 @@ describe('Conversation — агентный цикл (инструменты)', 
     });
   });
 
+  it('tool-цикл с заданным limits: бюджет offload берёт из maxTokens (ветка limits?.maxTokens)', async t => {
+    const tools: ToolSet = {
+      specs: () => [{ name: 'noop', description: 'x', parameters: { type: 'object' } }],
+      call: async () => 'готово',
+    };
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round === 1
+        ? { content: '', toolCalls: [toolCall('noop', '{}')], usage: undefined }
+        : { content: 'финал', usage: undefined };
+    });
+    const conversation = new Conversation(client, {
+      ...config,
+      tools,
+      limits: { maxTokens: 50 }, // limits задан → берётся defined-ветка при вычислении бюджета offload
+    });
+    assert.equal((await conversation.ask('давай')).content, 'финал');
+  });
+
   it('ошибка инструмента и пустые аргументы: возвращает текст ошибки модели, цикл идёт дальше', async t => {
     const tools: ToolSet = {
       specs: () => [{ name: 'bad', description: 'x', parameters: {} }],
