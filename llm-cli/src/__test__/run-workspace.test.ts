@@ -499,19 +499,121 @@ describe('WorkspacePackageToolSet', () => {
 describe('RunWorkspace', () => {
   const NAME_STATUS = 'A\tnew.md\nM\tmod.ts\nD\told.txt\n\nbad\n';
 
-  it('changeSummary: ставит правки, парсит A/M/D, отдаёт diff и файлы', async () => {
-    const calls: { command: string; cwd: string }[] = [];
-    const runner = fakeRunner(
+  /** Раннер для changeSummary: name-status → A/M/D, --stat → сводка, тело diff → остальное. */
+  function changeSummaryRunner(
+    body: string,
+    calls?: { command: string; cwd: string }[],
+    nameStatus = NAME_STATUS,
+    stat = ' new.md | 2 +\n mod.ts | 1 +\n',
+  ): ProjectCommandRunner {
+    return fakeRunner(
       [
-        { match: c => c.includes('--name-status'), result: { stdout: NAME_STATUS } },
-        { match: c => c.includes('diff --cached'), result: { stdout: 'DIFF-ТЕКСТ' } },
+        { match: c => c.includes('--name-status'), result: { stdout: nameStatus } },
+        { match: c => c.includes('--stat'), result: { stdout: stat } },
+        { match: c => c.includes('diff --cached'), result: { stdout: body } }, // тело (без --stat/--name-status)
       ],
       calls,
     );
-    const summary = await workspaceWith(new FakeIo(), runner, 1000).changeSummary();
+  }
+
+  it('changeSummary: --stat + тело diff + список файлов; тело без генерируемых', async () => {
+    const calls: { command: string; cwd: string }[] = [];
+    const summary = await workspaceWith(
+      new FakeIo(),
+      changeSummaryRunner('ТЕЛО-DIFF', calls),
+      1000,
+    ).changeSummary();
     assert.deepEqual(summary.files, ['new.md', 'mod.ts', 'old.txt']); // строка «bad» без пути отброшена
-    assert.equal(summary.diff, 'DIFF-ТЕКСТ');
+    assert.match(summary.diff, /new\.md \| 2/); // сводка --stat присутствует
+    assert.match(summary.diff, /ТЕЛО-DIFF/); // тело присутствует
+    assert.doesNotMatch(summary.diff, /опущено/); // среди файлов нет генерируемых → пометки нет
     assert.ok(calls.some(entry => entry.command.includes('add -A') && entry.cwd === '/w/worktree'));
+    // тело diff запрошено с исключением генерируемых через git-pathspec
+    assert.ok(calls.some(entry => entry.command.includes(':(exclude,glob)**/package-lock.json')));
+  });
+
+  it('changeSummary: генерируемый файл в наборе → пометка об опущенном теле', async () => {
+    const nameStatus = 'M\tpackage.json\nM\tpackage-lock.json\n';
+    const summary = await workspaceWith(
+      new FakeIo(),
+      changeSummaryRunner('тело package.json', undefined, nameStatus),
+      1000,
+    ).changeSummary();
+    assert.deepEqual(summary.files, ['package.json', 'package-lock.json']);
+    assert.match(summary.diff, /тело diff по генерируемым\/lock-файлам опущено/);
+  });
+
+  it('changeSummary: длинное тело капается по LLM_DIFF_MAX_CHARS', async () => {
+    const previous = process.env.LLM_DIFF_MAX_CHARS;
+    process.env.LLM_DIFF_MAX_CHARS = '10';
+    try {
+      const summary = await workspaceWith(
+        new FakeIo(),
+        changeSummaryRunner('x'.repeat(50)),
+        1000,
+      ).changeSummary();
+      assert.match(summary.diff, /diff усечён: показано 10 из 50 символов/);
+    } finally {
+      if (previous === undefined) delete process.env.LLM_DIFF_MAX_CHARS;
+      else process.env.LLM_DIFF_MAX_CHARS = previous;
+    }
+  });
+
+  it('changeSummary: невалидный LLM_DIFF_MAX_CHARS → дефолт (тело не режется)', async () => {
+    const previous = process.env.LLM_DIFF_MAX_CHARS;
+    process.env.LLM_DIFF_MAX_CHARS = 'не-число'; // NaN → дефолт 24000
+    try {
+      const summary = await workspaceWith(new FakeIo(), changeSummaryRunner('короткое тело'), 1000).changeSummary();
+      assert.doesNotMatch(summary.diff, /усечён/);
+      assert.match(summary.diff, /короткое тело/);
+    } finally {
+      if (previous === undefined) delete process.env.LLM_DIFF_MAX_CHARS;
+      else process.env.LLM_DIFF_MAX_CHARS = previous;
+    }
+  });
+
+  it('changeSummary: LLM_DIFF_MAX_CHARS ≤ 0 → дефолт', async () => {
+    const previous = process.env.LLM_DIFF_MAX_CHARS;
+    process.env.LLM_DIFF_MAX_CHARS = '0'; // finite, но не > 0 → дефолт
+    try {
+      const summary = await workspaceWith(new FakeIo(), changeSummaryRunner('тело'), 1000).changeSummary();
+      assert.doesNotMatch(summary.diff, /усечён/);
+    } finally {
+      if (previous === undefined) delete process.env.LLM_DIFF_MAX_CHARS;
+      else process.env.LLM_DIFF_MAX_CHARS = previous;
+    }
+  });
+
+  it('changeSummary: LLM_DIFF_EXCLUDE_GLOBS переопределяет набор генерируемых', async () => {
+    const previous = process.env.LLM_DIFF_EXCLUDE_GLOBS;
+    process.env.LLM_DIFF_EXCLUDE_GLOBS = '  , *.snap ,  '; // пустые элементы отброшены, берётся *.snap
+    const calls: { command: string; cwd: string }[] = [];
+    try {
+      const summary = await workspaceWith(
+        new FakeIo(),
+        changeSummaryRunner('тело', calls, 'M\tui.snap\n'),
+        1000,
+      ).changeSummary();
+      assert.match(summary.diff, /опущено/); // ui.snap попал под *.snap
+      assert.ok(calls.some(entry => entry.command.includes(':(exclude,glob)**/*.snap')));
+      assert.ok(!calls.some(entry => entry.command.includes('package-lock.json'))); // дефолт не применён
+    } finally {
+      if (previous === undefined) delete process.env.LLM_DIFF_EXCLUDE_GLOBS;
+      else process.env.LLM_DIFF_EXCLUDE_GLOBS = previous;
+    }
+  });
+
+  it('changeSummary: пустой LLM_DIFF_EXCLUDE_GLOBS → дефолтный набор', async () => {
+    const previous = process.env.LLM_DIFF_EXCLUDE_GLOBS;
+    process.env.LLM_DIFF_EXCLUDE_GLOBS = ' , , '; // всё пусто → дефолт
+    const calls: { command: string; cwd: string }[] = [];
+    try {
+      await workspaceWith(new FakeIo(), changeSummaryRunner('тело', calls), 1000).changeSummary();
+      assert.ok(calls.some(entry => entry.command.includes(':(exclude,glob)**/package-lock.json')));
+    } finally {
+      if (previous === undefined) delete process.env.LLM_DIFF_EXCLUDE_GLOBS;
+      else process.env.LLM_DIFF_EXCLUDE_GLOBS = previous;
+    }
   });
 
   it('listFiles: отслеживаемые файлы из git ls-files (пустые строки отброшены)', async () => {

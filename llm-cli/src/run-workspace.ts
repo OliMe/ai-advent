@@ -55,6 +55,42 @@ const READ_FILES_TOTAL_LIMIT = 60000;
 const GREP_MATCH_LIMIT = 100;
 /** Каталоги, не участвующие в чтении/поиске/копировании. */
 const SKIP_ENTRIES = new Set(['.git', 'node_modules']);
+/**
+ * Глобы генерируемых/lock-файлов: их ТЕЛО diff в контекст модели не идёт (только сводка `--stat`).
+ * Такие файлы огромны (package-lock.json — десятки тысяч строк) и модели бесполезны — она правит
+ * `package.json` и регенерирует lock командой, а не читает его построчно.
+ */
+const DIFF_EXCLUDE_GLOBS = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '*.min.js', '*.min.css'];
+/** Потолок символов ТЕЛА diff, уходящего модели (превью; полный diff остаётся в рабочей копии). */
+const DIFF_MAX_CHARS = 24000;
+
+/** Глобы генерируемых файлов: env-оверрайд `LLM_DIFF_EXCLUDE_GLOBS` (через запятую) или дефолт. */
+function diffExcludeGlobs(): string[] {
+  const parsed = (process.env.LLM_DIFF_EXCLUDE_GLOBS ?? '')
+    .split(',')
+    .map(glob => glob.trim())
+    .filter(glob => glob !== '');
+  return parsed.length > 0 ? parsed : DIFF_EXCLUDE_GLOBS;
+}
+
+/** Потолок символов тела diff: env-оверрайд `LLM_DIFF_MAX_CHARS` (положительное число) или дефолт. */
+function diffMaxChars(): number {
+  const value = Number(process.env.LLM_DIFF_MAX_CHARS);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DIFF_MAX_CHARS;
+}
+
+/** Переводит basename-глоб (`*.min.js`) в якорный RegExp по всему имени. */
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped}$`);
+}
+
+/** Совпадает ли basename пути хотя бы с одним из глобов генерируемых файлов. */
+function isExcludedPath(path: string, globs: string[]): boolean {
+  const segments = path.split('/'); // split всегда даёт ≥1 элемент — базовое имя есть всегда
+  const base = segments[segments.length - 1];
+  return globs.some(glob => globToRegExp(glob).test(base));
+}
 
 /** Строка-аргумент для shell-команды git: простые — как есть, прочие — в кавычках. */
 function quoteArg(arg: string): string {
@@ -755,13 +791,43 @@ export class RunWorkspace implements FileWorkspace, CommandCheck {
 
   async changeSummary(): Promise<WorkspaceChangeSummary> {
     const changes = await this.staged();
-    const diff = await gitRun(
+    const files = changes.map(change => change.path);
+    return { diff: await this.compactDiff(files), files };
+  }
+
+  /**
+   * Компактный diff для КОНТЕКСТА модели (offload-приём): `--stat` по ВСЕМ файлам (комплектно, крошечно)
+   * + тело только по значимым файлам (генерируемые/lock исключены git-pathspec `:(exclude)`) с потолком
+   * символов. Полный diff остаётся в рабочей копии — это превью, не источник истины. `apply()` берёт
+   * список правок из git (`staged`), а НЕ отсюда, поэтому компакция превью безопасна.
+   */
+  private async compactDiff(files: string[]): Promise<string> {
+    const globs = diffExcludeGlobs();
+    const stat = await gitRun(
       this.runner,
       this.worktree,
-      ['-C', this.worktree, 'diff', '--cached', '--no-renames'],
+      ['-C', this.worktree, 'diff', '--cached', '--stat'],
       this.timeoutMs,
     );
-    return { diff: diff.stdout, files: changes.map(change => change.path) };
+    // Тело без генерируемых: `-- . :(exclude,glob)**/<glob>` — `.` включает всё, exclude вычитает lock/min.
+    const excludes = globs.map(glob => `:(exclude,glob)**/${glob}`);
+    const body = await gitRun(
+      this.runner,
+      this.worktree,
+      ['-C', this.worktree, 'diff', '--cached', '--no-renames', '--', '.', ...excludes],
+      this.timeoutMs,
+    );
+    const max = diffMaxChars();
+    const bodyText =
+      body.stdout.length > max
+        ? `${body.stdout.slice(0, max)}\n…(diff усечён: показано ${max} из ${body.stdout.length} символов)`
+        : body.stdout;
+    const omittedNote = files.some(file => isExcludedPath(file, globs))
+      ? '(тело diff по генерируемым/lock-файлам опущено — они видны в сводке выше; полный diff — в рабочей копии)'
+      : '';
+    return [stat.stdout.trim(), omittedNote, bodyText.trim()]
+      .filter(part => part !== '')
+      .join('\n\n');
   }
 
   /**
