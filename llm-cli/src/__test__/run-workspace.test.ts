@@ -159,7 +159,7 @@ describe('WorkspaceFileToolSet', () => {
     const { tools: set } = tools();
     assert.deepEqual(
       set.specs().map(spec => spec.name),
-      ['read_file', 'read_files', 'write_file', 'delete_file', 'list_dir', 'grep'],
+      ['read_file', 'read_files', 'write_file', 'edit_file', 'delete_file', 'list_dir', 'grep'],
     );
   });
 
@@ -200,6 +200,56 @@ describe('WorkspaceFileToolSet', () => {
     assert.match(await set.call('write_file', { path: 'docs/a.md', content: 'текст' }), /записан/);
     assert.equal(io.files.get('/w/worktree/docs/a.md'), 'текст');
     assert.match(await set.call('write_file', { path: '../evil', content: 'x' }), /вне проекта/);
+  });
+
+  it('edit_file: точечная замена единственного вхождения', async () => {
+    const { tools: set, io } = tools({ '/w/worktree/a.ts': 'const x = 1;\nconst y = 2;\n' });
+    const out = await set.call('edit_file', {
+      path: 'a.ts',
+      old_string: 'const x = 1;',
+      new_string: 'const x = 42;',
+    });
+    assert.match(out, /Файл изменён: a\.ts/);
+    assert.equal(io.files.get('/w/worktree/a.ts'), 'const x = 42;\nconst y = 2;\n'); // остальное не тронуто
+  });
+
+  it('edit_file: 0 совпадений и неоднозначность без replace_all', async () => {
+    const { tools: set } = tools({ '/w/worktree/a.ts': 'foo\nfoo\nbar' });
+    assert.match(await set.call('edit_file', { path: 'a.ts', old_string: 'нет', new_string: 'x' }), /не найдена/);
+    assert.match(
+      await set.call('edit_file', { path: 'a.ts', old_string: 'foo', new_string: 'x' }),
+      /Найдено 2 совпадений.*replace_all/s,
+    );
+  });
+
+  it('edit_file: replace_all меняет все вхождения', async () => {
+    const { tools: set, io } = tools({ '/w/worktree/a.ts': 'foo\nfoo\nbar' });
+    const out = await set.call('edit_file', {
+      path: 'a.ts',
+      old_string: 'foo',
+      new_string: 'baz',
+      replace_all: true,
+    });
+    assert.match(out, /заменено вхождений: 2/);
+    assert.equal(io.files.get('/w/worktree/a.ts'), 'baz\nbaz\nbar');
+  });
+
+  it('edit_file: $-паттерны в new_string не интерпретируются', async () => {
+    const { tools: set, io } = tools({ '/w/worktree/a.ts': 'value = OLD' });
+    await set.call('edit_file', { path: 'a.ts', old_string: 'OLD', new_string: '$& $1 $$' });
+    assert.equal(io.files.get('/w/worktree/a.ts'), 'value = $& $1 $$'); // дословно, без подстановки
+  });
+
+  it('edit_file: отказы — нет файла, пустой old_string, no-op, путь наружу/служебный', async () => {
+    const { tools: set } = tools({ '/w/worktree/a.ts': 'x', '/w/worktree/node_modules/dep.js': 'b' });
+    assert.match(await set.call('edit_file', { path: 'нет.ts', old_string: 'a', new_string: 'b' }), /не найден.*write_file/s);
+    assert.match(await set.call('edit_file', { path: 'a.ts', old_string: '', new_string: 'b' }), /old_string пуст/);
+    assert.match(await set.call('edit_file', { path: 'a.ts', old_string: 'x', new_string: 'x' }), /нечего менять/);
+    assert.match(await set.call('edit_file', { path: '../e', old_string: 'a', new_string: 'b' }), /вне проекта/);
+    assert.match(
+      await set.call('edit_file', { path: 'node_modules/dep.js', old_string: 'b', new_string: 'c' }),
+      /служебный каталог/,
+    );
   });
 
   it('delete_file: удаляет файл, отвергает отсутствующий/каталог/путь наружу', async () => {

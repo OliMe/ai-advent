@@ -189,7 +189,8 @@ export class WorkspaceFileToolSet implements ToolSet {
       },
       {
         name: 'write_file',
-        description: 'Создать или полностью перезаписать файл проекта содержимым.',
+        description:
+          'Создать НОВЫЙ файл или полностью перезаписать существующий. Для ПРАВКИ существующего файла предпочитай edit_file (точечная замена — экономнее и не заденет лишнее).',
         parameters: {
           type: 'object',
           properties: {
@@ -197,6 +198,27 @@ export class WorkspaceFileToolSet implements ToolSet {
             content: { type: 'string', description: 'новое содержимое файла целиком' },
           },
           required: ['path', 'content'],
+        },
+      },
+      {
+        name: 'edit_file',
+        description:
+          'Точечно изменить существующий файл: заменить old_string на new_string. old_string должен встречаться РОВНО ОДИН раз (иначе уточни контекст пошире или задай replace_all=true). Предпочтительнее write_file для правок — меняется только нужный фрагмент.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'путь относительно корня проекта' },
+            old_string: {
+              type: 'string',
+              description: 'существующий фрагмент для замены (ТОЧНОЕ совпадение, включая пробелы/отступы)',
+            },
+            new_string: { type: 'string', description: 'на что заменить' },
+            replace_all: {
+              type: 'boolean',
+              description: 'заменить ВСЕ вхождения old_string (по умолчанию false — ровно одно)',
+            },
+          },
+          required: ['path', 'old_string', 'new_string'],
         },
       },
       {
@@ -243,6 +265,14 @@ export class WorkspaceFileToolSet implements ToolSet {
     }
     if (name === 'write_file') {
       return this.writeFile(stringArg(args, 'path'), stringArg(args, 'content'));
+    }
+    if (name === 'edit_file') {
+      return this.editFile(
+        stringArg(args, 'path'),
+        stringArg(args, 'old_string'),
+        stringArg(args, 'new_string'),
+        args.replace_all === true,
+      );
     }
     if (name === 'delete_file') {
       return this.deleteFile(stringArg(args, 'path'));
@@ -316,6 +346,45 @@ export class WorkspaceFileToolSet implements ToolSet {
     }
     this.io.writeFile(target.path, content);
     return `Файл записан: ${path}`;
+  }
+
+  /**
+   * Точечная замена в файле (`edit_file`, приём из Claude Code): меняется только фрагмент `old_string`,
+   * а не весь файл — экономит выходные токены (модель не переписывает файл целиком) и снижает overreach
+   * (нельзя случайно переписать несвязанный код). Уникальность по счётчику совпадений: 0 → не найдено,
+   * >1 без `replace_all` → неоднозначно (уточнить контекст). `() => new` в replace — чтобы `$`-паттерны
+   * в new_string не интерпретировались. Проверка совпадения = страховка от «слепой» правки (выдуманный
+   * old_string не совпадёт → отказ); отдельного read-before-write не требуется.
+   */
+  private editFile(path: string, oldString: string, newString: string, replaceAll: boolean): string {
+    const target = this.inside(path);
+    if ('error' in target) {
+      return target.error;
+    }
+    if (!this.io.exists(target.path)) {
+      return `Файл не найден: ${path} (создать новый — write_file).`;
+    }
+    if (oldString === '') {
+      return 'Ошибка: old_string пуст — для создания файла используй write_file.';
+    }
+    if (oldString === newString) {
+      return 'Ошибка: old_string и new_string совпадают — нечего менять.';
+    }
+    const content = this.io.readFile(target.path);
+    const matches = content.split(oldString).length - 1;
+    if (matches === 0) {
+      return `Строка для замены не найдена в ${path}. Сверь точное совпадение (пробелы/отступы) или прочитай файл заново.`;
+    }
+    if (matches > 1 && !replaceAll) {
+      return `Найдено ${matches} совпадений old_string в ${path}; уточни контекст для уникальности или задай replace_all=true.`;
+    }
+    const updated = replaceAll
+      ? content.replaceAll(oldString, () => newString)
+      : content.replace(oldString, () => newString);
+    this.io.writeFile(target.path, updated);
+    return replaceAll
+      ? `Файл изменён: ${path} (заменено вхождений: ${matches}).`
+      : `Файл изменён: ${path}.`;
   }
 
   /**
