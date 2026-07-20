@@ -1,10 +1,20 @@
 import type { ChatCompletionClient, CompletionResult } from './chat-completion-client.ts';
 import type { ChatMessage, GenerationLimits, ToolCall, Usage } from './types.ts';
 import type { ToolSet } from './tool-set.ts';
-import { historyBudgetTokens, trimHistoryToBudget } from './tokens.ts';
+import {
+  historyBudgetTokens,
+  previewOldToolResults,
+  trimHistoryToBudget,
+} from './tokens.ts';
 
 /** Максимум раундов «модель ↔ инструменты» за один `ask` (защита от зацикливания). */
 const DEFAULT_MAX_TOOL_ROUNDS = 6;
+
+/**
+ * Сколько последних tool-результатов держать ПОЛНЫМИ при свёртке истории агентного цикла (свежие нужны
+ * модели, чтобы действовать по ним; на них же дедуп ловит повторные чтения → нет спирали перечтения).
+ */
+const KEEP_RECENT_TOOL_RESULTS = 6;
 
 /** Ниже этого размера результат инструмента не дедуплицируем (стуб был бы не короче, экономии нет). */
 const TOOL_RESULT_DEDUP_MIN_CHARS = 400;
@@ -65,8 +75,6 @@ export class Conversation {
   /** Полный транскрипт диалога (для инспекции/персистентности). */
   readonly messages: ChatMessage[];
   private readonly accumulated: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
-  /** Уже виденные результаты инструментов (для дедупа повторно идентичных — экономия токенов). */
-  private readonly seenToolResults = new Set<string>();
 
   constructor(client: ChatCompletionClient, config: ConversationConfig) {
     this.client = client;
@@ -155,9 +163,15 @@ export class Conversation {
     }));
     const maxRounds = this.config.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     for (let round = 0; round < maxRounds; round++) {
-      // Историю tool-цикла НЕ обрезаем окном: обрезка по бюджету режет user-сообщение (задачу/план)
-      // и оставляет окно, начинающееся с assistant-tool_calls без user, — строгие провайдеры (GLM/z.ai)
-      // бракуют это «messages parameter is illegal». Так же поступает проверенный на GLM completeWithTools.
+      // Историю tool-цикла НЕ обрезаем окном (обрезка режет user-якорь → GLM/z.ai «messages illegal»),
+      // но при выходе за бюджет СВОРАЧИВАЕМ содержимое старых tool-результатов в превью: структура цела
+      // (GLM-safe), а накопленные чтения не пересылаются целиком каждый раунд. Свёртка мутирует историю,
+      // поэтому перечитывание свёрнутого файла даёт контент ≠ превью → дедуп возвращает ПОЛНЫЙ (нет спирали).
+      previewOldToolResults(
+        this.messages,
+        historyBudgetTokens(this.config.contextTokens, this.config.limits?.maxTokens),
+        KEEP_RECENT_TOOL_RESULTS,
+      );
       const result = await this.client.completeWithUsage(this.messages, {
         signal: AbortSignal.timeout(this.config.requestTimeoutMs),
         disableThinking: this.config.disableThinking,
@@ -182,19 +196,20 @@ export class Conversation {
   }
 
   /**
-   * Дедуп результата инструмента: если объёмный вывод БАЙТ-В-БАЙТ совпал с уже виденным в этом
-   * диалоге — заменяем стубом (полный результат уже выше в истории). Инструмент при этом всегда
-   * исполнялся, поэтому изменившийся файл даёт другой вывод и НЕ дедуплицируется (свежий контент
-   * сохраняется). Мелкие результаты не трогаем.
+   * Дедуп результата инструмента: если объёмный вывод БАЙТ-В-БАЙТ совпал с ПОЛНЫМ результатом,
+   * уже присутствующим ВЫШЕ в истории, — заменяем стубом (полный уже есть). Скан идёт по `this.messages`
+   * (а не по вечному множеству) намеренно: это делает дедуп window/preview-aware — если прежний результат
+   * был СВЁРНУТ в превью (`previewOldToolResults`), совпадения нет и возвращается ПОЛНЫЙ контент
+   * (восстановление при перечитывании свёрнутого файла). Инструмент всегда исполнялся, поэтому
+   * изменившийся файл даёт другой вывод и не дедуплицируется. Мелкие результаты не трогаем.
    */
   private dedupToolResult(output: string): string {
     if (output.length < TOOL_RESULT_DEDUP_MIN_CHARS) {
       return output;
     }
-    if (this.seenToolResults.has(output)) {
+    if (this.messages.some(message => message.role === 'tool' && message.content === output)) {
       return TOOL_RESULT_DEDUP_STUB;
     }
-    this.seenToolResults.add(output);
     return output;
   }
 

@@ -8,6 +8,7 @@ import {
   formatSessionTotals,
   historyBudgetTokens,
   trimHistoryToBudget,
+  previewOldToolResults,
 } from '../index.ts';
 import { makeConfig } from './helpers.ts';
 import type { ChatMessage, Usage } from '../index.ts';
@@ -189,5 +190,72 @@ describe('trimHistoryToBudget', () => {
     const result = trimHistoryToBudget(history, 10_000); // всё влезает
 
     assert.deepEqual(result, history); // группа не тронута
+  });
+});
+
+describe('previewOldToolResults', () => {
+  const sys: ChatMessage = { role: 'system', content: 'сис' };
+  const user: ChatMessage = { role: 'user', content: 'задача' };
+  const call = (id: string): ChatMessage => ({
+    role: 'assistant',
+    content: '',
+    tool_calls: [{ id, type: 'function', function: { name: 'read', arguments: '{}' } }],
+  });
+  const tool = (id: string, length: number): ChatMessage => ({
+    role: 'tool',
+    tool_call_id: id,
+    content: 'x'.repeat(length),
+  });
+
+  it('под бюджетом → массив не меняется', () => {
+    const history = [sys, user, call('c1'), tool('c1', 900)];
+    const before = structuredClone(history);
+    previewOldToolResults(history, 100_000, 6);
+    assert.deepEqual(history, before);
+  });
+
+  it('над бюджетом → старые объёмные результаты свёрнуты в превью, свежие целы', () => {
+    const history = [
+      sys,
+      user,
+      call('c1'),
+      tool('c1', 900),
+      call('c2'),
+      tool('c2', 900),
+      call('c3'),
+      tool('c3', 900),
+    ];
+    previewOldToolResults(history, 100, 1); // держим полным последний 1 результат
+    assert.match(history[3].content, /свёрнут ради экономии/); // c1 (старый) свёрнут
+    assert.ok(history[3].content.length < 900); // короче полного
+    assert.equal(history[3].tool_call_id, 'c1'); // структура цела
+    assert.match(history[5].content, /свёрнут/); // c2 свёрнут
+    assert.equal(history[7].content, 'x'.repeat(900)); // c3 (свежий) полный
+    assert.equal(history[0], sys); // system не тронут
+    assert.equal(history[1], user); // user-якорь не тронут
+    assert.equal(history[2].content, ''); // assistant не тронут
+  });
+
+  it('уже свёрнутые и короткие результаты не трогаются', () => {
+    const previewed = 'x'.repeat(300) + '\n…(старый результат инструмента свёрнут ради экономии контекста)';
+    const history = [
+      sys,
+      user,
+      call('c1'),
+      { role: 'tool', tool_call_id: 'c1', content: previewed } as ChatMessage, // уже свёрнут
+      call('c2'),
+      tool('c2', 50), // короткий — ниже порога
+      call('c3'),
+      tool('c3', 900),
+    ];
+    previewOldToolResults(history, 100, 1);
+    assert.equal(history[3].content, previewed); // повторно не сворачиваем
+    assert.equal(history[5].content, 'x'.repeat(50)); // короткий не трогаем
+  });
+
+  it('tool-результатов не больше keepRecent → ничего не сворачивается', () => {
+    const history = [sys, user, call('c1'), tool('c1', 5000)];
+    previewOldToolResults(history, 100, 6);
+    assert.equal(history[3].content, 'x'.repeat(5000)); // единственный (свежий) цел
   });
 });

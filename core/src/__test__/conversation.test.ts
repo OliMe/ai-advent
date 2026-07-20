@@ -317,6 +317,47 @@ describe('Conversation — агентный цикл (инструменты)', 
     ); // разные — оба целиком
   });
 
+  it('bounding: в тесном контексте старые результаты сворачиваются, цикл завершается (нет спирали)', async t => {
+    const tools: ToolSet = {
+      specs: () => [{ name: 'read', description: 'r', parameters: { type: 'object' } }],
+      call: async (_name, args) => `СОДЕРЖИМОЕ ${(args as { p?: number }).p}: ` + 'y'.repeat(2000),
+    };
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round <= 8 // 8 раундов читает РАЗНЫЕ большие файлы, потом финал
+        ? { content: '', toolCalls: [toolCall('read', JSON.stringify({ p: round }))], usage: undefined }
+        : { content: 'готово', usage: undefined };
+    });
+    const conversation = new Conversation(client, {
+      ...config,
+      contextTokens: 500, // тесный контекст → свёртка сработает
+      tools,
+      maxToolRounds: 20,
+    });
+    const result = await conversation.ask('читай много файлов');
+    assert.equal(result.content, 'готово'); // завершилось, не зациклилось
+    const toolMessages = conversation.messages.filter(m => m.role === 'tool');
+    assert.ok(toolMessages.some(m => /свёрнут/.test(m.content))); // старые свёрнуты
+    assert.ok(toolMessages.some(m => m.content.includes('y'.repeat(2000)))); // свежие — полные
+  });
+
+  it('tool-цикл с заданным limits: бюджет свёртки берёт из maxTokens (ветка limits?.maxTokens)', async t => {
+    const tools: ToolSet = {
+      specs: () => [{ name: 'noop', description: 'x', parameters: { type: 'object' } }],
+      call: async () => 'готово',
+    };
+    let round = 0;
+    const client = clientWith(t, async () => {
+      round++;
+      return round === 1
+        ? { content: '', toolCalls: [toolCall('noop', '{}')], usage: undefined }
+        : { content: 'финал', usage: undefined };
+    });
+    const conversation = new Conversation(client, { ...config, tools, limits: { maxTokens: 50 } });
+    assert.equal((await conversation.ask('давай')).content, 'финал');
+  });
+
   it('превышение лимита раундов инструментов → ошибка и откат хода', async t => {
     const tools: ToolSet = {
       specs: () => [{ name: 'loop', description: 'x', parameters: {} }],

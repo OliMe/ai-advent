@@ -105,6 +105,53 @@ export function historyBudgetTokens(contextTokens: number, maxTokens?: number): 
   return Math.max(contextTokens - responseReserve, MIN_HISTORY_BUDGET_TOKENS);
 }
 
+/** Сколько символов старого tool-результата оставляем в превью при свёртке. */
+const TOOL_RESULT_PREVIEW_CHARS = 300;
+/** Пометка о свёрнутом старом результате (нейтральная — НЕ подталкивает «вызвать снова»). */
+export const TOOL_RESULT_PREVIEW_NOTE =
+  '\n…(старый результат инструмента свёрнут ради экономии контекста)';
+
+/** Оценка: сколько символов минимум должен иметь результат, чтобы свёртка дала выигрыш. */
+const TOOL_RESULT_PREVIEW_MIN_CHARS = TOOL_RESULT_PREVIEW_CHARS + TOOL_RESULT_PREVIEW_NOTE.length + 100;
+
+/**
+ * Ограничение истории агентного цикла (экономия ВХОДНЫХ токенов, приём микрокомпакции Claude Code): если
+ * история превышает бюджет, СВОРАЧИВАЕТ содержимое СТАРЫХ объёмных `tool`-результатов в превью (первые
+ * символы + пометка), СОХРАНЯЯ сами сообщения (роль/`tool_call_id`/порядок) — структура
+ * `assistant(tool_calls)→tool` цела, строгие провайдеры (GLM/z.ai) не бракуют. Последние `keepRecent`
+ * результатов и всё прочее (system, user-якорь, assistant) не трогаются; уже свёрнутые и короткие — тоже.
+ * **МУТИРУЕТ переданный массив** (свёрнутый полный контент из истории уходит) — это НУЖНО для связки с
+ * дедупом: перечитывание свёрнутого файла даст контент, не совпадающий со свёрткой → дедуп вернёт ПОЛНЫЙ
+ * (восстановление), а не стуб. Под бюджетом массив не трогается (короткие циклы без изменений).
+ */
+export function previewOldToolResults(
+  messages: ChatMessage[],
+  budgetTokens: number,
+  keepRecent: number,
+): void {
+  if (historyTokens(messages) <= budgetTokens) {
+    return;
+  }
+  const collapsible: number[] = [];
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (
+      message.role === 'tool' &&
+      message.content.length >= TOOL_RESULT_PREVIEW_MIN_CHARS &&
+      !message.content.endsWith(TOOL_RESULT_PREVIEW_NOTE)
+    ) {
+      collapsible.push(index);
+    }
+  }
+  const toPreview = collapsible.slice(0, Math.max(0, collapsible.length - keepRecent));
+  for (const index of toPreview) {
+    messages[index] = {
+      ...messages[index],
+      content: messages[index].content.slice(0, TOOL_RESULT_PREVIEW_CHARS) + TOOL_RESULT_PREVIEW_NOTE,
+    };
+  }
+}
+
 /**
  * Скользящее окно истории по токенам: всегда сохраняет системные сообщения и
  * оставляет самые свежие реплики, пока укладывается в бюджет. Самое последнее
